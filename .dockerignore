@@ -1,0 +1,33 @@
+# ── Git ──
+.git
+.gitignore
+.gitattributes
+
+# ── IDE ──
+.vscode/
+.idea/
+
+# ── Docs ──
+DESIGN.md
+README.md
+
+# ── Docker ──
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# ── Frontend (not needed in backend image) ──
+frontend/
+node_modules/
+
+# ── Secrets ──
+.env
+.env.local
+backend/configs/config.*.yaml
+!backend/configs/config.docker.yaml
+!backend/configs/config.example.yaml
+
+# ── Runtime artifacts ──
+.run/
+*.log
+tmp/

@@ -1,0 +1,24 @@
+# ── secrets ──
+.env
+backend/configs/config.yaml
+backend/configs/config.*.yaml
+!backend/configs/config.example.yaml
+
+# ── IDE ──
+.vscode/
+.idea/
+*.swp
+*~
+
+# ── OS ──
+Thumbs.db
+.DS_Store
+
+# ── Go ──
+*.exe
+*.test
+*.out
+
+# ── runtime ──
+.run/
+tmp/
