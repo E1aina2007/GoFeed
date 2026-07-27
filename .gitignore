@@ -22,3 +22,6 @@ Thumbs.db
 # ── runtime ──
 .run/
 tmp/
+
+# —— docs ——
+docs/
