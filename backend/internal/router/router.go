@@ -4,6 +4,8 @@ import (
 	"log"
 	"net/http"
 
+	"gofeed/internal/user"
+
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -36,6 +38,22 @@ func New(db *gorm.DB, dev bool) *gin.Engine {
 
 	// uploads
 	r.Static("/static", "./.run/uploads")
+
+	// user routes
+	userCtl := user.NewController(user.NewService(user.NewRepository(db)))
+
+	api := r.Group("/api")
+	users := api.Group("/users")
+	{
+		users.POST("", userCtl.CreateUser)
+		users.GET("", userCtl.ListUsers)
+		users.GET("/:id", userCtl.GetUser)
+		users.POST("/:id/name", userCtl.UpdateName)
+		users.POST("/:id/password", userCtl.UpdatePassword)
+		users.POST("/:id/profile", userCtl.UpdateProfile)
+		users.POST("/:id/delete", userCtl.DeleteUser)
+		users.GET("/:id/profile", userCtl.GetProfile)
+	}
 
 	return r
 }
