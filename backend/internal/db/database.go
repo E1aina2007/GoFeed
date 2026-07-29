@@ -30,27 +30,37 @@ func EnsureDatabase(cfg config.DatabaseConfig) error {
 		return fmt.Errorf("failed to connect to MySQL server: %w", err)
 	}
 
-	sqlDB, err := db.DB()
+	DB, err := db.DB()
 	if err != nil {
 		return err
 	}
-	defer sqlDB.Close()
+	defer DB.Close()
 
-	sql := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci", cfg.DBName)
-	if err := db.Exec(sql).Error; err != nil {
+	if err := db.Exec(fmt.Sprintf(CreateDatabaseTpl, cfg.DBName)).Error; err != nil {
 		return fmt.Errorf("failed to create database: %w", err)
 	}
 	return nil
 }
 
+// Migrate runs GORM AutoMigrate on the given models.
 func Migrate(db *gorm.DB, models ...any) error {
 	return db.AutoMigrate(models...)
 }
 
+// MigrateAll creates all tables defined in sql.go if they don't exist yet.
+func MigrateAll(db *gorm.DB) error {
+	for _, ddl := range allTables {
+		if err := db.Exec(ddl).Error; err != nil {
+			return fmt.Errorf("migrate failed: %w", err)
+		}
+	}
+	return nil
+}
+
 func Close(db *gorm.DB) error {
-	sqlDB, err := db.DB()
+	DB, err := db.DB()
 	if err != nil {
 		return err
 	}
-	return sqlDB.Close()
+	return DB.Close()
 }

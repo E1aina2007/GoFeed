@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"gofeed/internal/config"
 	"gofeed/internal/db"
 	"gofeed/internal/router"
+	"gofeed/internal/user"
 	"log"
 	"net/http"
 	"os"
@@ -18,6 +20,10 @@ import (
 
 func main() {
 	log.SetPrefix("[main] ")
+
+	// parse command line flags
+	useManual := flag.Bool("migrate", false, "use manual DDL migration instead of GORM AutoMigrate")
+	flag.Parse()
 
 	// load env
 	if err := godotenv.Load(); err != nil {
@@ -46,8 +52,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	if err := db.Migrate(DB); err != nil {
-		log.Fatalf("Failed to migrate database: %v", err)
+	if *useManual {
+		log.Println("Running manual DDL migration...")
+		if err := db.MigrateAll(DB); err != nil {
+			log.Fatalf("Failed to migrate database: %v", err)
+		}
+	} else {
+		log.Println("Running GORM AutoMigrate...")
+		if err := db.Migrate(DB, &user.User{}); err != nil {
+			log.Fatalf("Failed to migrate database: %v", err)
+		}
 	}
 
 	log.Println("Database connected successfully")
