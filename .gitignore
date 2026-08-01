@@ -25,3 +25,6 @@ tmp/
 
 # —— docs ——
 docs/
+
+# —— AI ——
+.claude/

@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"gofeed/internal/auth"
 	"gofeed/internal/config"
 	"gofeed/internal/db"
 	"gofeed/internal/router"
@@ -59,7 +60,7 @@ func main() {
 		}
 	} else {
 		log.Println("Running GORM AutoMigrate...")
-		if err := db.Migrate(DB, &user.User{}); err != nil {
+		if err := db.Migrate(DB, &user.User{}, &auth.Session{}); err != nil {
 			log.Fatalf("Failed to migrate database: %v", err)
 		}
 	}

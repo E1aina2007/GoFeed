@@ -1,0 +1,33 @@
+package router
+
+import "testing"
+
+func TestUserRouteGroups(t *testing.T) {
+	routes := New(nil, false).Routes()
+	actual := make(map[string]bool, len(routes))
+	for _, route := range routes {
+		actual[route.Method+" "+route.Path] = true
+	}
+
+	expected := []string{
+		"POST /api/user/register",
+		"POST /api/user/login",
+		"POST /api/user/refresh",
+		"GET /api/user",
+		"GET /api/user/:id",
+		"GET /api/user/:id/profile",
+		"POST /api/user/auth/logout",
+		"PATCH /api/user/auth/name",
+		"PATCH /api/user/auth/password",
+		"PATCH /api/user/auth/profile",
+		"DELETE /api/user/auth",
+	}
+	for _, route := range expected {
+		if !actual[route] {
+			t.Errorf("missing route %s", route)
+		}
+	}
+	if actual["POST /api/users"] {
+		t.Error("legacy /api/users route must not remain registered")
+	}
+}

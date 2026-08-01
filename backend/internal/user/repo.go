@@ -2,7 +2,9 @@ package user
 
 import (
 	"context"
+	"errors"
 
+	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -21,6 +23,9 @@ func (r *Repository) notDeleted(db *gorm.DB) *gorm.DB {
 
 func (r *Repository) Create(ctx context.Context, user *User) error {
 	if err := r.db.WithContext(ctx).Create(user).Error; err != nil {
+		if isDuplicateKey(err) {
+			return ErrUsernameTaken
+		}
 		return err
 	}
 	return nil
@@ -31,12 +36,20 @@ func (r *Repository) UpdateName(ctx context.Context, id uint, newName string) er
 		Where("id = ?", id).
 		Update("username", newName)
 	if result.Error != nil {
+		if isDuplicateKey(result.Error) {
+			return ErrUsernameTaken
+		}
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
 		return gorm.ErrRecordNotFound
 	}
 	return nil
+}
+
+func isDuplicateKey(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
 }
 
 func (r *Repository) UpdatePassword(ctx context.Context, id uint, newPassword string) error {

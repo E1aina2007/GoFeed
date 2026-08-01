@@ -4,6 +4,8 @@ import (
 	"log"
 	"net/http"
 
+	"gofeed/internal/auth"
+	"gofeed/internal/middleware/jwt"
 	"gofeed/internal/user"
 
 	"github.com/gin-gonic/gin"
@@ -18,14 +20,12 @@ func New(db *gorm.DB, dev bool) *gin.Engine {
 	}
 
 	r := gin.New()
-
-	// middleware: always add recovery
 	r.Use(gin.Recovery())
-
-	// middleware: logger only in dev mode
 	if dev {
 		r.Use(gin.Logger())
 	}
+
+	// middlewares
 
 	if err := r.SetTrustedProxies(nil); err != nil {
 		log.Printf("Failed to set trusted proxies: %v", err)
@@ -39,20 +39,27 @@ func New(db *gorm.DB, dev bool) *gin.Engine {
 	// uploads
 	r.Static("/static", "./.run/uploads")
 
-	// user routes
-	userCtl := user.NewController(user.NewService(user.NewRepository(db)))
+	// User routes are split between public operations and authenticated account operations.
+	sessionService := auth.NewSessionService(auth.NewSessionRepository(db))
+	userCtl := user.NewController(user.NewService(user.NewRepository(db)), sessionService)
 
 	api := r.Group("/api")
-	users := api.Group("/users")
+	users := api.Group("/user")
+	users.POST("/register", userCtl.CreateUser)
+	users.POST("/login", userCtl.Login)
+	users.POST("/refresh", userCtl.Refresh)
+	users.GET("", userCtl.ListUsers)
+	users.GET("/:id", userCtl.GetUser)
+	users.GET("/:id/profile", userCtl.GetProfile)
+
+	protectedUsers := users.Group("/auth")
+	protectedUsers.Use(jwt.Auth(sessionService))
 	{
-		users.POST("", userCtl.CreateUser)
-		users.GET("", userCtl.ListUsers)
-		users.GET("/:id", userCtl.GetUser)
-		users.POST("/:id/name", userCtl.UpdateName)
-		users.POST("/:id/password", userCtl.UpdatePassword)
-		users.POST("/:id/profile", userCtl.UpdateProfile)
-		users.POST("/:id/delete", userCtl.DeleteUser)
-		users.GET("/:id/profile", userCtl.GetProfile)
+		protectedUsers.POST("/logout", userCtl.Logout)
+		protectedUsers.PATCH("/name", userCtl.UpdateName)
+		protectedUsers.PATCH("/password", userCtl.UpdatePassword)
+		protectedUsers.PATCH("/profile", userCtl.UpdateProfile)
+		protectedUsers.DELETE("", userCtl.DeleteUser)
 	}
 
 	return r

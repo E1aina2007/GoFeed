@@ -1,26 +1,28 @@
 package user
 
-import "gorm.io/gorm"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 type User struct {
-	ID           uint   `gorm:"primaryKey" json:"id"`
-	Username     string `gorm:"unique" json:"username"`
-	Password     string `json:"-"`
-	AccessToken  string `json:"-"`
-	RefreshToken string `json:"-"`
-	AvatarURL    string `gorm:"type:varchar(512)" json:"avatar_url,omitempty"`
-	Bio          string `gorm:"type:varchar(255)" json:"bio,omitempty"`
+	ID        uint   `gorm:"primaryKey" json:"id"`
+	Username  string `gorm:"unique" json:"username"`
+	Password  string `json:"-"`
+	AvatarURL string `gorm:"type:varchar(512)" json:"avatar_url,omitempty"`
+	Bio       string `gorm:"type:varchar(255)" json:"bio,omitempty"`
 
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
 }
 
 type CreateRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username string `json:"username" binding:"required,min=3,max=32"`
+	Password string `json:"password" binding:"required,min=8,max=72"`
 }
 
 type UpdateNameRequest struct {
-	NewUsername string `json:"new_username"`
+	NewUsername string `json:"new_username" binding:"required,min=3,max=32"`
 }
 
 type FindByIDRequest struct {
@@ -44,15 +46,29 @@ type FindByUsernameResponse struct {
 }
 
 type UpdatePasswordRequest struct {
-	Username    string `json:"username"`
-	OldPassword string `json:"old_password"`
-	NewPassword string `json:"new_password"`
+	OldPassword string `json:"old_password" binding:"required,min=8,max=72"`
+	NewPassword string `json:"new_password" binding:"required,min=8,max=72"`
 }
 
-
 type UpdateProfileRequest struct {
-	AvatarURL string `json:"avatar_url"`
-	Bio       string `json:"bio"`
+	AvatarURL string `json:"avatar_url" binding:"omitempty,max=512"`
+	Bio       string `json:"bio" binding:"omitempty,max=255"`
+}
+
+type LoginRequest struct {
+	Username string `json:"username" binding:"required,min=3,max=32"`
+	Password string `json:"password" binding:"required,min=8,max=72"`
+}
+
+type RefreshRequest struct {
+	RefreshToken string `json:"refresh_token" binding:"required"`
+}
+
+type LoginResponse struct {
+	AccessToken  string           `json:"access_token"`
+	RefreshToken string           `json:"refresh_token"`
+	ExpiresAt    time.Time        `json:"expires_at"`
+	User         FindByIDResponse `json:"user"`
 }
 
 type GetProfileRequest struct {
