@@ -26,9 +26,31 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
     INDEX idx_auth_sessions_user_active (user_id, revoked_at),
     INDEX idx_auth_sessions_expires_at (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`
+
+	CreateTableVideos = `
+CREATE TABLE IF NOT EXISTS videos (
+    id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    author_id      BIGINT UNSIGNED NOT NULL,
+    title          VARCHAR(255)  NOT NULL,
+    description    VARCHAR(1000) NOT NULL DEFAULT '',
+    play_url       VARCHAR(512)  NOT NULL,
+    cover_url      VARCHAR(512)  NOT NULL,
+    status         VARCHAR(16)   NOT NULL DEFAULT 'published',
+    published_at   DATETIME(3)   NOT NULL,
+    likes_count    BIGINT        NOT NULL DEFAULT 0,
+    comments_count BIGINT        NOT NULL DEFAULT 0,
+    created_at     DATETIME(3)   NOT NULL,
+    updated_at     DATETIME(3)   NOT NULL,
+    deleted_at     DATETIME(3)   DEFAULT NULL,
+    INDEX idx_videos_published_id (published_at DESC, id DESC),
+    INDEX idx_videos_author_published (author_id, published_at DESC),
+    INDEX idx_videos_status (status),
+    INDEX idx_videos_deleted_at (deleted_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`
 )
 
 var allTables = []string{
 	CreateTableUsers,
 	CreateTableAuthSessions,
+	CreateTableVideos,
 }
