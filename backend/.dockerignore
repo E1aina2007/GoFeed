@@ -1,0 +1,27 @@
+# Git metadata
+.git
+.gitignore
+
+# IDE settings
+.vscode/
+.idea/
+
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+
+# Keep only container/example configuration files in the image.
+configs/config.*.yaml
+!configs/config.docker.yaml
+!configs/config.example.yaml
+
+# Runtime artifacts and local build output
+.run/
+tmp/
+*.log
+bin/
+dist/
+*.exe
+*.test
+*.out
