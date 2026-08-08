@@ -29,13 +29,9 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// ensure database exists, then connect
-	if err := db.EnsureDatabase(cfg.DB); err != nil {
-		log.Fatalf("Failed to ensure database: %v", err)
-	}
 	dbConn, err := db.NewDB(cfg.DB)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		log.Fatalf("Failed to connect to database: %v\nHint: create database %q manually and run migrations (docker compose run --rm migrate)", err, cfg.DB.DBName)
 	}
 
 	log.Println("Worker started - waiting for jobs...")

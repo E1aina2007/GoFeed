@@ -4,7 +4,6 @@ services:
     restart: always
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-feedsystem}
       TZ: "Asia/Shanghai"
     ports:
       - "3306:3306"
@@ -20,6 +19,21 @@ services:
       timeout: 5s
       retries: 20
 
+  # 版本化迁移：由 golang-migrate 执行 backend/db/migrations 下的迁移文件。
+  # 依赖数据库已手动创建；迁移服务跑完退出后，backend/worker 才会启动。
+  migrate:
+    image: migrate/migrate:v4.19.1
+    restart: "no"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - ./backend/db/migrations:/migrations
+    command:
+      - -path=/migrations
+      - -database=mysql://root:${MYSQL_ROOT_PASSWORD:-changeme}@tcp(mysql:3306)/${MYSQL_DATABASE:-feedsystem}?multiStatements=true
+      - up
+
   backend:
     build:
       context: .
@@ -27,14 +41,19 @@ services:
       target: api
     restart: always
     environment:
-      CONFIG_PATH: /app/configs/config.docker.yaml
+      CONFIG_PATH: /app/configs/config.example.yaml
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: root
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-feedsystem}
     ports:
       - "8080:8080"
     volumes:
       - backend_uploads:/app/.run/uploads
     depends_on:
-      mysql:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   worker:
     build:
@@ -43,10 +62,15 @@ services:
       target: worker
     restart: always
     environment:
-      CONFIG_PATH: /app/configs/config.docker.yaml
+      CONFIG_PATH: /app/configs/config.example.yaml
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: root
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-feedsystem}
     depends_on:
-      mysql:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   mysql_data:

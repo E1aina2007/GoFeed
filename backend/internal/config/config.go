@@ -73,10 +73,11 @@ func OverrideWithEnv(cfg *Config) {
 	if v := os.Getenv("MYSQL_USER"); v != "" {
 		cfg.DB.User = v
 	}
-	if v := os.Getenv("MYSQL_ROOT_PASSWORD"); v != "" {
+	// MYSQL_PASSWORD 仅在没有设置 MYSQL_ROOT_PASSWORD 时生效，避免优先级歧义。
+	if v := os.Getenv("MYSQL_PASSWORD"); v != "" && os.Getenv("MYSQL_ROOT_PASSWORD") == "" {
 		cfg.DB.Password = v
 	}
-	if v := os.Getenv("MYSQL_PASSWORD"); v != "" {
+	if v := os.Getenv("MYSQL_ROOT_PASSWORD"); v != "" {
 		cfg.DB.Password = v
 	}
 	if v := os.Getenv("MYSQL_DATABASE"); v != "" {

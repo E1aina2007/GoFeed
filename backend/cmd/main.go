@@ -2,14 +2,10 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"gofeed/internal/auth"
 	"gofeed/internal/config"
 	"gofeed/internal/db"
 	"gofeed/internal/router"
-	"gofeed/internal/user"
-	"gofeed/internal/video"
 	"log"
 	"net/http"
 	"os"
@@ -22,10 +18,6 @@ import (
 
 func main() {
 	log.SetPrefix("[main] ")
-
-	// parse command line flags
-	useManual := flag.Bool("migrate", false, "use manual DDL migration instead of GORM AutoMigrate")
-	flag.Parse()
 
 	// load env
 	if err := godotenv.Load(); err != nil {
@@ -46,24 +38,10 @@ func main() {
 		log.Println("DEV MODE")
 	}
 
-	// ensure database exists, then connect
-	if err := db.EnsureDatabase(cfg.DB); err != nil {
-		log.Fatalf("Failed to ensure database: %v", err)
-	}
+	// 连接数据库（数据库手动创建，表结构由 migrate 服务自动迁移）
 	DB, err := db.NewDB(cfg.DB)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
-	}
-	if *useManual {
-		log.Println("Running manual DDL migration...")
-		if err := db.MigrateAll(DB); err != nil {
-			log.Fatalf("Failed to migrate database: %v", err)
-		}
-	} else {
-		log.Println("Running GORM AutoMigrate...")
-		if err := db.Migrate(DB, &user.User{}, &auth.Session{}, &video.Video{}); err != nil {
-			log.Fatalf("Failed to migrate database: %v", err)
-		}
+		log.Fatalf("Failed to connect to database: %v\nHint: create database %q manually and run migrations (docker compose run --rm migrate)", err, cfg.DB.DBName)
 	}
 
 	log.Println("Database connected successfully")

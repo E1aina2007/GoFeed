@@ -11,14 +11,14 @@
 .env.*
 !.env.example
 
-# Keep only container/example configuration files in the image.
+# Keep only the example configuration file in the image.
 configs/config.*.yaml
-!configs/config.docker.yaml
 !configs/config.example.yaml
 
 # Runtime artifacts and local build output
 .run/
 tmp/
+backend/db/migrations
 *.log
 bin/
 dist/
