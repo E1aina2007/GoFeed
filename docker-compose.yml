@@ -41,15 +41,21 @@ services:
       target: api
     restart: always
     environment:
-      CONFIG_PATH: /app/configs/config.example.yaml
-      MYSQL_HOST: mysql
-      MYSQL_PORT: "3306"
-      MYSQL_USER: root
+      # 容器实际读取宿主机挂载的 configs/config.yaml（见 volumes）；
+      # 以下环境变量可覆盖 config.yaml 对应字段，均可通过根目录 .env 设置。
+      CONFIG_PATH: ${CONFIG_PATH:-/app/configs/config.yaml}
+      MODE: ${MODE:-prod}
+      SERVER_PORT: ${SERVER_PORT:-8080}
+      JWT_SECRET: ${JWT_SECRET:-}
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_USER: ${MYSQL_USER:-root}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-feedsystem}
     ports:
       - "8080:8080"
     volumes:
+      - ./backend/configs:/app/configs:ro
       - backend_uploads:/app/.run/uploads
     depends_on:
       migrate:
@@ -62,15 +68,35 @@ services:
       target: worker
     restart: always
     environment:
-      CONFIG_PATH: /app/configs/config.example.yaml
-      MYSQL_HOST: mysql
-      MYSQL_PORT: "3306"
-      MYSQL_USER: root
+      CONFIG_PATH: ${CONFIG_PATH:-/app/configs/config.yaml}
+      MODE: ${MODE:-prod}
+      SERVER_PORT: ${SERVER_PORT:-8080}
+      JWT_SECRET: ${JWT_SECRET:-}
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_USER: ${MYSQL_USER:-root}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-feedsystem}
+    volumes:
+      - ./backend/configs:/app/configs:ro
     depends_on:
       migrate:
         condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: always
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 volumes:
   mysql_data:
