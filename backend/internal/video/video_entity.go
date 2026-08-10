@@ -14,6 +14,7 @@ const (
 	VideoStatusRejected   = "rejected"
 )
 
+// Video 保存视频发布数据
 type Video struct {
 	ID          uint   `gorm:"primaryKey;index:idx_videos_published_id,priority:2,sort:desc" json:"id"`
 	AuthorID    uint   `gorm:"not null;index:idx_videos_author_published,priority:1" json:"author_id"`
@@ -32,17 +33,20 @@ type Video struct {
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
 }
 
+// Cursor 记录列表分页位置
 type Cursor struct {
 	PublishedAt time.Time `json:"published_at"`
 	ID          uint      `json:"id"`
 }
 
+// Author 表示视频作者公开资料
 type Author struct {
 	ID        uint   `json:"id"`
 	Username  string `json:"username"`
 	AvatarURL string `json:"avatar_url"`
 }
 
+// VideoItem 表示公开返回的视频内容
 type VideoItem struct {
 	ID            uint      `json:"id"`
 	Title         string    `json:"title"`
@@ -55,6 +59,7 @@ type VideoItem struct {
 	Author        Author    `json:"author"`
 }
 
+// PublishRequest 表示发布视频请求
 type PublishRequest struct {
 	Title       string `json:"title" binding:"required,max=255"`
 	Description string `json:"description" binding:"omitempty,max=1000"`
@@ -62,6 +67,7 @@ type PublishRequest struct {
 	CoverURL    string `json:"cover_url" binding:"required"`
 }
 
+// ListResponse 表示视频列表响应
 type ListResponse struct {
 	Items      []VideoItem `json:"items"`
 	NextCursor string      `json:"next_cursor,omitempty"`

@@ -14,6 +14,7 @@ func NewRepository(db *gorm.DB) *Repository {
 	return &Repository{db: db}
 }
 
+// 查询已发布视频详情
 func (r *Repository) GetPublishedByID(ctx context.Context, id uint) (*Video, error) {
 	if id == 0 {
 		return nil, gorm.ErrRecordNotFound
@@ -29,6 +30,7 @@ func (r *Repository) GetPublishedByID(ctx context.Context, id uint) (*Video, err
 	return &video, nil
 }
 
+// 按发布时间查询已发布视频
 func (r *Repository) ListPublished(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error) {
 	if limit <= 0 {
 		return []Video{}, nil
