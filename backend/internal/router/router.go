@@ -1,12 +1,14 @@
 package router
 
 import (
+	"context"
 	"log"
 	"net/http"
 
 	"gofeed/internal/auth"
 	"gofeed/internal/middleware/jwt"
 	"gofeed/internal/user"
+	"gofeed/internal/video"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -62,5 +64,38 @@ func New(db *gorm.DB, dev bool) *gin.Engine {
 		protectedUsers.DELETE("", userCtl.DeleteUser)
 	}
 
+	// Video routes: 公开读接口在 /api/video，写操作统一挂在 /api/video/auth。
+	videoCtl := video.NewController(
+		video.NewService(video.NewRepository(db), &userAuthorReader{repo: user.NewRepository(db)}),
+		video.NewLocalStorage("./.run/uploads"),
+	)
+	videos := api.Group("/video")
+	videos.GET("", videoCtl.ListVideos)
+	videos.GET("/:id", videoCtl.GetVideo)
+
+	protectedVideos := videos.Group("/auth")
+	protectedVideos.Use(jwt.Auth(sessionService))
+	{
+		protectedVideos.POST("/upload/video", videoCtl.UploadVideo)
+		protectedVideos.POST("/upload/cover", videoCtl.UploadCover)
+		protectedVideos.POST("/publish", videoCtl.Publish)
+		protectedVideos.GET("/mine", videoCtl.Mine)
+		protectedVideos.DELETE("/:id", videoCtl.Delete)
+	}
+
 	return r
+}
+
+// userAuthorReader 将 user 仓储的按 ID 查询包装成视频服务需要的作者读取接口，
+// 避免 video 包直接依赖 user 包内部仓储。
+type userAuthorReader struct {
+	repo *user.Repository
+}
+
+func (r *userAuthorReader) GetPublicAuthor(ctx context.Context, id uint) (video.Author, error) {
+	u, err := r.repo.GetByID(ctx, id)
+	if err != nil {
+		return video.Author{}, err
+	}
+	return video.Author{ID: u.ID, Username: u.Username, AvatarURL: u.AvatarURL}, nil
 }

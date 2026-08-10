@@ -5,6 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
+	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 )
@@ -18,6 +22,9 @@ var (
 	ErrInvalidVideoID          = errors.New("invalid video id")
 	ErrInvalidLimit            = errors.New("invalid limit")
 	ErrInvalidCursor           = errors.New("invalid cursor")
+	ErrInvalidPublishRequest   = errors.New("invalid publish request")
+	ErrVideoNotFound           = errors.New("video not found")
+	ErrNotAuthor               = errors.New("only the author can modify this video")
 	ErrRepositoryUnavailable   = errors.New("video repository unavailable")
 	ErrAuthorReaderUnavailable = errors.New("author reader unavailable")
 )
@@ -27,16 +34,25 @@ type VideoReader interface {
 	ListPublished(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error)
 }
 
+// VideoRepository 是服务层依赖的完整仓储能力，包含发布/删除等写操作。
+type VideoRepository interface {
+	VideoReader
+	Create(ctx context.Context, video *Video) error
+	GetByID(ctx context.Context, id uint) (*Video, error)
+	ListByAuthor(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error)
+	Delete(ctx context.Context, id uint) error
+}
+
 type AuthorReader interface {
 	GetPublicAuthor(ctx context.Context, id uint) (Author, error)
 }
 
 type Service struct {
-	repository   VideoReader
+	repository   VideoRepository
 	authorReader AuthorReader
 }
 
-func NewService(repository VideoReader, authorReader AuthorReader) *Service {
+func NewService(repository VideoRepository, authorReader AuthorReader) *Service {
 	return &Service{repository: repository, authorReader: authorReader}
 }
 
@@ -75,7 +91,99 @@ func (s *Service) ListPublished(ctx context.Context, authorID uint, encodedCurso
 	if err != nil {
 		return ListResponse{}, err
 	}
+	return s.buildListResponse(ctx, videos, limit)
+}
 
+// Publish 校验发布参数与媒体归属后创建一条 published 视频
+func (s *Service) Publish(ctx context.Context, authorID uint, req PublishRequest) (VideoItem, error) {
+	if authorID == 0 {
+		return VideoItem{}, ErrInvalidVideoID
+	}
+	if s.repository == nil {
+		return VideoItem{}, ErrRepositoryUnavailable
+	}
+
+	req.Title = strings.TrimSpace(req.Title)
+	req.Description = strings.TrimSpace(req.Description)
+	req.PlayURL = strings.TrimSpace(req.PlayURL)
+	req.CoverURL = strings.TrimSpace(req.CoverURL)
+
+	if req.Title == "" {
+		return VideoItem{}, fmt.Errorf("%w: title is required", ErrInvalidPublishRequest)
+	}
+	if utf8.RuneCountInString(req.Description) > 1000 {
+		return VideoItem{}, fmt.Errorf("%w: description must be at most 1000 characters", ErrInvalidPublishRequest)
+	}
+	if req.PlayURL == "" || req.CoverURL == "" {
+		return VideoItem{}, fmt.Errorf("%w: play_url and cover_url are required", ErrInvalidPublishRequest)
+	}
+	if !isOwnedMediaURL(req.PlayURL, MediaVideo, authorID) || !isOwnedMediaURL(req.CoverURL, MediaCover, authorID) {
+		return VideoItem{}, ErrInvalidMediaURL
+	}
+
+	video := &Video{
+		AuthorID:    authorID,
+		Title:       req.Title,
+		Description: req.Description,
+		PlayURL:     req.PlayURL,
+		CoverURL:    req.CoverURL,
+		Status:      VideoStatusPublished,
+		PublishedAt: time.Now(),
+	}
+	if err := s.repository.Create(ctx, video); err != nil {
+		return VideoItem{}, err
+	}
+	return s.toVideoItem(ctx, video)
+}
+
+// ListMine 返回当前用户自己的视频管理列表（不限制状态）
+func (s *Service) ListMine(ctx context.Context, authorID uint, encodedCursor string, limit int) (ListResponse, error) {
+	if authorID == 0 {
+		return ListResponse{}, ErrInvalidVideoID
+	}
+	if s.repository == nil {
+		return ListResponse{}, ErrRepositoryUnavailable
+	}
+
+	limit, err := normalizeLimit(limit)
+	if err != nil {
+		return ListResponse{}, err
+	}
+	cursor, err := decodeCursor(encodedCursor)
+	if err != nil {
+		return ListResponse{}, err
+	}
+
+	videos, err := s.repository.ListByAuthor(ctx, authorID, cursor, limit+1)
+	if err != nil {
+		return ListResponse{}, err
+	}
+	return s.buildListResponse(ctx, videos, limit)
+}
+
+// Delete 仅作者本人可软删除自己的视频
+func (s *Service) Delete(ctx context.Context, id, authorID uint) error {
+	if id == 0 {
+		return ErrInvalidVideoID
+	}
+	if s.repository == nil {
+		return ErrRepositoryUnavailable
+	}
+
+	video, err := s.repository.GetByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrVideoNotFound
+		}
+		return err
+	}
+	if video.AuthorID != authorID {
+		return ErrNotAuthor
+	}
+	return s.repository.Delete(ctx, id)
+}
+
+func (s *Service) buildListResponse(ctx context.Context, videos []Video, limit int) (ListResponse, error) {
 	hasMore := len(videos) > limit
 	if hasMore {
 		videos = videos[:limit]
@@ -89,7 +197,7 @@ func (s *Service) ListPublished(ctx context.Context, authorID uint, encodedCurso
 			if s.authorReader == nil {
 				return ListResponse{}, ErrAuthorReaderUnavailable
 			}
-			author, err = s.authorReader.GetPublicAuthor(ctx, videos[i].AuthorID)
+			author, err := s.authorReader.GetPublicAuthor(ctx, videos[i].AuthorID)
 			if err != nil {
 				return ListResponse{}, err
 			}
@@ -100,13 +208,14 @@ func (s *Service) ListPublished(ctx context.Context, authorID uint, encodedCurso
 
 	response := ListResponse{Items: items}
 	if hasMore {
-		response.NextCursor, err = encodeCursor(&Cursor{
+		next, err := encodeCursor(&Cursor{
 			PublishedAt: videos[len(videos)-1].PublishedAt,
 			ID:          videos[len(videos)-1].ID,
 		})
 		if err != nil {
 			return ListResponse{}, err
 		}
+		response.NextCursor = next
 	}
 	return response, nil
 }

@@ -21,6 +21,13 @@ func TestUserRouteGroups(t *testing.T) {
 		"PATCH /api/user/auth/password",
 		"PATCH /api/user/auth/profile",
 		"DELETE /api/user/auth",
+		"GET /api/video",
+		"GET /api/video/:id",
+		"POST /api/video/auth/upload/video",
+		"POST /api/video/auth/upload/cover",
+		"POST /api/video/auth/publish",
+		"GET /api/video/auth/mine",
+		"DELETE /api/video/auth/:id",
 	}
 	for _, route := range expected {
 		if !actual[route] {
