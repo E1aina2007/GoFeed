@@ -16,8 +16,6 @@ Dockerfile
 .dockerignore
 docker-compose.yml
 
-# ── Frontend (not needed in backend image) ──
-frontend/
 node_modules/
 
 # ── Secrets ──
