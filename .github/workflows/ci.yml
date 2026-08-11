@@ -3,9 +3,6 @@ name: CI - Code Review
 on:
   pull_request:
   push:
-    branches:
-      - main
-      - master
   workflow_dispatch:
 
 permissions:
@@ -22,6 +19,20 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: test-password
+          MYSQL_DATABASE: feedsystem_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -ptest-password --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+          --health-start-period=10s
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,6 +53,12 @@ jobs:
         run: go build ./...
 
       - name: Test
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: "3306"
+          MYSQL_USER: root
+          MYSQL_ROOT_PASSWORD: test-password
+          MYSQL_DATABASE: feedsystem_test
         run: go test -race -count=1 ./...
 
   frontend:
