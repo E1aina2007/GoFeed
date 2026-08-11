@@ -126,6 +126,12 @@ func TestHandlerUploadVideo(t *testing.T) {
 	if !strings.HasPrefix(body["play_url"], "/static/videos/1/") {
 		t.Fatalf("play_url 归属错误 got=%q", body["play_url"])
 	}
+	if body["play_file_name"] != "clip.mp4" {
+		t.Fatalf("play_file_name 错误 got=%q want=clip.mp4", body["play_file_name"])
+	}
+	if body["play_original_name"] != "clip.mp4" {
+		t.Fatalf("play_original_name 错误 got=%q want=clip.mp4", body["play_original_name"])
+	}
 }
 
 func TestHandlerUploadRejectsSpoofedFile(t *testing.T) {
@@ -151,6 +157,48 @@ func TestHandlerUploadRejectsSpoofedFile(t *testing.T) {
 	}
 }
 
+func TestHandlerUploadCover(t *testing.T) {
+	// 1 构造带合法 PNG 文件头的 multipart 请求
+	// 2 验证 201 且返回 cover_url、cover_file_name、cover_original_name
+	ctl, _, _ := newTestVideoController(t)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("file", "cover.PNG")
+	if err != nil {
+		t.Fatalf("创建表单文件失败 error=%v", err)
+	}
+	if _, err := fw.Write([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}); err != nil {
+		t.Fatalf("写入表单失败 error=%v", err)
+	}
+	_ = mw.Close()
+
+	r := gin.New()
+	r.Use(withUserID(1))
+	r.POST("/cover", ctl.UploadCover)
+	req := httptest.NewRequest(http.MethodPost, "/cover", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status got=%d want=201 body=%s", w.Code, w.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("响应解析失败 error=%v", err)
+	}
+	if !strings.HasPrefix(body["cover_url"], "/static/covers/1/") {
+		t.Fatalf("cover_url 归属错误 got=%q", body["cover_url"])
+	}
+	if body["cover_file_name"] != "cover.png" {
+		t.Fatalf("cover_file_name 错误 got=%q want=cover.png", body["cover_file_name"])
+	}
+	if body["cover_original_name"] != "cover.PNG" {
+		t.Fatalf("cover_original_name 错误 got=%q want=cover.PNG", body["cover_original_name"])
+	}
+}
+
 func TestHandlerUploadRequiresAuth(t *testing.T) {
 	// 未注入用户 ID（等价于未登录）时上传应返回 401
 	ctl, _, _ := newTestVideoController(t)
@@ -171,7 +219,7 @@ func TestHandlerPublish(t *testing.T) {
 	ctl, repo, authors := newTestVideoController(t)
 	authors.authors = map[uint]Author{1: {ID: 1, Username: "me"}}
 
-	payload := `{"title":"t","play_url":"/static/videos/1/20260810/a.mp4","cover_url":"/static/covers/1/20260810/c.png"}`
+	payload := `{"title":"t","play_url":"/static/videos/1/20260810/a.mp4","play_file_name":"a.mp4","play_original_name":"a.mp4","cover_url":"/static/covers/1/20260810/c.png","cover_file_name":"c.png","cover_original_name":"c.png"}`
 	r := gin.New()
 	r.Use(withUserID(1))
 	r.POST("/publish", ctl.Publish)
@@ -199,7 +247,7 @@ func TestHandlerPublishRejectsForeignURL(t *testing.T) {
 	// 发布时提交其他用户上传目录的 URL 应返回 403，防止盗用他人素材
 	ctl, _, _ := newTestVideoController(t)
 
-	payload := `{"title":"t","play_url":"/static/videos/2/20260810/a.mp4","cover_url":"/static/covers/1/20260810/c.png"}`
+	payload := `{"title":"t","play_url":"/static/videos/2/20260810/a.mp4","play_file_name":"a.mp4","play_original_name":"a.mp4","cover_url":"/static/covers/1/20260810/c.png","cover_file_name":"c.png","cover_original_name":"c.png"}`
 	r := gin.New()
 	r.Use(withUserID(1))
 	r.POST("/publish", ctl.Publish)
@@ -208,6 +256,22 @@ func TestHandlerPublishRejectsForeignURL(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("跨用户 URL 发布未被拒绝 status got=%d want=403 body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandlerPublishRejectsMismatchedFileName(t *testing.T) {
+	// 请求中的实际存储文件名与 play_url 最后一段不一致时应返回 400
+	ctl, _, _ := newTestVideoController(t)
+
+	payload := `{"title":"t","play_url":"/static/videos/1/20260810/a.mp4","play_file_name":"other.mp4","play_original_name":"a.mp4","cover_url":"/static/covers/1/20260810/c.png","cover_file_name":"c.png","cover_original_name":"c.png"}`
+	r := gin.New()
+	r.Use(withUserID(1))
+	r.POST("/publish", ctl.Publish)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/publish", strings.NewReader(payload)))
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("存储文件名不匹配未被拒绝 status got=%d want=400 body=%s", w.Code, w.Body.String())
 	}
 }
 

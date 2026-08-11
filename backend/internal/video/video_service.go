@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -34,7 +36,7 @@ type VideoReader interface {
 	ListPublished(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error)
 }
 
-// VideoRepository 是服务层依赖的完整仓储能力，包含发布/删除等写操作。
+// VideoRepository 是服务层依赖的完整仓储能力，包含发布/删除等写操作
 type VideoRepository interface {
 	VideoReader
 	Create(ctx context.Context, video *Video) error
@@ -107,6 +109,10 @@ func (s *Service) Publish(ctx context.Context, authorID uint, req PublishRequest
 	req.Description = strings.TrimSpace(req.Description)
 	req.PlayURL = strings.TrimSpace(req.PlayURL)
 	req.CoverURL = strings.TrimSpace(req.CoverURL)
+	req.PlayFileName = strings.TrimSpace(req.PlayFileName)
+	req.PlayOriginalName = strings.TrimSpace(req.PlayOriginalName)
+	req.CoverFileName = strings.TrimSpace(req.CoverFileName)
+	req.CoverOriginalName = strings.TrimSpace(req.CoverOriginalName)
 
 	if req.Title == "" {
 		return VideoItem{}, fmt.Errorf("%w: title is required", ErrInvalidPublishRequest)
@@ -117,18 +123,40 @@ func (s *Service) Publish(ctx context.Context, authorID uint, req PublishRequest
 	if req.PlayURL == "" || req.CoverURL == "" {
 		return VideoItem{}, fmt.Errorf("%w: play_url and cover_url are required", ErrInvalidPublishRequest)
 	}
+	if req.PlayFileName == "" || req.PlayOriginalName == "" ||
+		req.CoverFileName == "" || req.CoverOriginalName == "" {
+		return VideoItem{}, fmt.Errorf("%w: media file names are required", ErrInvalidPublishRequest)
+	}
 	if !isOwnedMediaURL(req.PlayURL, MediaVideo, authorID) || !isOwnedMediaURL(req.CoverURL, MediaCover, authorID) {
 		return VideoItem{}, ErrInvalidMediaURL
 	}
+	// 数据库只存相对路径：完整 URL 统一归一化为 path 部分，避免依赖协议与主机。
+	playPath, err := mediaURLPath(req.PlayURL)
+	if err != nil {
+		return VideoItem{}, fmt.Errorf("%w: invalid play_url", ErrInvalidPublishRequest)
+	}
+	coverPath, err := mediaURLPath(req.CoverURL)
+	if err != nil {
+		return VideoItem{}, fmt.Errorf("%w: invalid cover_url", ErrInvalidPublishRequest)
+	}
+	req.PlayURL = playPath
+	req.CoverURL = coverPath
+	if !isValidStoredFile(req.PlayURL, req.PlayFileName) || !isValidStoredFile(req.CoverURL, req.CoverFileName) {
+		return VideoItem{}, fmt.Errorf("%w: stored file name does not match media url", ErrInvalidPublishRequest)
+	}
 
 	video := &Video{
-		AuthorID:    authorID,
-		Title:       req.Title,
-		Description: req.Description,
-		PlayURL:     req.PlayURL,
-		CoverURL:    req.CoverURL,
-		Status:      VideoStatusPublished,
-		PublishedAt: time.Now(),
+		AuthorID:          authorID,
+		Title:             req.Title,
+		Description:       req.Description,
+		PlayURL:           req.PlayURL,
+		PlayFileName:      req.PlayFileName,
+		PlayOriginalName:  req.PlayOriginalName,
+		CoverURL:          req.CoverURL,
+		CoverFileName:     req.CoverFileName,
+		CoverOriginalName: req.CoverOriginalName,
+		Status:            VideoStatusPublished,
+		PublishedAt:       time.Now(),
 	}
 	if err := s.repository.Create(ctx, video); err != nil {
 		return VideoItem{}, err
@@ -183,6 +211,7 @@ func (s *Service) Delete(ctx context.Context, id, authorID uint) error {
 	return s.repository.Delete(ctx, id)
 }
 
+// buildListResponse 构建视频列表响应，包含作者资料与分页游标
 func (s *Service) buildListResponse(ctx context.Context, videos []Video, limit int) (ListResponse, error) {
 	hasMore := len(videos) > limit
 	if hasMore {
@@ -237,16 +266,33 @@ func (s *Service) toVideoItem(ctx context.Context, video *Video) (VideoItem, err
 
 func videoItem(video Video, author Author) VideoItem {
 	return VideoItem{
-		ID:            video.ID,
-		Title:         video.Title,
-		Description:   video.Description,
-		PlayURL:       video.PlayURL,
-		CoverURL:      video.CoverURL,
-		PublishedAt:   video.PublishedAt,
-		LikesCount:    video.LikesCount,
-		CommentsCount: video.CommentsCount,
-		Author:        author,
+		ID:                video.ID,
+		Title:             video.Title,
+		Description:       video.Description,
+		PlayURL:           video.PlayURL,
+		PlayFileName:      video.PlayFileName,
+		PlayOriginalName:  video.PlayOriginalName,
+		CoverURL:          video.CoverURL,
+		CoverFileName:     video.CoverFileName,
+		CoverOriginalName: video.CoverOriginalName,
+		PublishedAt:       video.PublishedAt,
+		LikesCount:        video.LikesCount,
+		CommentsCount:     video.CommentsCount,
+		Author:            author,
 	}
+}
+
+// isValidStoredFile 校验请求中的实际存储文件名与媒体 URL 最后一段一致，
+// 且该文件名本身已满足物理文件名清洗规则（即服务端生成的结果）。
+func isValidStoredFile(rawURL, fileName string) bool {
+	if fileName == "" || sanitizeFilename(fileName) != fileName {
+		return false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return filepath.Base(u.Path) == fileName
 }
 
 func normalizeLimit(limit int) (int, error) {

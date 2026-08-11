@@ -61,15 +61,15 @@ func (ctl *Controller) ListVideos(c *gin.Context) {
 
 // UploadVideo 处理 POST /api/video/auth/upload/video
 func (ctl *Controller) UploadVideo(c *gin.Context) {
-	ctl.upload(c, MediaVideo, "play_url")
+	ctl.upload(c, MediaVideo, "play_url", "play_file_name", "play_original_name")
 }
 
 // UploadCover 处理 POST /api/video/auth/upload/cover
 func (ctl *Controller) UploadCover(c *gin.Context) {
-	ctl.upload(c, MediaCover, "cover_url")
+	ctl.upload(c, MediaCover, "cover_url", "cover_file_name", "cover_original_name")
 }
 
-func (ctl *Controller) upload(c *gin.Context, kind MediaKind, key string) {
+func (ctl *Controller) upload(c *gin.Context, kind MediaKind, urlKey, fileNameKey, originalNameKey string) {
 	userID, ok := jwt.UserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
@@ -104,12 +104,20 @@ func (ctl *Controller) upload(c *gin.Context, kind MediaKind, key string) {
 		return
 	}
 
-	publicURL, err := ctl.storage.Save(c.Request.Context(), userID, kind, header.Filename, file)
+	saved, err := ctl.storage.Save(c.Request.Context(), userID, kind, header.Filename, file)
 	if err != nil {
 		handleVideoError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{key: publicURL})
+	originalName := OriginalName(header.Filename)
+	if originalName == "" {
+		originalName = saved.FileName
+	}
+	c.JSON(http.StatusCreated, gin.H{
+		urlKey:          saved.PublicURL,
+		fileNameKey:     saved.FileName,
+		originalNameKey: originalName,
+	})
 }
 
 // Publish 处理 POST /api/video/auth/publish

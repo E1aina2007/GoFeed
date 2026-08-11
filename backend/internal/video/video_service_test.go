@@ -93,6 +93,8 @@ func TestServiceGetPublished(t *testing.T) {
 	service := NewService(
 		&fakeVideoReader{getVideo: &Video{
 			ID: 1, AuthorID: 2, Title: "title", PlayURL: "play", CoverURL: "cover", PublishedAt: publishedAt,
+			PlayFileName: "clip.mp4", PlayOriginalName: "我的 clip.mp4",
+			CoverFileName: "cover.png", CoverOriginalName: "封面.png",
 		}},
 		&fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}},
 	)
@@ -103,6 +105,10 @@ func TestServiceGetPublished(t *testing.T) {
 	}
 	if item.ID != 1 || item.Author.Username != "author" || !item.PublishedAt.Equal(publishedAt) {
 		t.Fatalf("视频详情组装错误 got=%#v want id=1 author=author publishedAt=%s", item, publishedAt)
+	}
+	if item.PlayFileName != "clip.mp4" || item.PlayOriginalName != "我的 clip.mp4" ||
+		item.CoverFileName != "cover.png" || item.CoverOriginalName != "封面.png" {
+		t.Fatalf("媒体文件名未透出 got=%#v", item)
 	}
 }
 
@@ -170,9 +176,13 @@ func TestServicePublishSetsDefaultsAndValidatesURL(t *testing.T) {
 	service := NewService(repository, authors)
 
 	item, err := service.Publish(context.Background(), 2, PublishRequest{
-		Title:    "  title  ",
-		PlayURL:  "/static/videos/2/20260810/a1b2.mp4",
-		CoverURL: "/static/covers/2/20260810/c3d4.png",
+		Title:             "  title  ",
+		PlayURL:           "/static/videos/2/20260810/a1b2.mp4",
+		PlayFileName:      "a1b2.mp4",
+		PlayOriginalName:  "我的视频.mp4",
+		CoverURL:          "/static/covers/2/20260810/c3d4.png",
+		CoverFileName:     "c3d4.png",
+		CoverOriginalName: "封面.png",
 	})
 	if err != nil {
 		t.Fatalf("发布失败 error=%v", err)
@@ -189,8 +199,15 @@ func TestServicePublishSetsDefaultsAndValidatesURL(t *testing.T) {
 	if repository.created.Title != "title" {
 		t.Fatalf("标题未去除首尾空白 got=%q", repository.created.Title)
 	}
+	if repository.created.PlayFileName != "a1b2.mp4" || repository.created.PlayOriginalName != "我的视频.mp4" ||
+		repository.created.CoverFileName != "c3d4.png" || repository.created.CoverOriginalName != "封面.png" {
+		t.Fatalf("媒体文件名未写入仓储 got=%#v", repository.created)
+	}
 	if item.ID != 7 || item.Author.Username != "author" {
 		t.Fatalf("发布响应组装错误 got=%#v", item)
+	}
+	if item.PlayFileName != "a1b2.mp4" || item.PlayOriginalName != "我的视频.mp4" {
+		t.Fatalf("发布响应未透出媒体文件名 got=%#v", item)
 	}
 }
 
@@ -200,21 +217,77 @@ func TestServicePublishRejectsForeignMediaURL(t *testing.T) {
 	service := NewService(&fakeVideoReader{}, &fakeAuthorReader{})
 
 	_, err := service.Publish(context.Background(), 2, PublishRequest{
-		Title:    "title",
-		PlayURL:  "/static/videos/3/20260810/a1b2.mp4",
-		CoverURL: "/static/covers/2/20260810/c3d4.png",
+		Title:             "title",
+		PlayURL:           "/static/videos/3/20260810/a1b2.mp4",
+		PlayFileName:      "a1b2.mp4",
+		PlayOriginalName:  "a.mp4",
+		CoverURL:          "/static/covers/2/20260810/c3d4.png",
+		CoverFileName:     "c3d4.png",
+		CoverOriginalName: "c.png",
 	})
 	if !errors.Is(err, ErrInvalidMediaURL) {
 		t.Fatalf("跨用户 URL 未被拒绝 got error=%v want error=%v", err, ErrInvalidMediaURL)
 	}
 
 	_, err = service.Publish(context.Background(), 2, PublishRequest{
-		Title:    "title",
-		PlayURL:  "/static/videos/2/20260810/a1b2.mp4",
-		CoverURL: "http://evil.example.com/c3d4.png",
+		Title:             "title",
+		PlayURL:           "/static/videos/2/20260810/a1b2.mp4",
+		PlayFileName:      "a1b2.mp4",
+		PlayOriginalName:  "a.mp4",
+		CoverURL:          "http://evil.example.com/c3d4.png",
+		CoverFileName:     "c3d4.png",
+		CoverOriginalName: "c.png",
 	})
 	if !errors.Is(err, ErrInvalidMediaURL) {
 		t.Fatalf("任意外链未被拒绝 got error=%v want error=%v", err, ErrInvalidMediaURL)
+	}
+}
+
+func TestServicePublishRejectsMismatchedFileName(t *testing.T) {
+	// 请求中的实际存储文件名与媒体 URL 最后一段不一致时必须被拒绝
+	service := NewService(&fakeVideoReader{}, &fakeAuthorReader{})
+
+	_, err := service.Publish(context.Background(), 2, PublishRequest{
+		Title:             "title",
+		PlayURL:           "/static/videos/2/20260810/a1b2.mp4",
+		PlayFileName:      "other.mp4",
+		PlayOriginalName:  "a.mp4",
+		CoverURL:          "/static/covers/2/20260810/c3d4.png",
+		CoverFileName:     "c3d4.png",
+		CoverOriginalName: "c.png",
+	})
+	if !errors.Is(err, ErrInvalidPublishRequest) {
+		t.Fatalf("存储文件名不匹配未被拒绝 got error=%v want error=%v", err, ErrInvalidPublishRequest)
+	}
+}
+
+func TestServicePublishStoresRelativePath(t *testing.T) {
+	// 1 发布时提交完整 URL
+	// 2 入库前必须归一化为 /static/... 相对路径，响应同样只返回相对路径
+	repository := &fakeVideoReader{}
+	authors := &fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}}
+	service := NewService(repository, authors)
+
+	item, err := service.Publish(context.Background(), 2, PublishRequest{
+		Title:             "title",
+		PlayURL:           "http://localhost:8080/static/videos/2/20260810/a1b2.mp4",
+		PlayFileName:      "a1b2.mp4",
+		PlayOriginalName:  "a.mp4",
+		CoverURL:          "https://cdn.example.com/static/covers/2/20260810/c3d4.png",
+		CoverFileName:     "c3d4.png",
+		CoverOriginalName: "c.png",
+	})
+	if err != nil {
+		t.Fatalf("发布失败 error=%v", err)
+	}
+	if repository.created.PlayURL != "/static/videos/2/20260810/a1b2.mp4" {
+		t.Fatalf("play_url 未归一化为相对路径 got=%q", repository.created.PlayURL)
+	}
+	if repository.created.CoverURL != "/static/covers/2/20260810/c3d4.png" {
+		t.Fatalf("cover_url 未归一化为相对路径 got=%q", repository.created.CoverURL)
+	}
+	if item.PlayURL != "/static/videos/2/20260810/a1b2.mp4" || item.CoverURL != "/static/covers/2/20260810/c3d4.png" {
+		t.Fatalf("响应未返回相对路径 got=%#v", item)
 	}
 }
 
