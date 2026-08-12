@@ -14,9 +14,10 @@ const refreshTokenTTL = 7 * 24 * time.Hour
 
 var ErrSessionInvalid = errors.New("session is invalid or expired")
 
-// Session represents one independently revocable login session. Refresh tokens
-// are stored only as SHA-256 hashes so a database leak cannot be used as a token.
-type Session struct {
+// AuthSession 表示一个可独立撤销的登录会话，刷新令牌只以 SHA-256 哈希入库
+// 即使数据库泄露也无法直接作为令牌使用
+// 类型名通过 GORM 默认命名规则映射到迁移创建的表 auth_sessions
+type AuthSession struct {
 	ID               string     `gorm:"primaryKey;size:64" json:"id"`
 	UserID           uint       `gorm:"not null;index:idx_auth_sessions_user_active" json:"user_id"`
 	RefreshTokenHash string     `gorm:"size:64;not null;uniqueIndex" json:"-"`
@@ -34,12 +35,12 @@ func NewSessionRepository(db *gorm.DB) *SessionRepository {
 	return &SessionRepository{db: db}
 }
 
-func (r *SessionRepository) Create(ctx context.Context, session *Session) error {
+func (r *SessionRepository) Create(ctx context.Context, session *AuthSession) error {
 	return r.db.WithContext(ctx).Create(session).Error
 }
 
-func (r *SessionRepository) FindActiveByID(ctx context.Context, id string, userID uint) (*Session, error) {
-	var session Session
+func (r *SessionRepository) FindActiveByID(ctx context.Context, id string, userID uint) (*AuthSession, error) {
+	var session AuthSession
 	err := r.db.WithContext(ctx).
 		Where("id = ? AND user_id = ? AND revoked_at IS NULL AND expires_at > ?", id, userID, time.Now()).
 		First(&session).Error
@@ -52,8 +53,8 @@ func (r *SessionRepository) FindActiveByID(ctx context.Context, id string, userI
 	return &session, nil
 }
 
-func (r *SessionRepository) FindActiveByRefreshTokenHash(ctx context.Context, hash string) (*Session, error) {
-	var session Session
+func (r *SessionRepository) FindActiveByRefreshTokenHash(ctx context.Context, hash string) (*AuthSession, error) {
+	var session AuthSession
 	err := r.db.WithContext(ctx).
 		Where("refresh_token_hash = ? AND revoked_at IS NULL AND expires_at > ?", hash, time.Now()).
 		First(&session).Error
@@ -68,8 +69,8 @@ func (r *SessionRepository) FindActiveByRefreshTokenHash(ctx context.Context, ha
 
 // RotateRefresh atomically replaces a refresh token. A reused or racing token
 // cannot rotate the session after the first successful update.
-func (r *SessionRepository) RotateRefresh(ctx context.Context, session *Session, expectedHash, nextHash string) error {
-	result := r.db.WithContext(ctx).Model(&Session{}).
+func (r *SessionRepository) RotateRefresh(ctx context.Context, session *AuthSession, expectedHash, nextHash string) error {
+	result := r.db.WithContext(ctx).Model(&AuthSession{}).
 		Where("id = ? AND user_id = ? AND refresh_token_hash = ? AND revoked_at IS NULL AND expires_at > ?", session.ID, session.UserID, expectedHash, time.Now()).
 		Updates(map[string]any{"refresh_token_hash": nextHash})
 	if result.Error != nil {
@@ -83,7 +84,7 @@ func (r *SessionRepository) RotateRefresh(ctx context.Context, session *Session,
 
 func (r *SessionRepository) Revoke(ctx context.Context, id string, userID uint) error {
 	now := time.Now()
-	result := r.db.WithContext(ctx).Model(&Session{}).
+	result := r.db.WithContext(ctx).Model(&AuthSession{}).
 		Where("id = ? AND user_id = ? AND revoked_at IS NULL", id, userID).
 		Update("revoked_at", now)
 	if result.Error != nil {
@@ -97,7 +98,7 @@ func (r *SessionRepository) Revoke(ctx context.Context, id string, userID uint) 
 
 func (r *SessionRepository) RevokeAllForUser(ctx context.Context, userID uint) error {
 	now := time.Now()
-	return r.db.WithContext(ctx).Model(&Session{}).
+	return r.db.WithContext(ctx).Model(&AuthSession{}).
 		Where("user_id = ? AND revoked_at IS NULL", userID).
 		Update("revoked_at", now).Error
 }
@@ -126,7 +127,7 @@ func (s *SessionService) Create(ctx context.Context, userID uint, username strin
 		return nil, err
 	}
 
-	session := &Session{
+	session := &AuthSession{
 		ID:               sessionID,
 		UserID:           userID,
 		RefreshTokenHash: hashToken(refreshToken),
@@ -145,7 +146,7 @@ func (s *SessionService) Create(ctx context.Context, userID uint, username strin
 
 // Refresh replaces the submitted refresh token while preserving the session ID.
 // The caller generates the access token after loading the current user profile.
-func (s *SessionService) Refresh(ctx context.Context, refreshToken string) (*Session, string, error) {
+func (s *SessionService) Refresh(ctx context.Context, refreshToken string) (*AuthSession, string, error) {
 	if refreshToken == "" {
 		return nil, "", ErrSessionInvalid
 	}
