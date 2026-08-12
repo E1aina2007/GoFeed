@@ -47,7 +47,7 @@ func main() {
 	log.Println("Database connected successfully")
 
 	// load server
-	r := router.New(DB, cfg.Dev)
+	r := router.New(DB, cfg.Dev, router.Options{})
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 
 	server := &http.Server{

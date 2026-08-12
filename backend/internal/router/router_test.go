@@ -3,7 +3,7 @@ package router
 import "testing"
 
 func TestUserRouteGroups(t *testing.T) {
-	routes := New(nil, false).Routes()
+	routes := New(nil, false, Options{}).Routes()
 	actual := make(map[string]bool, len(routes))
 	for _, route := range routes {
 		actual[route.Method+" "+route.Path] = true

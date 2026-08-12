@@ -14,11 +14,23 @@ import (
 	"gorm.io/gorm"
 )
 
-func New(db *gorm.DB, dev bool) *gin.Engine {
+// Options 收纳路由装配时可注入的依赖，便于集成测试替换真实实现
+type Options struct {
+	// UploadDir 本地媒体存储与 /static 静态服务的根目录
+	// 留空时回退到生产默认值 "./.run/uploads"
+	UploadDir string
+}
+
+func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	if dev {
 		gin.SetMode(gin.DebugMode)
 	} else {
 		gin.SetMode(gin.ReleaseMode)
+	}
+
+	uploadDir := opts.UploadDir
+	if uploadDir == "" {
+		uploadDir = "./.run/uploads"
 	}
 
 	r := gin.New()
@@ -39,7 +51,7 @@ func New(db *gorm.DB, dev bool) *gin.Engine {
 	})
 
 	// uploads
-	r.Static("/static", "./.run/uploads")
+	r.Static("/static", uploadDir)
 
 	// User routes are split between public operations and authenticated account operations.
 	sessionService := auth.NewSessionService(auth.NewSessionRepository(db))
@@ -67,7 +79,7 @@ func New(db *gorm.DB, dev bool) *gin.Engine {
 	// Video routes: 公开读接口在 /api/video，写操作统一挂在 /api/video/auth。
 	videoCtl := video.NewController(
 		video.NewService(video.NewRepository(db), &userAuthorReader{repo: user.NewRepository(db)}),
-		video.NewLocalStorage("./.run/uploads"),
+		video.NewLocalStorage(uploadDir),
 	)
 	videos := api.Group("/video")
 	videos.GET("", videoCtl.ListVideos)
