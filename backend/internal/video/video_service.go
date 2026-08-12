@@ -130,7 +130,7 @@ func (s *Service) Publish(ctx context.Context, authorID uint, req PublishRequest
 	if !isOwnedMediaURL(req.PlayURL, MediaVideo, authorID) || !isOwnedMediaURL(req.CoverURL, MediaCover, authorID) {
 		return VideoItem{}, ErrInvalidMediaURL
 	}
-	// 数据库只存相对路径：完整 URL 统一归一化为 path 部分，避免依赖协议与主机。
+	// 数据库只存相对路径：完整 URL 统一归一化为 path 部分，避免依赖协议与主机
 	playPath, err := mediaURLPath(req.PlayURL)
 	if err != nil {
 		return VideoItem{}, fmt.Errorf("%w: invalid play_url", ErrInvalidPublishRequest)
@@ -283,7 +283,7 @@ func videoItem(video Video, author Author) VideoItem {
 }
 
 // isValidStoredFile 校验请求中的实际存储文件名与媒体 URL 最后一段一致，
-// 且该文件名本身已满足物理文件名清洗规则（即服务端生成的结果）。
+// 且该文件名本身已满足物理文件名清洗规则（即服务端生成的结果）
 func isValidStoredFile(rawURL, fileName string) bool {
 	if fileName == "" || sanitizeFilename(fileName) != fileName {
 		return false

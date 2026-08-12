@@ -18,7 +18,7 @@ const testUserIDKey = "gofeed.jwt.user_id"
 
 func newTestVideoController(t *testing.T) (*Controller, *fakeVideoReader, *fakeAuthorReader) {
 	// 用假仓储、假作者读取器和临时上传目录构造 Controller，
-	// 让 handler 测试不依赖真实数据库与真实上传目录。
+	// 让 handler 测试不依赖真实数据库与真实上传目录
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	repo := &fakeVideoReader{}
@@ -28,7 +28,7 @@ func newTestVideoController(t *testing.T) (*Controller, *fakeVideoReader, *fakeA
 }
 
 func withUserID(userID uint) gin.HandlerFunc {
-	// 模拟 JWT 中间件已把当前用户 ID 写入上下文，供写接口测试使用。
+	// 模拟 JWT 中间件已把当前用户 ID 写入上下文，供写接口测试使用
 	return func(c *gin.Context) {
 		c.Set(testUserIDKey, userID)
 		c.Next()

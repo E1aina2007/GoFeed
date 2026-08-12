@@ -76,7 +76,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		protectedUsers.DELETE("", userCtl.DeleteUser)
 	}
 
-	// Video routes: 公开读接口在 /api/video，写操作统一挂在 /api/video/auth。
+	// Video routes: 公开读接口在 /api/video，写操作统一挂在 /api/video/auth
 	videoCtl := video.NewController(
 		video.NewService(video.NewRepository(db), &userAuthorReader{repo: user.NewRepository(db)}),
 		video.NewLocalStorage(uploadDir),
@@ -99,7 +99,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 }
 
 // userAuthorReader 将 user 仓储的按 ID 查询包装成视频服务需要的作者读取接口，
-// 避免 video 包直接依赖 user 包内部仓储。
+// 避免 video 包直接依赖 user 包内部仓储
 type userAuthorReader struct {
 	repo *user.Repository
 }

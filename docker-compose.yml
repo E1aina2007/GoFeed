@@ -19,8 +19,8 @@ services:
       timeout: 5s
       retries: 20
 
-  # 版本化迁移：由 golang-migrate 执行 backend/db/migrations 下的迁移文件。
-  # 依赖数据库已手动创建；迁移服务跑完退出后，backend/worker 才会启动。
+  # 版本化迁移：由 golang-migrate 执行 backend/db/migrations 下的迁移文件
+  # 依赖数据库已手动创建；迁移服务跑完退出后，backend/worker 才会启动
   migrate:
     image: migrate/migrate:v4.19.1
     restart: "no"
@@ -42,7 +42,7 @@ services:
     restart: always
     environment:
       # 容器实际读取宿主机挂载的 configs/config.yaml（见 volumes）；
-      # 以下环境变量可覆盖 config.yaml 对应字段，均可通过根目录 .env 设置。
+      # 以下环境变量可覆盖 config.yaml 对应字段，均可通过根目录 .env 设置
       CONFIG_PATH: ${CONFIG_PATH:-/app/configs/config.yaml}
       MODE: ${MODE:-prod}
       SERVER_PORT: ${SERVER_PORT:-8080}

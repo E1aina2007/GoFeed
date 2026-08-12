@@ -1,6 +1,6 @@
 -- ================================================================
 -- Version: 000001_init
--- Description: 创建核心业务表：users（用户账号）、auth_sessions（登录会话）、videos（视频发布数据）。
+-- Description: 创建核心业务表：users（用户账号）、auth_sessions（登录会话）、videos（视频发布数据）
 -- ================================================================
 
 CREATE TABLE IF NOT EXISTS users (

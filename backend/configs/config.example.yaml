@@ -1,17 +1,17 @@
 # ===================== GoFeed 配置模板 =====================
-# 本文件是仓库中唯一入库的配置模板（configs/ 下其余 yaml 均为本地复制品，不入库）。
+# 本文件是仓库中唯一入库的配置模板（configs/ 下其余 yaml 均为本地复制品，不入库）
 #
 # 本地开发：
 #   复制为 configs/config.dev.yaml，修改 database 中标注【本地需修改】的字段；
-#   也可以不改文件，直接用 backend/.env 的 MYSQL_* 环境变量覆盖（环境变量优先）。
+#   也可以不改文件，直接用 backend/.env 的 MYSQL_* 环境变量覆盖（环境变量优先）
 #
 # Docker 部署：
 #   复制为 configs/config.yaml 并修改：database.host 改为 mysql、
 #   database.password 改为你的 MySQL 密码（与项目根目录 .env 的
-#   MYSQL_ROOT_PASSWORD 保持一致）。
+#   MYSQL_ROOT_PASSWORD 保持一致）
 #   compose 会把宿主机 backend/configs 目录挂载到容器 /app/configs，
 #   并设置 CONFIG_PATH=/app/configs/config.yaml，因此容器实际读取的是这份副本；
-#   根目录 .env 中的 MODE / SERVER_PORT / MYSQL_* / JWT_SECRET 可覆盖对应字段（环境变量优先）。
+#   根目录 .env 中的 MODE / SERVER_PORT / MYSQL_* / JWT_SECRET 可覆盖对应字段（环境变量优先）
 # ================================================================
 
 server:

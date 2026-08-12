@@ -12,7 +12,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// Controller 负责视频模块的 HTTP 接入；写操作依赖 JWT 中的用户 ID。
+// Controller 负责视频模块的 HTTP 接入；写操作依赖 JWT 中的用户 ID
 type Controller struct {
 	srv     *Service
 	storage MediaStorage

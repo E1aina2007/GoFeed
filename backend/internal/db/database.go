@@ -11,7 +11,7 @@ import (
 )
 
 func NewDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
-	// 用 go-sql-driver 的 Config 构造 DSN，自动转义密码中的特殊字符。
+	// 用 go-sql-driver 的 Config 构造 DSN，自动转义密码中的特殊字符
 	mc := sqldriver.NewConfig()
 	mc.User = cfg.User
 	mc.Passwd = cfg.Password

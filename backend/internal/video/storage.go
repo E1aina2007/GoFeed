@@ -39,14 +39,14 @@ var (
 	ErrInvalidMediaURL = errors.New("media url does not belong to the current user")
 )
 
-// SavedFile 描述一次保存到本地存储的媒体文件。
+// SavedFile 描述一次保存到本地存储的媒体文件
 type SavedFile struct {
 	PublicURL string // 对外可访问的 URL（/static/...）
 	FileName  string // 磁盘上实际存储的文件名（清洗后）
 }
 
-// MediaStorage 抽象媒体文件保存能力；handler 不直接拼接文件路径。
-// 将来替换为 S3/OSS 时，只需更换实现，不改变发布接口。
+// MediaStorage 抽象媒体文件保存能力；handler 不直接拼接文件路径
+// 将来替换为 S3/OSS 时，只需更换实现，不改变发布接口
 type MediaStorage interface {
 	Save(ctx context.Context, ownerID uint, kind MediaKind, filename string, src io.Reader) (SavedFile, error)
 }
@@ -61,8 +61,8 @@ func NewLocalStorage(root string) *LocalStorage {
 }
 
 // Save 将文件保存到 {root}/{kind}/{ownerID}/{yyyyMMdd}/{清洗后的文件名}
-// 返回可用于发布的相对 URL（/static/...）与实际存储文件名。
-// 文件名按 sanitizeFilename 的 4 步规则清洗；同名文件自动追加序号避免覆盖。
+// 返回可用于发布的相对 URL（/static/...）与实际存储文件名
+// 文件名按 sanitizeFilename 的 4 步规则清洗；同名文件自动追加序号避免覆盖
 func (s *LocalStorage) Save(ctx context.Context, ownerID uint, kind MediaKind, filename string, src io.Reader) (SavedFile, error) {
 	if ownerID == 0 {
 		return SavedFile{}, ErrInvalidMedia
@@ -121,7 +121,7 @@ func (s *LocalStorage) Save(ctx context.Context, ownerID uint, kind MediaKind, f
 }
 
 // OriginalName 返回用户指定的原始文件名（仅去掉路径部分，不做字符清洗），
-// 并按数据库列上限截断长度。
+// 并按数据库列上限截断长度
 func OriginalName(filename string) string {
 	name := strings.ReplaceAll(filename, "\\", "/")
 	name = filepath.Base(name)
@@ -137,9 +137,9 @@ func OriginalName(filename string) string {
 //  2. 暴力清洗主名：仅保留字母、数字、中文、下划线、连字符，其余统一替换为下划线，
 //     并去掉首尾的空格和点号；
 //  3. 主名为空时兜底为 file；
-//  4. 拼接为主名.扩展名（扩展名为空则无点）。
+//  4. 拼接为主名.扩展名（扩展名为空则无点）
 //
-// 最后额外限制总字节数（保留扩展名截断主干），防止超出文件系统限制。
+// 最后额外限制总字节数（保留扩展名截断主干），防止超出文件系统限制
 func sanitizeFilename(filename string) string {
 	stem, ext := splitNameExt(filename)
 	stem = cleanStem(stem)
@@ -168,8 +168,8 @@ func sanitizeFilename(filename string) string {
 	return name
 }
 
-// splitNameExt 分离主名与扩展名：最后一个点之前为主名，之后为扩展名（小写）。
-// 同时去掉路径部分（含反斜杠），避免路径穿越。
+// splitNameExt 分离主名与扩展名：最后一个点之前为主名，之后为扩展名（小写）
+// 同时去掉路径部分（含反斜杠），避免路径穿越
 func splitNameExt(filename string) (stem, ext string) {
 	name := strings.ReplaceAll(filename, "\\", "/")
 	name = filepath.Base(name)
@@ -181,7 +181,7 @@ func splitNameExt(filename string) (stem, ext string) {
 }
 
 // cleanStem 暴力清洗主名：去掉首尾空格与点号，仅保留字母、数字、中文、下划线、连字符，
-// 其余字符统一替换为下划线。
+// 其余字符统一替换为下划线
 func cleanStem(stem string) string {
 	stem = strings.TrimSpace(stem)
 	stem = strings.Trim(stem, ".")
@@ -209,7 +209,7 @@ func isAllowedStemRune(r rune) bool {
 	return false
 }
 
-// truncateBytes 按字节截断字符串，并回退到最近的 UTF-8 字符边界。
+// truncateBytes 按字节截断字符串，并回退到最近的 UTF-8 字符边界
 func truncateBytes(s string, max int) string {
 	if len(s) <= max {
 		return s
@@ -274,7 +274,7 @@ func validateMedia(kind MediaKind, filename string, head []byte) bool {
 }
 
 // isOwnedMediaURL 校验发布时提交的 URL 属于当前用户自己的上传目录，
-// 不接受任意外链或路径穿越；支持相对路径与完整 URL 两种形式。
+// 不接受任意外链或路径穿越；支持相对路径与完整 URL 两种形式
 func isOwnedMediaURL(raw string, kind MediaKind, ownerID uint) bool {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || ownerID == 0 {
@@ -298,7 +298,7 @@ func isOwnedMediaURL(raw string, kind MediaKind, ownerID uint) bool {
 }
 
 // mediaURLPath 提取媒体 URL 的 path 部分（如 /static/videos/1/20260810/a.mp4），
-// 保证数据库只保存不依赖协议与主机的相对路径。
+// 保证数据库只保存不依赖协议与主机的相对路径
 func mediaURLPath(raw string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {

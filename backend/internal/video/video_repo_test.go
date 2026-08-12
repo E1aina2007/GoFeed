@@ -289,7 +289,7 @@ func TestRepositoryDeleteSoftDeletes(t *testing.T) {
 		t.Fatalf("软删后公开读应 not found, err=%v", err)
 	}
 
-	// 物理行保留，deleted_at 已写入，验证的是软删而非硬删
+	// 物理行保留，deleted_at 已写入，验证软删除
 	var count int64
 	if err := db.Raw("SELECT COUNT(*) FROM videos WHERE id = ?", v.ID).Scan(&count).Error; err != nil {
 		t.Fatalf("原生统计失败: %v", err)
