@@ -20,7 +20,7 @@ services:
       retries: 20
 
   # 版本化迁移：由 golang-migrate 执行 backend/db/migrations 下的迁移文件
-  # 依赖数据库已手动创建；迁移服务跑完退出后，backend/worker 才会启动
+  # 依赖数据库已手动创建；迁移服务跑完退出后，backend/worker/sweeper 才会启动
   migrate:
     image: migrate/migrate:v4.19.1
     restart: "no"
@@ -77,6 +77,28 @@ services:
       MYSQL_USER: ${MYSQL_USER:-root}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-feedsystem}
+    volumes:
+      - ./backend/configs:/app/configs:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  sweeper:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: sweeper
+    restart: always
+    environment:
+      CONFIG_PATH: ${CONFIG_PATH:-/app/configs/config.yaml}
+      MODE: ${MODE:-prod}
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_USER: ${MYSQL_USER:-root}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-feedsystem}
+      RETENTION_USER_DELETED_DAYS: ${RETENTION_USER_DELETED_DAYS:-7}
+      SWEEPER_INTERVAL_MINUTES: ${SWEEPER_INTERVAL_MINUTES:-60}
     volumes:
       - ./backend/configs:/app/configs:ro
     depends_on:

@@ -9,8 +9,10 @@ import (
 )
 
 type Config struct {
-	Server ServerConfig   `yaml:"server"`
-	DB     DatabaseConfig `yaml:"database"`
+	Server    ServerConfig    `yaml:"server"`
+	DB        DatabaseConfig  `yaml:"database"`
+	Retention RetentionConfig `yaml:"retention"`
+	Sweeper   SweeperConfig   `yaml:"sweeper"`
 
 	Dev bool
 }
@@ -25,6 +27,16 @@ type DatabaseConfig struct {
 	User     string `yaml:"user"`
 	Password string `yaml:"password"`
 	DBName   string `yaml:"dbname"`
+}
+
+type RetentionConfig struct {
+	// UserDeletedDays 注销账号从软删除到硬删除的保留天数
+	UserDeletedDays int `yaml:"user_deleted_days"`
+}
+
+type SweeperConfig struct {
+	// IntervalMinutes 注销用户清扫任务执行间隔（分钟）
+	IntervalMinutes int `yaml:"interval_minutes"`
 }
 
 func Load(filename string) (Config, error) {
@@ -82,5 +94,16 @@ func OverrideWithEnv(cfg *Config) {
 	}
 	if v := os.Getenv("MYSQL_DATABASE"); v != "" {
 		cfg.DB.DBName = v
+	}
+	// retention / sweeper
+	if v := os.Getenv("RETENTION_USER_DELETED_DAYS"); v != "" {
+		if days, err := strconv.Atoi(v); err == nil {
+			cfg.Retention.UserDeletedDays = days
+		}
+	}
+	if v := os.Getenv("SWEEPER_INTERVAL_MINUTES"); v != "" {
+		if minutes, err := strconv.Atoi(v); err == nil {
+			cfg.Sweeper.IntervalMinutes = minutes
+		}
 	}
 }

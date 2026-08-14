@@ -1,6 +1,5 @@
 # ===================== GoFeed 配置模板 =====================
-# 本文件是仓库中唯一入库的配置模板（configs/ 下其余 yaml 均为本地复制品，不入库）
-#
+# 本文件是仓库的配置模板
 # 本地开发：
 #   复制为 configs/config.dev.yaml，修改 database 中标注【本地需修改】的字段；
 #   也可以不改文件，直接用 backend/.env 的 MYSQL_* 环境变量覆盖（环境变量优先）
@@ -23,6 +22,12 @@ database:
   user: root          # 本地开发：本机 MySQL 账号；docker：默认 root
   password: 123456    # 【本地需修改】你的 MySQL 密码；docker：与 .env 的 MYSQL_ROOT_PASSWORD 保持一致
   dbname: feedsystem  # 本地开发：需先手动建库；docker：与 .env 的 MYSQL_DATABASE 保持一致
+
+retention:
+  user_deleted_days: 7    # 注销账号软删除后的保留天数；可用 RETENTION_USER_DELETED_DAYS 覆盖
+
+sweeper:
+  interval_minutes: 60    # 注销用户清扫间隔（分钟）；可用 SWEEPER_INTERVAL_MINUTES 覆盖
 
 redis:
   host: localhost
