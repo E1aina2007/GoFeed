@@ -18,7 +18,7 @@ docker compose exec mysql mysql -uroot -p -e "CREATE DATABASE IF NOT EXISTS feed
 docker compose up -d
 ```
 
-启动顺序：mysql 健康检查通过 → `migrate`（golang-migrate）应用 `backend/db/migrations` 下的迁移建表 → backend/worker 启动。应用本身不负责建库建表。
+启动顺序：mysql 健康检查通过 → `migrate`（golang-migrate）应用 `backend/db/migrations` 下的迁移建表 → backend/worker/sweeper 启动。应用本身不负责建库建表。
 
 > 需要 Docker Compose v2.17+（依赖 `service_completed_successfully` 条件）。
 
@@ -37,17 +37,16 @@ docker compose run --rm migrate
 # 或本地安装 golang-migrate CLI 后：
 # migrate -path backend/db/migrations -database "mysql://root:<密码>@tcp(localhost:3306)/feedsystem?multiStatements=true" up
 
-go run ./cmd
+go run ./cmd            # API
+go run ./cmd/sweeper    # 注销用户定时清扫；worker 暂为消息队列占位，无需手动启动
 ```
 
 ## 前端开发（pnpm）
 
-前置：Node.js 22.18+（或 24.12+），并安装 pnpm：
+前置：npm，并安装 pnpm：
 
 ```bash
 npm install -g pnpm
-# 或启用 Node 自带的 corepack：
-# corepack enable && corepack prepare pnpm@latest --activate
 ```
 
 进入 `frontend` 目录：
@@ -81,6 +80,8 @@ pnpm preview        # 本地预览构建产物
 | MySQL 密码 | `MYSQL_ROOT_PASSWORD` | 覆盖 `database.password`，优先于 `MYSQL_PASSWORD`；Docker 下默认读取 `config.yaml`，也可用根目录 `.env` 覆盖（两边保持一致） |
 | MySQL 库名 | `MYSQL_DATABASE` | 本地默认 `feedsystem`；Docker 下默认读取 `config.yaml`，也可用根目录 `.env` 覆盖（两边保持一致） |
 | JWT 密钥 | `JWT_SECRET` | 本地在 `backend/.env`、Docker 在根目录 `.env` 设置；不设置时每次启动随机生成，重启后所有 token 失效 |
+| 注销保留天数 | `RETENTION_USER_DELETED_DAYS` | 默认 `7`；注销账号软删除后经过该天数由 sweeper 硬删除 |
+| 清扫间隔 | `SWEEPER_INTERVAL_MINUTES` | 默认 `60`；sweeper 执行注销用户清扫的间隔分钟数 |
 
 ### 本地开发
 
@@ -95,7 +96,7 @@ Docker 同样采用复制修改的方式：
 1. 复制 `backend/configs/config.example.yaml` 为 `backend/configs/config.yaml`（已被 git 忽略，不会入库）。
 2. 修改 `database.host` 为 `mysql`，`database.password` 为你的 MySQL 密码（与根目录 `.env` 的 `MYSQL_ROOT_PASSWORD` 一致）。
 3. compose 将宿主机 `backend/configs` 挂载到容器 `/app/configs`，并设置 `CONFIG_PATH=/app/configs/config.yaml`，容器实际读取的就是这份 `config.yaml`。
-4. 在项目根目录创建 `.env`（变量参考 `backend/.env.example`，文件本身不入库），compose 会把 `MODE`、`SERVER_PORT`、`JWT_SECRET` 和 `MYSQL_*` 全部注入 backend / worker 容器，可覆盖 `config.yaml` 中的对应字段（环境变量优先）。示例：
+4. 在项目根目录创建 `.env`（变量参考 `backend/.env.example`，文件本身不入库），compose 会把 `MODE`、`SERVER_PORT`、`JWT_SECRET`、`MYSQL_*` 和保留期/清扫参数全部注入 backend / worker / sweeper 容器，可覆盖 `config.yaml` 中的对应字段（环境变量优先）。示例：
 
 ```env
 MODE=prod
@@ -106,13 +107,15 @@ MYSQL_PORT=3306
 MYSQL_USER=root
 MYSQL_ROOT_PASSWORD=your-mysql-password
 MYSQL_DATABASE=feedsystem
+RETENTION_USER_DELETED_DAYS=7
+SWEEPER_INTERVAL_MINUTES=60
 ```
 
 如需调整 HTTP 端口，修改 `server.port`，并同步 `docker-compose.yml` 中 `8080:8080` 的端口映射。
 
 ## 项目进度
 
-当前主线：视频内容模块。后端已完成视频/封面上传、发布、公开列表与详情、我的视频、作者删除，并接入会话鉴权；存储侧已落地物理文件名 4 步清洗、实际存储名与用户指定名分离、DB 只存相对路径（迁移 `000002_video_file_names`）。验收测试已补齐两层：仓储集成测试与 httptest 端到端（均跑真实 MySQL），并顺带修复了会话模型与 `auth_sessions` 表的映射 bug、新增模型与迁移的 schema 对齐防护。CI 已为后端测试引入 MySQL 8.0 service；前端仍是脚手架，尚无业务页面。
+当前主线：视频内容模块。后端已完成视频/封面上传、发布、公开列表与详情、我的视频、作者删除，并接入会话鉴权；存储侧已落地物理文件名 4 步清洗、实际存储名与用户指定名分离、DB 只存相对路径（迁移 `000002_video_file_names`）。验收测试已补齐两层：仓储集成测试与 httptest 端到端（均跑真实 MySQL），并顺带修复了会话模型与 `auth_sessions` 表的映射 bug、新增模型与迁移的 schema 对齐防护。账号注销采用软删除 + 7 天宽限期，由独立 sweeper 进程定期硬删除。CI 已为后端测试引入 MySQL 8.0 service；前端仍是脚手架，尚无业务页面。
 
 下一步优先级：
 
