@@ -226,7 +226,8 @@ func (s *Service) buildListResponse(ctx context.Context, videos []Video, limit i
 			if s.authorReader == nil {
 				return ListResponse{}, ErrAuthorReaderUnavailable
 			}
-			author, err := s.authorReader.GetPublicAuthor(ctx, videos[i].AuthorID)
+			var err error
+			author, err = s.authorReader.GetPublicAuthor(ctx, videos[i].AuthorID)
 			if err != nil {
 				return ListResponse{}, err
 			}

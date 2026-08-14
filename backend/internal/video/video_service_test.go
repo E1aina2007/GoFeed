@@ -149,6 +149,25 @@ func TestServiceListPublishedUsesExtraRecordForCursor(t *testing.T) {
 	}
 }
 
+func TestServiceListPublishedPopulatesAuthor(t *testing.T) {
+	// 1 准备一条视频与对应作者资料
+	// 2 查询列表
+	// 3 验证作者资料透出到列表项（防止局部变量遮蔽回归）
+	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
+	service := NewService(
+		&fakeVideoReader{listVideos: []Video{{ID: 1, AuthorID: 2, PublishedAt: publishedAt}}},
+		&fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}},
+	)
+
+	response, err := service.ListPublished(context.Background(), 0, "", 10)
+	if err != nil {
+		t.Fatalf("查询视频列表失败 error=%v", err)
+	}
+	if len(response.Items) != 1 || response.Items[0].Author.ID != 2 || response.Items[0].Author.Username != "author" {
+		t.Fatalf("列表项应透出作者资料 got=%#v", response.Items)
+	}
+}
+
 func TestServiceListPublishedRejectsInvalidInput(t *testing.T) {
 	// 1 传入无法解码的游标
 	// 2 传入超过最大值的 limit
