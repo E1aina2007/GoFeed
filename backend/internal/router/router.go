@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 
@@ -107,6 +108,10 @@ type userAuthorReader struct {
 func (r *userAuthorReader) GetPublicAuthor(ctx context.Context, id uint) (video.Author, error) {
 	u, err := r.repo.GetByID(ctx, id)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 账号已注销或不存在时返回占位作者，保证历史视频仍可正常展示
+			return video.Author{ID: id, Username: "已注销用户"}, nil
+		}
 		return video.Author{}, err
 	}
 	return video.Author{ID: u.ID, Username: u.Username, AvatarURL: u.AvatarURL}, nil
