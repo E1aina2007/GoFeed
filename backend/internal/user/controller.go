@@ -174,10 +174,6 @@ func (ctl *Controller) UpdatePassword(c *gin.Context) {
 		handleUserError(c, err)
 		return
 	}
-	if err := ctl.Sessions.RevokeAllForUser(c.Request.Context(), userID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "password changed but sessions could not be revoked"})
-		return
-	}
 	c.JSON(http.StatusOK, gin.H{"message": "password updated; sign in again"})
 }
 
@@ -209,10 +205,6 @@ func (ctl *Controller) DeleteUser(c *gin.Context) {
 	}
 	if err := ctl.Srv.Delete(c.Request.Context(), userID); err != nil {
 		handleUserError(c, err)
-		return
-	}
-	if err := ctl.Sessions.RevokeAllForUser(c.Request.Context(), userID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "user deleted but sessions could not be revoked"})
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -260,8 +252,6 @@ func handleUserError(c *gin.Context, err error) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	case errors.Is(err, ErrUsernameTaken):
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-	case errors.Is(err, ErrUserDeleted):
-		c.JSON(http.StatusGone, gin.H{"error": err.Error()})
 	case errors.Is(err, ErrWrongPassword):
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 	case errors.Is(err, gorm.ErrRecordNotFound):

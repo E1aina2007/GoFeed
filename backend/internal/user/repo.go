@@ -17,11 +17,6 @@ func NewRepository(db *gorm.DB) *Repository {
 	return &Repository{db: db}
 }
 
-// notDeleted adds a soft-delete filter to queries.
-func (r *Repository) notDeleted(db *gorm.DB) *gorm.DB {
-	return db.Where("deleted_at IS NULL")
-}
-
 func (r *Repository) Create(ctx context.Context, user *User) error {
 	if err := r.db.WithContext(ctx).Create(user).Error; err != nil {
 		if isDuplicateKey(err) {
@@ -33,7 +28,7 @@ func (r *Repository) Create(ctx context.Context, user *User) error {
 }
 
 func (r *Repository) UpdateName(ctx context.Context, id uint, newName string) error {
-	result := r.notDeleted(r.db.WithContext(ctx).Model(&User{})).
+	result := r.db.WithContext(ctx).Model(&User{}).
 		Where("id = ?", id).
 		Update("username", newName)
 	if result.Error != nil {
@@ -53,14 +48,14 @@ func isDuplicateKey(err error) bool {
 	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
 }
 
-func (r *Repository) UpdatePassword(ctx context.Context, id uint, newPassword string) error {
-	result := r.notDeleted(r.db.WithContext(ctx).Model(&User{})).
-		Where("id = ?", id).
+func (r *Repository) UpdatePassword(ctx context.Context, id uint, expectedHash, newPassword string) error {
+	result := r.db.WithContext(ctx).Model(&User{}).
+		Where("id = ? AND password = ?", id, expectedHash).
 		Update("password", newPassword)
 	if result.Error != nil {
 		return result.Error
 	}
-	if result.RowsAffected == 0 {
+	if result.RowsAffected != 1 {
 		return gorm.ErrRecordNotFound
 	}
 	return nil
@@ -68,7 +63,7 @@ func (r *Repository) UpdatePassword(ctx context.Context, id uint, newPassword st
 
 func (r *Repository) GetByID(ctx context.Context, id uint) (*User, error) {
 	var user User
-	if err := r.notDeleted(r.db.WithContext(ctx)).First(&user, id).Error; err != nil {
+	if err := r.db.WithContext(ctx).First(&user, id).Error; err != nil {
 		return nil, err
 	}
 	return &user, nil
@@ -76,7 +71,7 @@ func (r *Repository) GetByID(ctx context.Context, id uint) (*User, error) {
 
 func (r *Repository) GetByUsername(ctx context.Context, username string) (*User, error) {
 	var account User
-	if err := r.notDeleted(r.db.WithContext(ctx)).
+	if err := r.db.WithContext(ctx).
 		Where("username = ?", username).
 		First(&account).Error; err != nil {
 		return nil, err
@@ -85,7 +80,7 @@ func (r *Repository) GetByUsername(ctx context.Context, username string) (*User,
 }
 
 func (r *Repository) UpdateAvatar(ctx context.Context, accountID uint, avatarURL string) error {
-	result := r.notDeleted(r.db.WithContext(ctx).Model(&User{})).
+	result := r.db.WithContext(ctx).Model(&User{}).
 		Where("id = ?", accountID).
 		Update("avatar_url", avatarURL)
 	if result.Error != nil {
@@ -98,7 +93,7 @@ func (r *Repository) UpdateAvatar(ctx context.Context, accountID uint, avatarURL
 }
 
 func (r *Repository) UpdateFields(ctx context.Context, id uint, updates map[string]any) error {
-	result := r.notDeleted(r.db.WithContext(ctx).Model(&User{})).
+	result := r.db.WithContext(ctx).Model(&User{}).
 		Where("id = ?", id).
 		Updates(updates)
 	if result.Error != nil {
@@ -112,21 +107,10 @@ func (r *Repository) UpdateFields(ctx context.Context, id uint, updates map[stri
 
 func (r *Repository) GetAll(ctx context.Context) ([]*User, error) {
 	var users []*User
-	if err := r.notDeleted(r.db.WithContext(ctx)).Find(&users).Error; err != nil {
+	if err := r.db.WithContext(ctx).Find(&users).Error; err != nil {
 		return nil, err
 	}
 	return users, nil
-}
-
-// CheckDeleted checks whether a user exists (including soft-deleted ones).
-// It returns (exists, isDeleted, error).
-func (r *Repository) CheckDeleted(ctx context.Context, id uint) (bool, bool, error) {
-	var user User
-	if err := r.db.Unscoped().WithContext(ctx).Select("id", "deleted_at").First(&user, id).Error; err != nil {
-		return false, false, err
-	}
-	isDeleted := user.DeletedAt.Valid && !user.DeletedAt.Time.IsZero()
-	return true, isDeleted, nil
 }
 
 // SoftDelete

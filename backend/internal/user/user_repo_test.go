@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -124,5 +125,54 @@ func TestRepositoryPurgeExpiredIdempotent(t *testing.T) {
 	}
 	if purged != 0 {
 		t.Fatalf("重复清扫应无用户可删 got=%d", purged)
+	}
+}
+
+func TestRepositorySoftDeletedUserBehavesAsNotFound(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	id := seedUser(t, db, "soft-deleted")
+	setDeletedAt(t, db, id, time.Now())
+
+	if _, err := repo.GetByID(ctx, id); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("软删用户查询应返回 ErrRecordNotFound，got=%v", err)
+	}
+	if err := repo.UpdateName(ctx, id, "renamed"); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("软删用户改名应返回 ErrRecordNotFound，got=%v", err)
+	}
+}
+
+func TestRepositoryUpdateNameSameValueIsNoop(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	id := seedUser(t, db, "same-value")
+	if err := repo.UpdateName(ctx, id, "same-value"); err != nil {
+		t.Fatalf("同值更新应视为成功，got=%v", err)
+	}
+}
+
+func TestRepositoryUpdatePasswordRejectsStaleHash(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	id := seedUser(t, db, "stale-password")
+	if err := repo.UpdatePassword(ctx, id, "test-hash", "new-hash"); err != nil {
+		t.Fatalf("首次更新密码: %v", err)
+	}
+	if err := repo.UpdatePassword(ctx, id, "test-hash", "stale-hash"); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("过期密码哈希不应覆盖当前密码，got=%v", err)
+	}
+
+	user, err := repo.GetByID(ctx, id)
+	if err != nil {
+		t.Fatalf("查询更新后的用户: %v", err)
+	}
+	if user.Password != "new-hash" {
+		t.Fatalf("密码被过期哈希覆盖，got=%q", user.Password)
 	}
 }

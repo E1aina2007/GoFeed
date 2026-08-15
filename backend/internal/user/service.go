@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 
+	"gofeed/internal/auth"
+
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -19,7 +21,6 @@ var (
 	ErrWrongPassword       = errors.New("wrong password")
 	ErrInvalidCredentials  = errors.New("invalid username or password")
 	ErrInvalidInput        = errors.New("invalid user input")
-	ErrUserDeleted         = errors.New("user has been deleted")
 )
 
 func NewService(repo *Repository) *Service {
@@ -48,10 +49,6 @@ func (s *Service) UpdateName(ctx context.Context, id uint, newName string) error
 		return ErrInvalidInput
 	}
 
-	if err := s.checkNotDeleted(ctx, id); err != nil {
-		return err
-	}
-
 	return s.Repo.UpdateName(ctx, id, newName)
 }
 
@@ -59,26 +56,34 @@ func (s *Service) UpdatePassword(ctx context.Context, id uint, old, new string) 
 	if len(new) < 8 || len(new) > 72 {
 		return ErrInvalidInput
 	}
-	user, err := s.GetByID(ctx, id)
+	user, err := s.Repo.GetByID(ctx, id)
 	if err != nil {
 		return err
 	}
-
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(old)); err != nil {
 		return ErrWrongPassword
 	}
-
 	hash, err := bcrypt.GenerateFromPassword([]byte(new), bcrypt.DefaultCost)
 	if err != nil {
 		return err
 	}
-	return s.Repo.UpdatePassword(ctx, id, string(hash))
+
+	return s.Repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		users := NewRepository(tx)
+		if err := users.UpdatePassword(ctx, id, user.Password, string(hash)); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrWrongPassword
+			}
+			return err
+		}
+		return auth.NewSessionRepository(tx).RevokeAllForUser(ctx, id)
+	})
 }
 
 func (s *Service) Authenticate(ctx context.Context, username, password string) (*User, error) {
 	user, err := s.GetByUsername(ctx, strings.TrimSpace(username))
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, ErrUserDeleted) {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrInvalidCredentials
 		}
 		return nil, err
@@ -90,16 +95,10 @@ func (s *Service) Authenticate(ctx context.Context, username, password string) (
 }
 
 func (s *Service) UpdateAvatar(ctx context.Context, id uint, url string) error {
-	if err := s.checkNotDeleted(ctx, id); err != nil {
-		return err
-	}
 	return s.Repo.UpdateAvatar(ctx, id, url)
 }
 
 func (s *Service) UpdateProfile(ctx context.Context, id uint, req *UpdateProfileRequest) error {
-	if err := s.checkNotDeleted(ctx, id); err != nil {
-		return err
-	}
 	updates := map[string]any{}
 	if req.Bio != "" {
 		updates["bio"] = strings.TrimSpace(req.Bio)
@@ -114,58 +113,24 @@ func (s *Service) UpdateProfile(ctx context.Context, id uint, req *UpdateProfile
 }
 
 func (s *Service) GetByID(ctx context.Context, id uint) (*User, error) {
-	user, err := s.Repo.GetByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := s.checkNotDeleted(ctx, user.ID); err != nil {
-		return nil, err
-	}
-
-	return user, nil
+	return s.Repo.GetByID(ctx, id)
 }
 
 func (s *Service) GetByUsername(ctx context.Context, username string) (*User, error) {
-	user, err := s.Repo.GetByUsername(ctx, username)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := s.checkNotDeleted(ctx, user.ID); err != nil {
-		return nil, err
-	}
-
-	return user, nil
+	return s.Repo.GetByUsername(ctx, username)
 }
 
-// DeleteUser soft-deletes a user by id.
+// Delete soft-deletes a user and revokes all of its sessions atomically.
 func (s *Service) Delete(ctx context.Context, id uint) error {
-	if err := s.checkNotDeleted(ctx, id); err != nil {
-		return err
-	}
-
-	return s.Repo.Delete(ctx, id)
+	return s.Repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		users := NewRepository(tx)
+		if err := users.Delete(ctx, id); err != nil {
+			return err
+		}
+		return auth.NewSessionRepository(tx).RevokeAllForUser(ctx, id)
+	})
 }
 
 func (s *Service) GetAll(ctx context.Context) ([]*User, error) {
 	return s.Repo.GetAll(ctx)
-}
-
-// checkNotDeleted verifies that a user exists and is not soft-deleted.
-func (s *Service) checkNotDeleted(ctx context.Context, id uint) error {
-	exists, isDeleted, err := s.Repo.CheckDeleted(ctx, id)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return gorm.ErrRecordNotFound
-		}
-		return err
-	}
-	if !exists {
-		return gorm.ErrRecordNotFound
-	}
-	if isDeleted {
-		return ErrUserDeleted
-	}
-	return nil
 }
