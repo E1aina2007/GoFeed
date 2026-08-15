@@ -175,7 +175,8 @@ func openMySQL(cfg config.DatabaseConfig, dbname string, multiStatements bool) (
 	mc.DBName = dbname
 	mc.ParseTime = true
 	mc.Loc = time.Local
-	mc.Params = map[string]string{"charset": "utf8mb4"}
+	// 与生产连接参数保持一致：clientFoundRows 影响 UPDATE 的 RowsAffected 语义。
+	mc.Params = map[string]string{"charset": "utf8mb4", "clientFoundRows": "true"}
 	if multiStatements {
 		mc.Params["multiStatements"] = "true"
 	}
