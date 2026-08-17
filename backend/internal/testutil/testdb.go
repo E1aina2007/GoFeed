@@ -1,18 +1,5 @@
-// Package testutil 提供依赖真实 MySQL 的集成测试基础设施
-//
-// 在测试包中加入：
-//
-//	func TestMain(m *testing.M) {
-//		os.Exit(testutil.Main(m))
-//	}
-//
-//	func TestXxx(t *testing.T) {
-//		db := testutil.DB(t)
-//		...
-//	}
-//
-// 未设置 MYSQL_DATABASE 时每个集成测试自动 skip，单元测试不受影响
-// 设置 MYSQL_* 后，每个测试进程创建独立数据库并执行迁移，测试结束时删除
+// 测试工具包提供真实数据库集成测试的初始化、隔离和清理能力
+// 未配置数据库时，预期集成测试自行跳过而单元测试继续执行
 package testutil
 
 import (
@@ -33,20 +20,23 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+// 测试目标：保存当前测试进程的数据库连接和临时库名称
+// 预期效果：测试入口初始化该资源并在结束后销毁
 var (
 	testDB     *gorm.DB
 	testDBName string
 )
 
-// Main 在测试包的 TestMain 中调用：准备独立测试库、执行迁移，结束后清理
+// 测试目标：初始化独立测试库并执行迁移
+// 预期效果：测试结束后清理对应资源
 func Main(m *testing.M) int {
 	if os.Getenv("MYSQL_DATABASE") == "" {
-		// 不创建数据库，让每个集成测试自行 skip，保留可见的测试结果
+		// 未配置数据库时不创建测试库，预期集成测试自行跳过并保留可见结果
 		return m.Run()
 	}
 
 	if os.Getenv("JWT_SECRET") == "" {
-		// auth.Secret 有进程级缓存，必须在任何测试运行前固定密钥
+		// 认证密钥有进程级缓存，预期在任何测试运行前固定该密钥
 		os.Setenv("JWT_SECRET", "integration-test-secret-not-for-production")
 	}
 
@@ -68,8 +58,8 @@ func Main(m *testing.M) int {
 	return code
 }
 
-// DB 返回当前测试进程共享的数据库连接，并在每次调用前清空业务表
-// 保证同包内用例互不污染
+// 测试目标：返回当前测试进程共享的数据库连接并在每次调用前清空业务表
+// 预期效果：同包内测试用例互不污染
 func DB(t *testing.T) *gorm.DB {
 	t.Helper()
 	if testDB == nil {
@@ -79,10 +69,11 @@ func DB(t *testing.T) *gorm.DB {
 	return testDB
 }
 
-// CleanDB 清空集成测试涉及的业务表并重置自增 ID
+// 测试目标：清空集成测试涉及的业务表并重置自增标识
+// 预期效果：为每个用例提供干净数据
 func CleanDB(t *testing.T, db *gorm.DB) {
 	t.Helper()
-	// 表之间没有外键，直接逐表 TRUNCATE；自增 ID 一并重置，便于断言
+	// 表之间没有外键，预期逐表清空后同时重置自增标识以便断言
 	for _, table := range []string{"videos", "auth_sessions", "users"} {
 		if err := db.Exec("TRUNCATE TABLE " + table).Error; err != nil {
 			t.Fatalf("清空表 %s 失败: %v", table, err)
@@ -90,7 +81,8 @@ func CleanDB(t *testing.T, db *gorm.DB) {
 	}
 }
 
-// setupTestDatabase 以 MYSQL_* 环境变量为基准创建进程级独立测试库并应用迁移
+// 测试目标：根据数据库环境变量创建进程级独立测试库并应用迁移
+// 预期效果：返回可用的数据库连接
 func setupTestDatabase() (*gorm.DB, error) {
 	cfg := envConfig()
 	if cfg.Host == "" {
@@ -126,7 +118,8 @@ func setupTestDatabase() (*gorm.DB, error) {
 	return db, nil
 }
 
-// teardownTestDatabase 关闭连接后删除当前测试进程创建的独立数据库
+// 测试目标：关闭连接后删除当前测试进程创建的独立数据库
+// 预期效果：释放全部测试资源
 func teardownTestDatabase(db *gorm.DB) error {
 	name := testDBName
 	if err := closeDB(db); err != nil {
@@ -152,7 +145,8 @@ func teardownTestDatabase(db *gorm.DB) error {
 	return nil
 }
 
-// envConfig 复用应用的环境变量读取逻辑，保证测试与生产连接参数一致
+// 测试目标：复用应用的环境变量读取逻辑
+// 预期效果：测试与生产使用一致的连接参数
 func envConfig() config.DatabaseConfig {
 	cfg := config.Config{}
 	config.OverrideWithEnv(&cfg)
@@ -165,7 +159,8 @@ func envConfig() config.DatabaseConfig {
 	return cfg.DB
 }
 
-// openMySQL 建立到指定库的 GORM 连接；dbname 为空时只连接服务器不选库
+// 测试目标：建立到指定数据库的对象关系映射连接
+// 预期效果：空库名时仅连接数据库服务器
 func openMySQL(cfg config.DatabaseConfig, dbname string, multiStatements bool) (*gorm.DB, error) {
 	mc := sqldriver.NewConfig()
 	mc.User = cfg.User
@@ -175,7 +170,7 @@ func openMySQL(cfg config.DatabaseConfig, dbname string, multiStatements bool) (
 	mc.DBName = dbname
 	mc.ParseTime = true
 	mc.Loc = time.Local
-	// 与生产连接参数保持一致：clientFoundRows 影响 UPDATE 的 RowsAffected 语义。
+	// 与生产连接参数保持一致，预期更新行数配置沿用生产语义
 	mc.Params = map[string]string{"charset": "utf8mb4", "clientFoundRows": "true"}
 	if multiStatements {
 		mc.Params["multiStatements"] = "true"
@@ -186,8 +181,8 @@ func openMySQL(cfg config.DatabaseConfig, dbname string, multiStatements bool) (
 	})
 }
 
-// applyMigrations 按文件名顺序执行 db/migrations 下的全部 .up.sql
-// 使用真实手写 DDL 而非 AutoMigrate，确保测试能捕获模型与迁移不一致
+// 测试目标：按文件名顺序执行迁移目录中的全部向上迁移脚本
+// 预期效果：得到真实业务表结构并捕获模型与迁移之间的不一致
 func applyMigrations(db *gorm.DB) error {
 	dir := migrationsDir()
 	entries, err := os.ReadDir(dir)
@@ -215,7 +210,8 @@ func applyMigrations(db *gorm.DB) error {
 	return nil
 }
 
-// migrationsDir 以 testutil 源文件位置定位迁移目录，不依赖测试进程工作目录
+// 测试目标：根据测试工具源文件位置定位迁移目录
+// 预期效果：不依赖测试进程工作目录
 func migrationsDir() string {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
@@ -224,6 +220,8 @@ func migrationsDir() string {
 	return filepath.Join(filepath.Dir(file), "..", "..", "db", "migrations")
 }
 
+// 测试目标：关闭对象关系映射连接
+// 预期效果：释放测试数据库的底层连接资源
 func closeDB(db *gorm.DB) error {
 	sqlDB, err := db.DB()
 	if err != nil {

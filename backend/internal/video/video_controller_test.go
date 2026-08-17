@@ -14,11 +14,13 @@ import (
 	"gorm.io/gorm"
 )
 
+// 测试目标：指定模拟认证中间件写入用户标识的上下文键
+// 预期效果：写接口可据此识别当前登录用户
 const testUserIDKey = "gofeed.jwt.user_id"
 
+// 测试目标：构造使用模拟依赖的测试控制器
+// 预期效果：接口测试不访问真实数据库或上传目录
 func newTestVideoController(t *testing.T) (*Controller, *fakeVideoReader, *fakeAuthorReader) {
-	// 用假仓储、假作者读取器和临时上传目录构造 Controller，
-	// 让 handler 测试不依赖真实数据库与真实上传目录
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	repo := &fakeVideoReader{}
@@ -27,17 +29,20 @@ func newTestVideoController(t *testing.T) (*Controller, *fakeVideoReader, *fakeA
 	return ctl, repo, authors
 }
 
+// 测试目标：生成注入当前用户标识的测试中间件
+// 预期效果：请求可模拟已登录用户的认证上下文
 func withUserID(userID uint) gin.HandlerFunc {
-	// 模拟 JWT 中间件已把当前用户 ID 写入上下文，供写接口测试使用
 	return func(c *gin.Context) {
 		c.Set(testUserIDKey, userID)
 		c.Next()
 	}
 }
 
+// 测试目标：验证视频详情接口返回视频和作者资料
+// 预期效果：合法视频标识返回成功状态及完整响应字段
 func TestHandlerGetVideo(t *testing.T) {
 	// 1 准备一条已发布视频与作者资料
-	// 2 请求 GET /api/video/:id
+	// 2 请求视频详情接口
 	// 3 验证 200 且响应中的视频字段与作者资料正确
 	ctl, repo, authors := newTestVideoController(t)
 	repo.getVideo = &Video{ID: 1, AuthorID: 2, Title: "t", PublishedAt: time.Now()}
@@ -62,8 +67,10 @@ func TestHandlerGetVideo(t *testing.T) {
 	}
 }
 
+// 测试目标：验证视频详情接口转换记录不存在错误
+// 预期效果：仓储未找到视频时接口返回未找到状态
 func TestHandlerGetVideoNotFound(t *testing.T) {
-	// 仓储返回记录不存在时，controller 应把错误映射为 404
+	// 仓储返回记录不存在时，控制器应映射为未找到状态
 	ctl, repo, _ := newTestVideoController(t)
 	repo.getErr = gorm.ErrRecordNotFound
 
@@ -77,8 +84,10 @@ func TestHandlerGetVideoNotFound(t *testing.T) {
 	}
 }
 
+// 测试目标：验证视频列表接口拒绝超出上限的分页数量
+// 预期效果：接口直接返回请求无效状态且不访问仓储
 func TestHandlerListVideosInvalidLimit(t *testing.T) {
-	// limit 超过上限时，controller 应直接返回 400，不触达仓储
+	// 分页数量超过上限时，控制器应直接返回请求无效状态
 	ctl, _, _ := newTestVideoController(t)
 
 	r := gin.New()
@@ -91,10 +100,12 @@ func TestHandlerListVideosInvalidLimit(t *testing.T) {
 	}
 }
 
+// 测试目标：验证已认证用户可上传合法视频文件
+// 预期效果：接口返回创建状态，播放地址归属当前用户的上传目录
 func TestHandlerUploadVideo(t *testing.T) {
-	// 1 构造带合法 MP4 文件头的 multipart 请求
+	// 1 构造带合法视频文件头的多部分表单请求
 	// 2 模拟已登录用户上传视频
-	// 3 验证 201 且返回的 play_url 归属当前用户的上传目录
+	// 3 验证创建状态且返回的播放地址归属当前用户的上传目录
 	ctl, _, _ := newTestVideoController(t)
 
 	var buf bytes.Buffer
@@ -134,14 +145,16 @@ func TestHandlerUploadVideo(t *testing.T) {
 	}
 }
 
+// 测试目标：验证上传接口识别伪造的视频文件类型
+// 预期效果：扩展名与文件头不匹配时返回请求无效状态
 func TestHandlerUploadRejectsSpoofedFile(t *testing.T) {
-	// 扩展名是 .mp4 但文件头是 PNG：类型校验必须拒绝，返回 400
+	// 扩展名是视频格式但文件头是图片格式，类型校验必须拒绝
 	ctl, _, _ := newTestVideoController(t)
 
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	fw, _ := mw.CreateFormFile("file", "clip.mp4")
-	_, _ = fw.Write([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}) // PNG magic, mp4 扩展名
+	_, _ = fw.Write([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}) // 图片文件头与视频扩展名组合
 	_ = mw.Close()
 
 	r := gin.New()
@@ -157,9 +170,11 @@ func TestHandlerUploadRejectsSpoofedFile(t *testing.T) {
 	}
 }
 
+// 测试目标：验证已认证用户可上传合法封面文件
+// 预期效果：接口返回创建状态及正确的封面地址和文件名字段
 func TestHandlerUploadCover(t *testing.T) {
-	// 1 构造带合法 PNG 文件头的 multipart 请求
-	// 2 验证 201 且返回 cover_url、cover_file_name、cover_original_name
+	// 1 构造带合法图片文件头的多部分表单请求
+	// 2 验证创建状态且返回封面地址和文件名字段
 	ctl, _, _ := newTestVideoController(t)
 
 	var buf bytes.Buffer
@@ -199,8 +214,10 @@ func TestHandlerUploadCover(t *testing.T) {
 	}
 }
 
+// 测试目标：验证上传接口要求用户认证
+// 预期效果：未注入用户标识的请求返回未认证状态
 func TestHandlerUploadRequiresAuth(t *testing.T) {
-	// 未注入用户 ID（等价于未登录）时上传应返回 401
+	// 未注入用户标识等价于未登录，上传应返回未认证状态
 	ctl, _, _ := newTestVideoController(t)
 
 	r := gin.New()
@@ -213,9 +230,11 @@ func TestHandlerUploadRequiresAuth(t *testing.T) {
 	}
 }
 
+// 测试目标：验证用户可使用本人素材发布视频
+// 预期效果：接口返回创建状态，视频写入仓储且响应包含创建后的数据
 func TestHandlerPublish(t *testing.T) {
-	// 1 使用属于当前用户上传目录的 play_url/cover_url 发布
-	// 2 验证 201、视频写入仓储且响应包含创建后的视频
+	// 1 使用属于当前用户上传目录的播放和封面地址发布
+	// 2 验证创建状态、视频写入仓储且响应包含创建后的视频
 	ctl, repo, authors := newTestVideoController(t)
 	authors.authors = map[uint]Author{1: {ID: 1, Username: "me"}}
 
@@ -243,8 +262,10 @@ func TestHandlerPublish(t *testing.T) {
 	}
 }
 
+// 测试目标：验证发布接口拒绝其他用户的媒体素材
+// 预期效果：跨用户素材地址返回禁止状态以防止盗用
 func TestHandlerPublishRejectsForeignURL(t *testing.T) {
-	// 发布时提交其他用户上传目录的 URL 应返回 403，防止盗用他人素材
+	// 发布时提交其他用户上传目录的地址应返回禁止状态
 	ctl, _, _ := newTestVideoController(t)
 
 	payload := `{"title":"t","play_url":"/static/videos/2/20260810/a.mp4","play_file_name":"a.mp4","play_original_name":"a.mp4","cover_url":"/static/covers/1/20260810/c.png","cover_file_name":"c.png","cover_original_name":"c.png"}`
@@ -259,8 +280,10 @@ func TestHandlerPublishRejectsForeignURL(t *testing.T) {
 	}
 }
 
+// 测试目标：验证发布接口校验媒体文件名与地址末段的一致性
+// 预期效果：两者不一致时返回请求无效状态
 func TestHandlerPublishRejectsMismatchedFileName(t *testing.T) {
-	// 请求中的实际存储文件名与 play_url 最后一段不一致时应返回 400
+	// 请求中的实际存储文件名与播放地址最后一段不一致时应返回请求无效状态
 	ctl, _, _ := newTestVideoController(t)
 
 	payload := `{"title":"t","play_url":"/static/videos/1/20260810/a.mp4","play_file_name":"other.mp4","play_original_name":"a.mp4","cover_url":"/static/covers/1/20260810/c.png","cover_file_name":"c.png","cover_original_name":"c.png"}`
@@ -275,8 +298,10 @@ func TestHandlerPublishRejectsMismatchedFileName(t *testing.T) {
 	}
 }
 
+// 测试目标：验证发布接口要求用户认证
+// 预期效果：未登录发布请求返回未认证状态
 func TestHandlerPublishRequiresAuth(t *testing.T) {
-	// 未登录发布应返回 401
+	// 未登录发布应返回未认证状态
 	ctl, _, _ := newTestVideoController(t)
 
 	r := gin.New()
@@ -289,9 +314,11 @@ func TestHandlerPublishRequiresAuth(t *testing.T) {
 	}
 }
 
+// 测试目标：验证视频作者可删除自己的视频
+// 预期效果：接口返回无内容状态且仓储收到正确的软删除调用
 func TestHandlerDelete(t *testing.T) {
 	// 1 作者本人删除自己的视频
-	// 2 验证返回 204 且仓储收到软删除调用
+	// 2 验证返回无内容状态且仓储收到软删除调用
 	ctl, repo, _ := newTestVideoController(t)
 	repo.getAny = &Video{ID: 5, AuthorID: 1}
 
@@ -309,8 +336,10 @@ func TestHandlerDelete(t *testing.T) {
 	}
 }
 
+// 测试目标：验证非作者不能删除视频
+// 预期效果：接口返回禁止状态且服务层不调用仓储删除
 func TestHandlerDeleteRejectsNonAuthor(t *testing.T) {
-	// 非作者删除应返回 403，服务层不会调用仓储删除
+	// 非作者删除应返回禁止状态，服务层不会调用仓储删除
 	ctl, repo, _ := newTestVideoController(t)
 	repo.getAny = &Video{ID: 5, AuthorID: 1}
 
@@ -325,8 +354,10 @@ func TestHandlerDeleteRejectsNonAuthor(t *testing.T) {
 	}
 }
 
+// 测试目标：验证个人视频列表接口要求用户认证
+// 预期效果：未登录访问返回未认证状态
 func TestHandlerMineRequiresAuth(t *testing.T) {
-	// 未登录访问“我的视频”应返回 401
+	// 未登录访问个人视频列表应返回未认证状态
 	ctl, _, _ := newTestVideoController(t)
 
 	r := gin.New()

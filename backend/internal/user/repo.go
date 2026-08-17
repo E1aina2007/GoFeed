@@ -113,7 +113,7 @@ func (r *Repository) GetAll(ctx context.Context) ([]*User, error) {
 	return users, nil
 }
 
-// SoftDelete
+// 软删除用户
 func (r *Repository) Delete(ctx context.Context, id uint) error {
 	result := r.db.WithContext(ctx).Delete(&User{}, id)
 	if result.Error != nil {
@@ -125,8 +125,8 @@ func (r *Repository) Delete(ctx context.Context, id uint) error {
 	return nil
 }
 
-// PurgeExpired 硬删除宽限期已届满的注销用户及其会话数据，返回删除的用户数
-// cutoff 由调用方计算，便于测试指定任意时间点而不依赖真实时钟
+// 硬删除宽限期已届满的注销用户及其会话数据，并返回删除的用户数
+// 截止时间由调用方计算，便于测试指定任意时间点而不依赖真实时钟
 func (r *Repository) PurgeExpired(ctx context.Context, cutoff time.Time) (int64, error) {
 	var purged int64
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

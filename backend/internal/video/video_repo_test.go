@@ -13,15 +13,18 @@ import (
 	"gorm.io/gorm"
 )
 
-// baseTime 固定基准时间；时间统一用 time.Local 构造
-// 与连接 DSN 的 Loc=time.Local 保持一致，避免时区导致的往返断言失败
+// 测试目标：固定仓储测试的基准时间
+// 预期效果：统一使用本地时区，避免读写往返产生时区断言差异
 var baseTime = time.Date(2026, 8, 1, 12, 0, 0, 0, time.Local)
 
+// 测试目标：配置视频仓储集成测试进程
+// 预期效果：运行前初始化并在结束后清理独立测试数据库
 func TestMain(m *testing.M) {
 	os.Exit(testutil.Main(m))
 }
 
-// newVideoFixture 构造一条字段齐全的视频，状态与发布时间由调用方指定
+// 测试目标：构造字段齐全的视频测试数据
+// 预期效果：调用方可指定作者、标题、状态和发布时间
 func newVideoFixture(authorID uint, title, status string, publishedAt time.Time) *Video {
 	return &Video{
 		AuthorID:          authorID,
@@ -38,7 +41,8 @@ func newVideoFixture(authorID uint, title, status string, publishedAt time.Time)
 	}
 }
 
-// seedVideo 直接经仓储写入一条视频，返回回填 ID 后的实体
+// 测试目标：通过仓储写入一条视频测试数据
+// 预期效果：返回已回填视频标识的实体
 func seedVideo(t *testing.T, repo *Repository, authorID uint, title, status string, publishedAt time.Time) *Video {
 	t.Helper()
 	v := newVideoFixture(authorID, title, status, publishedAt)
@@ -48,6 +52,8 @@ func seedVideo(t *testing.T, repo *Repository, authorID uint, title, status stri
 	return v
 }
 
+// 测试目标：验证视频仓储创建并按标识读取视频
+// 预期效果：创建操作回填标识和时间，读取结果与写入字段一致
 func TestRepositoryCreateAndGetByID(t *testing.T) {
 	repo := NewRepository(testutil.DB(t))
 	ctx := context.Background()
@@ -82,6 +88,8 @@ func TestRepositoryCreateAndGetByID(t *testing.T) {
 	}
 }
 
+// 测试目标：验证公开读取仅返回已发布视频
+// 预期效果：草稿无法公开读取，通用读取仍可读取草稿
 func TestRepositoryGetPublishedByIDFiltersStatus(t *testing.T) {
 	repo := NewRepository(testutil.DB(t))
 	ctx := context.Background()
@@ -100,7 +108,8 @@ func TestRepositoryGetPublishedByIDFiltersStatus(t *testing.T) {
 		t.Fatalf("got id=%d want=%d", got.ID, published.ID)
 	}
 
-	// GetByID 不限制状态，管理侧应能读到草稿
+	// 测试目标：验证管理侧读取不限制视频状态
+	// 预期效果：草稿可通过通用读取接口返回
 	raw, err := repo.GetByID(ctx, draft.ID)
 	if err != nil {
 		t.Fatalf("GetByID 读草稿失败: %v", err)
@@ -110,6 +119,8 @@ func TestRepositoryGetPublishedByIDFiltersStatus(t *testing.T) {
 	}
 }
 
+// 测试目标：验证零值视频标识的读取边界
+// 预期效果：通用读取和公开读取均返回记录不存在错误
 func TestRepositoryGetByIDZero(t *testing.T) {
 	repo := NewRepository(testutil.DB(t))
 	ctx := context.Background()
@@ -122,11 +133,14 @@ func TestRepositoryGetByIDZero(t *testing.T) {
 	}
 }
 
+// 测试目标：验证公开视频列表的状态过滤、作者过滤和排序
+// 预期效果：仅返回已发布视频并按发布时间倒序排列
 func TestRepositoryListPublishedFilterAndOrder(t *testing.T) {
 	repo := NewRepository(testutil.DB(t))
 	ctx := context.Background()
 
-	// author 1：两条 published + 一条 draft；author 2：一条 published
+	// 测试目标：准备不同作者和状态的视频测试数据
+	// 预期效果：可同时验证全局列表和作者列表的过滤与排序
 	seedVideo(t, repo, 1, "a1-new", VideoStatusPublished, baseTime.Add(2*time.Minute))
 	seedVideo(t, repo, 1, "a1-old", VideoStatusPublished, baseTime)
 	seedVideo(t, repo, 1, "a1-draft", VideoStatusDraft, baseTime.Add(3*time.Minute))
@@ -158,16 +172,22 @@ func TestRepositoryListPublishedFilterAndOrder(t *testing.T) {
 	}
 }
 
+// 测试目标：验证公开视频列表的游标分页完整性
+// 预期效果：所有视频按倒序仅返回一次且不会遗漏或重复
 func TestRepositoryListPublishedCursorPagination(t *testing.T) {
 	repo := NewRepository(testutil.DB(t))
 	ctx := context.Background()
 
+	// 测试目标：记录写入视频的标识与标题对应关系
+	// 预期效果：后续可按翻页结果验证完整排序
 	titles := map[uint]string{}
 	for i := 0; i < 5; i++ {
 		v := seedVideo(t, repo, 1, fmt.Sprintf("v%d", i), VideoStatusPublished, baseTime.Add(time.Duration(i)*time.Minute))
 		titles[v.ID] = v.Title
 	}
 
+	// 测试目标：记录已读取视频和分页游标结果
+	// 预期效果：可检测重复项并验证翻页完整性
 	seen := map[uint]bool{}
 	var cursor *Cursor
 	var got []uint
@@ -201,10 +221,14 @@ func TestRepositoryListPublishedCursorPagination(t *testing.T) {
 	}
 }
 
+// 测试目标：验证发布时间相同时游标分页的次级排序
+// 预期效果：视频按标识倒序返回且翻页边界不重复不遗漏
 func TestRepositoryListPublishedCursorTieBreak(t *testing.T) {
 	repo := NewRepository(testutil.DB(t))
 	ctx := context.Background()
 
+	// 测试目标：准备发布时间相同的视频和其标识集合
+	// 预期效果：验证同一时间点以视频标识作为次级排序条件
 	same := baseTime
 	var ids []uint
 	for i := 0; i < 3; i++ {
@@ -238,6 +262,8 @@ func TestRepositoryListPublishedCursorTieBreak(t *testing.T) {
 	}
 }
 
+// 测试目标：验证个人视频列表包含该作者的全部状态
+// 预期效果：返回发布、草稿和处理中的视频，其他作者和零值作者不返回数据
 func TestRepositoryListByAuthorIncludesAllStatuses(t *testing.T) {
 	repo := NewRepository(testutil.DB(t))
 	ctx := context.Background()
@@ -254,6 +280,8 @@ func TestRepositoryListByAuthorIncludesAllStatuses(t *testing.T) {
 	if len(mine) != 3 {
 		t.Fatalf("author 1 应有 3 条不分状态, got=%d", len(mine))
 	}
+	// 测试目标：收集个人列表中的视频状态
+	// 预期效果：可验证每种预期状态均被返回
 	statuses := map[string]bool{}
 	for _, v := range mine {
 		statuses[v.Status] = true
@@ -272,6 +300,8 @@ func TestRepositoryListByAuthorIncludesAllStatuses(t *testing.T) {
 	}
 }
 
+// 测试目标：验证视频仓储执行软删除而非物理删除
+// 预期效果：物理行保留删除时间，所有读取列表均排除该视频且重复删除报错
 func TestRepositoryDeleteSoftDeletes(t *testing.T) {
 	db := testutil.DB(t)
 	repo := NewRepository(db)
@@ -289,7 +319,8 @@ func TestRepositoryDeleteSoftDeletes(t *testing.T) {
 		t.Fatalf("软删后公开读应 not found, err=%v", err)
 	}
 
-	// 物理行保留，deleted_at 已写入，验证软删除
+	// 测试目标：检查软删除后的物理记录
+	// 预期效果：物理行保留且删除时间已写入
 	var count int64
 	if err := db.Raw("SELECT COUNT(*) FROM videos WHERE id = ?", v.ID).Scan(&count).Error; err != nil {
 		t.Fatalf("原生统计失败: %v", err)
@@ -318,6 +349,8 @@ func TestRepositoryDeleteSoftDeletes(t *testing.T) {
 	}
 }
 
+// 测试目标：验证公开视频列表处理非正分页数量
+// 预期效果：数量为零时查询成功并返回空列表
 func TestRepositoryListPublishedNonPositiveLimit(t *testing.T) {
 	repo := NewRepository(testutil.DB(t))
 	ctx := context.Background()

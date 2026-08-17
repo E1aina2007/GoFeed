@@ -6,7 +6,8 @@ import (
 	"testing"
 )
 
-// TestVideoSurvivesAuthorDeletion 验证账号注销后历史视频仍可读取，作者显示为占位名
+// 测试目标：验证账号注销后历史视频仍可读取且作者显示为占位名
+// 预期效果：视频详情和作者列表均返回注销用户的占位信息
 func TestVideoSurvivesAuthorDeletion(t *testing.T) {
 	srv, client := newTestServer(t)
 	base := srv.URL
@@ -26,10 +27,10 @@ func TestVideoSurvivesAuthorDeletion(t *testing.T) {
 		CoverOriginalName: cover.CoverOriginalName,
 	}, http.StatusCreated)
 
-	// 注销账号（软删除）
+	// 注销账号并保留软删除记录
 	doJSON(t, client, http.MethodDelete, base+"/api/user/auth", sess.AccessToken, nil, http.StatusNoContent, nil)
 
-	// 详情仍可读，作者显示占位名
+	// 读取详情，预期作者显示占位名
 	var detail struct {
 		Video videoItem `json:"video"`
 	}
@@ -38,7 +39,7 @@ func TestVideoSurvivesAuthorDeletion(t *testing.T) {
 		t.Fatalf("详情作者应为占位信息 got=%+v", detail.Video.Author)
 	}
 
-	// 作者列表整页正常返回，不再被已注销作者毒化
+	// 读取作者列表，预期整页正常返回且使用占位作者
 	var list struct {
 		Items []videoItem `json:"items"`
 	}

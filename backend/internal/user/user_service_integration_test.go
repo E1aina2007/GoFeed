@@ -11,8 +11,12 @@ import (
 	"gorm.io/gorm"
 )
 
+// 测试目标：指定强制会话更新失败的临时触发器名称
+// 预期效果：测试结束时清理该触发器
 const failSessionUpdateTrigger = "test_fail_auth_session_update"
 
+// 测试目标：验证撤销会话失败时修改密码会整体回滚
+// 预期效果：旧密码和原会话保持有效，新密码不会写入数据库
 func TestUpdatePasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
@@ -39,6 +43,8 @@ func TestUpdatePasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
 	}
 }
 
+// 测试目标：验证撤销会话失败时注销账号会整体回滚
+// 预期效果：用户和原会话均保持有效，不会留下部分删除状态
 func TestDeleteRollsBackWhenSessionRevocationFails(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
@@ -58,12 +64,16 @@ func TestDeleteRollsBackWhenSessionRevocationFails(t *testing.T) {
 	}
 }
 
+// 测试目标：汇集测试用户、会话服务和会话标识
+// 预期效果：可同时断言事务后的用户与会话状态
 type userWithSession struct {
 	user      *User
 	sessions  *auth.SessionService
 	sessionID string
 }
 
+// 测试目标：创建带有效会话的测试用户
+// 预期效果：返回可用于事务回滚断言的完整上下文
 func createUserWithSession(t *testing.T, ctx context.Context, db *gorm.DB, service *Service, username, password string) userWithSession {
 	t.Helper()
 	user := &User{Username: username, Password: password}
@@ -82,6 +92,8 @@ func createUserWithSession(t *testing.T, ctx context.Context, db *gorm.DB, servi
 	return userWithSession{user: user, sessions: sessions, sessionID: claims.SessionID}
 }
 
+// 测试目标：安装使会话更新失败的临时触发器
+// 预期效果：后续撤销操作返回数据库错误
 func forceSessionUpdateFailure(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	if err := db.Exec("DROP TRIGGER IF EXISTS " + failSessionUpdateTrigger).Error; err != nil {

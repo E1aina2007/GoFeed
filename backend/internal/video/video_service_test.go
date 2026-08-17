@@ -9,7 +9,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// fakeVideoReader 记录服务层传入的查询参数并返回预设视频数据
+// 测试目标：模拟视频数据读取和写入依赖
+// 预期效果：记录服务层查询参数并返回预设视频数据
 type fakeVideoReader struct {
 	getVideo     *Video
 	getErr       error
@@ -25,12 +26,14 @@ type fakeVideoReader struct {
 	deletedID    uint
 }
 
-// GetPublishedByID 返回预设的视频详情查询结果
+// 测试目标：模拟已发布视频详情读取
+// 预期效果：返回预设的视频和错误
 func (r *fakeVideoReader) GetPublishedByID(_ context.Context, _ uint) (*Video, error) {
 	return r.getVideo, r.getErr
 }
 
-// ListPublished 记录列表查询参数并返回预设的视频列表
+// 测试目标：模拟已发布视频列表读取
+// 预期效果：记录查询参数并返回预设的视频列表
 func (r *fakeVideoReader) ListPublished(_ context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error) {
 	r.listAuthorID = authorID
 	r.listCursor = cursor
@@ -38,7 +41,8 @@ func (r *fakeVideoReader) ListPublished(_ context.Context, authorID uint, cursor
 	return r.listVideos, r.listErr
 }
 
-// Create 记录待发布的视频并模拟仓储回填 ID
+// 测试目标：模拟视频创建操作
+// 预期效果：记录待发布视频并在成功时回填视频标识
 func (r *fakeVideoReader) Create(_ context.Context, video *Video) error {
 	r.created = video
 	if r.createErr == nil && video != nil {
@@ -47,12 +51,14 @@ func (r *fakeVideoReader) Create(_ context.Context, video *Video) error {
 	return r.createErr
 }
 
-// GetByID 返回预设的任意状态视频
+// 测试目标：模拟任意状态的视频读取
+// 预期效果：返回预设的视频和错误
 func (r *fakeVideoReader) GetByID(_ context.Context, _ uint) (*Video, error) {
 	return r.getAny, r.getErr
 }
 
-// ListByAuthor 返回预设的作者视频列表
+// 测试目标：模拟作者视频列表读取
+// 预期效果：记录查询参数并返回预设的作者视频列表
 func (r *fakeVideoReader) ListByAuthor(_ context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error) {
 	r.listAuthorID = authorID
 	r.listCursor = cursor
@@ -60,20 +66,23 @@ func (r *fakeVideoReader) ListByAuthor(_ context.Context, authorID uint, cursor 
 	return r.mineVideos, r.listErr
 }
 
-// Delete 记录被删除的视频 ID
+// 测试目标：模拟视频删除操作
+// 预期效果：记录被删除的视频标识
 func (r *fakeVideoReader) Delete(_ context.Context, id uint) error {
 	r.deletedID = id
 	return nil
 }
 
-// fakeAuthorReader 返回预设作者资料并记录每位作者的查询次数
+// 测试目标：模拟作者资料读取依赖
+// 预期效果：返回预设作者资料并记录每位作者的查询次数
 type fakeAuthorReader struct {
 	authors map[uint]Author
 	err     error
 	calls   map[uint]int
 }
 
-// GetPublicAuthor 返回预设的作者公开资料
+// 测试目标：模拟公开作者资料读取
+// 预期效果：返回预设作者资料并累计查询次数
 func (r *fakeAuthorReader) GetPublicAuthor(_ context.Context, id uint) (Author, error) {
 	if r.calls == nil {
 		r.calls = make(map[uint]int)
@@ -85,6 +94,8 @@ func (r *fakeAuthorReader) GetPublicAuthor(_ context.Context, id uint) (Author, 
 	return r.authors[id], nil
 }
 
+// 测试目标：验证服务层组装已发布视频详情和作者资料
+// 预期效果：返回完整视频字段及正确作者资料
 func TestServiceGetPublished(t *testing.T) {
 	// 1 准备一条已发布视频和对应作者资料
 	// 2 调用服务层详情查询
@@ -112,10 +123,12 @@ func TestServiceGetPublished(t *testing.T) {
 	}
 }
 
+// 测试目标：验证公开视频列表使用额外记录生成分页游标
+// 预期效果：仓储多取一条记录，响应截断到指定数量并复用作者资料
 func TestServiceListPublishedUsesExtraRecordForCursor(t *testing.T) {
 	// 1 准备三条按发布时间倒序排列的视频
-	// 2 使用 limit=2 调用列表查询
-	// 3 验证仓储接收 limit+1 以判断是否存在下一页
+	// 2 使用每页数量为 2 调用列表查询
+	// 3 验证仓储多取一条记录以判断是否存在下一页
 	// 4 验证响应只返回两项且游标指向第二项
 	// 5 验证同一作者资料在一次列表查询中只读取一次
 	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
@@ -149,6 +162,8 @@ func TestServiceListPublishedUsesExtraRecordForCursor(t *testing.T) {
 	}
 }
 
+// 测试目标：验证公开视频列表填充作者资料
+// 预期效果：每个列表项均带有对应作者的公开信息
 func TestServiceListPublishedPopulatesAuthor(t *testing.T) {
 	// 1 准备一条视频与对应作者资料
 	// 2 查询列表
@@ -168,10 +183,12 @@ func TestServiceListPublishedPopulatesAuthor(t *testing.T) {
 	}
 }
 
+// 测试目标：验证公开视频列表拒绝非法游标、数量和视频标识
+// 预期效果：每种非法输入均返回对应的参数错误
 func TestServiceListPublishedRejectsInvalidInput(t *testing.T) {
 	// 1 传入无法解码的游标
-	// 2 传入超过最大值的 limit
-	// 3 传入值为零的视频 ID
+	// 2 传入超过最大值的每页数量
+	// 3 传入值为零的视频标识
 	// 4 验证服务层分别返回对应的输入错误
 	service := NewService(&fakeVideoReader{}, &fakeAuthorReader{})
 
@@ -186,9 +203,11 @@ func TestServiceListPublishedRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+// 测试目标：验证发布服务设置默认字段并校验本人媒体地址
+// 预期效果：视频以发布状态创建，标题和媒体信息正确写入并返回
 func TestServicePublishSetsDefaultsAndValidatesURL(t *testing.T) {
 	// 1 准备仓储与作者资料
-	// 2 使用属于当前用户上传目录的 URL 调用发布
+	// 2 使用属于当前用户上传目录的媒体地址调用发布
 	// 3 验证默认状态/发布时间/计数字段与响应组装
 	repository := &fakeVideoReader{}
 	authors := &fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}}
@@ -230,8 +249,10 @@ func TestServicePublishSetsDefaultsAndValidatesURL(t *testing.T) {
 	}
 }
 
+// 测试目标：验证发布服务拒绝跨用户和外部媒体地址
+// 预期效果：两种非法媒体地址均返回媒体地址错误
 func TestServicePublishRejectsForeignMediaURL(t *testing.T) {
-	// 1 使用其他用户上传目录的 URL 必须被拒绝
+	// 1 使用其他用户上传目录的媒体地址必须被拒绝
 	// 2 使用任意外链作为封面也必须被拒绝
 	service := NewService(&fakeVideoReader{}, &fakeAuthorReader{})
 
@@ -262,8 +283,10 @@ func TestServicePublishRejectsForeignMediaURL(t *testing.T) {
 	}
 }
 
+// 测试目标：验证发布服务校验文件名与媒体地址的一致性
+// 预期效果：文件名和地址末段不一致时拒绝发布请求
 func TestServicePublishRejectsMismatchedFileName(t *testing.T) {
-	// 请求中的实际存储文件名与媒体 URL 最后一段不一致时必须被拒绝
+	// 请求中的实际存储文件名与媒体地址最后一段不一致时必须被拒绝
 	service := NewService(&fakeVideoReader{}, &fakeAuthorReader{})
 
 	_, err := service.Publish(context.Background(), 2, PublishRequest{
@@ -280,9 +303,11 @@ func TestServicePublishRejectsMismatchedFileName(t *testing.T) {
 	}
 }
 
+// 测试目标：验证发布服务将完整媒体地址归一化为相对路径
+// 预期效果：入库记录和响应均仅保留静态资源相对路径
 func TestServicePublishStoresRelativePath(t *testing.T) {
-	// 1 发布时提交完整 URL
-	// 2 入库前必须归一化为 /static/... 相对路径，响应同样只返回相对路径
+	// 1 发布时提交完整媒体地址
+	// 2 入库前必须归一化为静态资源相对路径，响应同样只返回相对路径
 	repository := &fakeVideoReader{}
 	authors := &fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}}
 	service := NewService(repository, authors)
@@ -310,6 +335,8 @@ func TestServicePublishStoresRelativePath(t *testing.T) {
 	}
 }
 
+// 测试目标：验证视频删除服务检查作者权限
+// 预期效果：非作者删除被拒绝，作者本人删除并传递正确视频标识
 func TestServiceDeleteChecksAuthor(t *testing.T) {
 	// 1 非作者删除返回权限错误
 	// 2 作者本人删除成功
@@ -327,8 +354,10 @@ func TestServiceDeleteChecksAuthor(t *testing.T) {
 	}
 }
 
+// 测试目标：验证删除服务转换仓储的记录不存在错误
+// 预期效果：删除不存在的视频时返回统一的视频不存在错误
 func TestServiceDeleteNotFound(t *testing.T) {
-	// 仓储返回记录不存在时，服务层应转换为 ErrVideoNotFound
+	// 仓储返回记录不存在时，服务层应转换为统一的视频不存在错误
 	service := NewService(&fakeVideoReader{getErr: gorm.ErrRecordNotFound}, &fakeAuthorReader{})
 
 	if err := service.Delete(context.Background(), 99, 1); !errors.Is(err, ErrVideoNotFound) {
@@ -336,8 +365,10 @@ func TestServiceDeleteNotFound(t *testing.T) {
 	}
 }
 
+// 测试目标：验证个人视频列表使用额外记录生成分页游标
+// 预期效果：仓储多取一条记录，响应返回指定数量和下一页游标
 func TestServiceListMinePassesExtraRecordForCursor(t *testing.T) {
-	// 与公开列表一致：仓储接收 limit+1 用于判断下一页
+	// 与公开列表一致，仓储多取一条记录用于判断下一页
 	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
 	repository := &fakeVideoReader{mineVideos: []Video{
 		{ID: 3, AuthorID: 2, PublishedAt: publishedAt},

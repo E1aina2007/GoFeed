@@ -10,10 +10,12 @@ import (
 	"testing"
 )
 
+// 测试目标：验证本地存储保存视频时创建文件并生成公开地址
+// 预期效果：文件落入当前用户目录，公开地址和读取内容均与上传数据一致
 func TestLocalStorageSaveCreatesFileWithPublicURL(t *testing.T) {
 	// 1 用临时目录构造本地存储，避免污染真实上传目录
-	// 2 保存一段模拟 MP4 内容
-	// 3 验证返回的公开 URL 归属 /static/videos/{用户ID}/ 且文件真实落盘、内容一致
+	// 2 保存一段模拟视频内容
+	// 3 验证公开地址归属当前用户目录且文件真实落盘、内容一致
 	root := t.TempDir()
 	s := NewLocalStorage(root)
 	content := []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
@@ -41,9 +43,11 @@ func TestLocalStorageSaveCreatesFileWithPublicURL(t *testing.T) {
 	}
 }
 
+// 测试目标：验证本地存储清洗文件名时保留中文并替换空格
+// 预期效果：公开地址和落盘文件名使用清洗后的名称，原始内容保持一致
 func TestLocalStorageSavePreservesOriginalFilename(t *testing.T) {
 	// 1 使用带中文与空格的文件名上传
-	// 2 空格被清洗为下划线，中文保留，公开 URL 与落盘文件名保持一致
+	// 2 空格被清洗为下划线，中文保留，公开地址与落盘文件名保持一致
 	root := t.TempDir()
 	s := NewLocalStorage(root)
 	content := []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
@@ -71,6 +75,8 @@ func TestLocalStorageSavePreservesOriginalFilename(t *testing.T) {
 	}
 }
 
+// 测试目标：验证本地存储阻止文件名中的路径穿越
+// 预期效果：仅保留最后一段文件名且文件始终落在上传目录内
 func TestLocalStorageSaveSanitizesPathTraversal(t *testing.T) {
 	// 1 上传文件名携带目录前缀
 	// 2 保存时必须只保留最后一段文件名，且落盘位置始终在上传目录内
@@ -97,9 +103,11 @@ func TestLocalStorageSaveSanitizesPathTraversal(t *testing.T) {
 	}
 }
 
+// 测试目标：验证本地存储替换文件名中的不安全字符
+// 预期效果：保留字符统一替换为下划线且公开地址语义不受破坏
 func TestLocalStorageSaveReplacesUnsafeCharacters(t *testing.T) {
-	// 1 文件名包含反斜杠、冒号、星号等 URL/文件系统保留字符
-	// 2 保存时统一替换为下划线，避免破坏 URL 语义
+	// 1 文件名包含反斜杠、冒号、星号等地址和文件系统保留字符
+	// 2 保存时统一替换为下划线，避免破坏公开地址语义
 	s := NewLocalStorage(t.TempDir())
 	content := []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
 
@@ -113,6 +121,8 @@ func TestLocalStorageSaveReplacesUnsafeCharacters(t *testing.T) {
 	}
 }
 
+// 测试目标：验证同名文件保存时不会互相覆盖
+// 预期效果：首个文件保留原名，后续文件追加序号且两个文件内容均存在
 func TestLocalStorageSaveKeepsNameOnCollision(t *testing.T) {
 	// 1 同一用户同一天上传同名文件
 	// 2 第一个保留原名，第二个自动追加序号，两个文件都必须存在且互不覆盖
@@ -148,6 +158,8 @@ func TestLocalStorageSaveKeepsNameOnCollision(t *testing.T) {
 	}
 }
 
+// 测试目标：验证本地存储截断超过文件系统限制的文件名
+// 预期效果：截断后文件名不超过上限且保留原扩展名
 func TestLocalStorageSaveTruncatesLongFilename(t *testing.T) {
 	// 1 文件名超过单文件系统限制
 	// 2 保存时保留扩展名并截断主干，落盘后总长度不超过上限
@@ -167,8 +179,11 @@ func TestLocalStorageSaveTruncatesLongFilename(t *testing.T) {
 	}
 }
 
+// 测试目标：验证文件名清洗覆盖分离、替换、兜底和拼接规则
+// 预期效果：每种输入均返回符合文件系统安全要求的规范名称
 func TestSanitizeFilename(t *testing.T) {
-	// 覆盖 4 步规则：分离主名/扩展名（小写）、暴力清洗、空主名兜底、最终拼接
+	// 测试目标：定义文件名清洗的输入和期望输出
+	// 预期效果：逐项覆盖正常、非法、空白和路径类文件名
 	tests := []struct {
 		name     string
 		filename string
@@ -188,6 +203,8 @@ func TestSanitizeFilename(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		// 测试目标：执行单个文件名清洗子用例
+		// 预期效果：实际名称与当前用例的期望名称完全一致
 		t.Run(tt.name, func(t *testing.T) {
 			if got := sanitizeFilename(tt.filename); got != tt.want {
 				t.Fatalf("sanitizeFilename(%q) got=%q want=%q", tt.filename, got, tt.want)
@@ -196,8 +213,11 @@ func TestSanitizeFilename(t *testing.T) {
 	}
 }
 
+// 测试目标：验证原始文件名提取仅移除路径部分
+// 预期效果：保留用于展示的原始字符并按字节上限截断
 func TestOriginalName(t *testing.T) {
-	// 原始文件名只去掉路径部分，不做字符清洗，用于数据库展示
+	// 测试目标：定义原始文件名提取的输入和期望输出
+	// 预期效果：逐项覆盖路径、中文、反斜杠和超长文件名
 	tests := []struct {
 		name     string
 		filename string
@@ -210,6 +230,8 @@ func TestOriginalName(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		// 测试目标：执行单个原始文件名提取子用例
+		// 预期效果：实际名称与当前用例的期望名称完全一致
 		t.Run(tt.name, func(t *testing.T) {
 			if got := OriginalName(tt.filename); got != tt.want {
 				t.Fatalf("OriginalName(%q) got=%q want=%q", tt.filename, got, tt.want)
@@ -218,8 +240,10 @@ func TestOriginalName(t *testing.T) {
 	}
 }
 
+// 测试目标：验证本地存储拒绝不在白名单中的媒体扩展名
+// 预期效果：非法视频和封面扩展名均在落盘前返回媒体错误
 func TestLocalStorageSaveRejectsBadExtension(t *testing.T) {
-	// 1 视频只允许 MP4/WebM/MOV，封面只允许 JPG/PNG/WebP
+	// 1 视频和封面仅允许各自白名单中的格式
 	// 2 白名单之外的扩展名必须在落盘前被拒绝
 	s := NewLocalStorage(t.TempDir())
 
@@ -231,10 +255,14 @@ func TestLocalStorageSaveRejectsBadExtension(t *testing.T) {
 	}
 }
 
+// 测试目标：验证媒体类型校验同时检查扩展名和文件头
+// 预期效果：合法视频和封面格式通过，伪造或未知格式被拒绝
 func TestValidateMedia(t *testing.T) {
-	// 1 覆盖视频（MP4/MOV/WebM）与封面（JPG/PNG/WebP）的合法文件头
-	// 2 覆盖“扩展名合法但文件头不匹配”的伪造场景
-	// 3 结论：扩展名与文件头必须同时匹配才算合法
+	// 1 覆盖视频与封面的合法文件头
+	// 2 覆盖扩展名合法但文件头不匹配的伪造场景
+	// 3 扩展名与文件头必须同时匹配才算合法
+	// 测试目标：定义媒体类型校验的输入和期望结果
+	// 预期效果：逐项覆盖合法、伪造、未知和空文件头场景
 	tests := []struct {
 		name     string
 		kind     MediaKind
@@ -255,6 +283,8 @@ func TestValidateMedia(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		// 测试目标：执行单个媒体类型校验子用例
+		// 预期效果：实际校验结果与当前用例的期望结果完全一致
 		t.Run(tt.name, func(t *testing.T) {
 			if got := validateMedia(tt.kind, tt.filename, tt.head); got != tt.want {
 				t.Fatalf("validateMedia got=%v want=%v", got, tt.want)
@@ -263,9 +293,13 @@ func TestValidateMedia(t *testing.T) {
 	}
 }
 
+// 测试目标：验证媒体地址归属校验处理合法和非法来源
+// 预期效果：仅当前用户对应类型的本地素材地址通过校验
 func TestIsOwnedMediaURL(t *testing.T) {
-	// 1 覆盖相对 URL 与绝对 URL 两种合法形式
+	// 1 覆盖相对地址与完整地址两种合法形式
 	// 2 覆盖跨用户、素材类型不符、任意外链、路径穿越和空值等非法场景
+	// 测试目标：定义媒体地址归属校验的输入和期望结果
+	// 预期效果：逐项覆盖本人、他人、外部和异常地址
 	tests := []struct {
 		name string
 		raw  string
@@ -284,6 +318,8 @@ func TestIsOwnedMediaURL(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		// 测试目标：执行单个媒体地址归属校验子用例
+		// 预期效果：实际校验结果与当前用例的期望结果完全一致
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isOwnedMediaURL(tt.raw, tt.kind, tt.uid); got != tt.want {
 				t.Fatalf("isOwnedMediaURL(%q) got=%v want=%v", tt.raw, got, tt.want)
@@ -292,8 +328,11 @@ func TestIsOwnedMediaURL(t *testing.T) {
 	}
 }
 
+// 测试目标：验证媒体地址归一化为数据库可保存的相对路径
+// 预期效果：相对路径原样保留，完整地址仅提取路径部分并去除附加信息
 func TestMediaURLPath(t *testing.T) {
-	// 数据库只存相对路径：相对路径原样保留，完整 URL 只取 path 部分
+	// 测试目标：定义媒体地址归一化的输入和期望输出
+	// 预期效果：逐项覆盖相对地址、完整地址和带附加信息的地址
 	tests := []struct {
 		name string
 		raw  string
@@ -305,6 +344,8 @@ func TestMediaURLPath(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		// 测试目标：执行单个媒体地址归一化子用例
+		// 预期效果：实际路径与当前用例的期望路径完全一致
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := mediaURLPath(tt.raw)
 			if err != nil {

@@ -33,7 +33,7 @@ func currentUserID(c *gin.Context) (uint, bool) {
 	return jwt.UserID(c)
 }
 
-// CreateUser handles POST /api/user/register.
+// 处理用户注册请求
 func (ctl *Controller) CreateUser(c *gin.Context) {
 	var req CreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -48,7 +48,7 @@ func (ctl *Controller) CreateUser(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"user": publicUser(user)})
 }
 
-// Login handles POST /api/user/login.
+// 处理用户登录请求
 func (ctl *Controller) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -68,7 +68,7 @@ func (ctl *Controller) Login(c *gin.Context) {
 	c.JSON(http.StatusOK, loginResponse(pair, user))
 }
 
-// Refresh handles POST /api/user/refresh and rotates the opaque refresh token.
+// 处理刷新令牌请求并轮换刷新令牌
 func (ctl *Controller) Refresh(c *gin.Context) {
 	var req RefreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -99,7 +99,7 @@ func (ctl *Controller) Refresh(c *gin.Context) {
 	})
 }
 
-// Logout handles POST /api/user/auth/logout and revokes only this session.
+// 处理退出登录请求并仅撤销当前会话
 func (ctl *Controller) Logout(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	sessionID, hasSession := jwt.SessionID(c)
@@ -114,7 +114,7 @@ func (ctl *Controller) Logout(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// GetUser handles GET /api/user/:id.
+// 处理用户详情读取请求
 func (ctl *Controller) GetUser(c *gin.Context) {
 	id, err := getPathID(c)
 	if err != nil {
@@ -129,7 +129,7 @@ func (ctl *Controller) GetUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user": publicUser(user)})
 }
 
-// ListUsers handles GET /api/user.
+// 处理用户列表读取请求
 func (ctl *Controller) ListUsers(c *gin.Context) {
 	users, err := ctl.Srv.GetAll(c.Request.Context())
 	if err != nil {
@@ -139,7 +139,7 @@ func (ctl *Controller) ListUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"users": users})
 }
 
-// UpdateName handles PATCH /api/user/auth/name.
+// 处理用户名修改请求
 func (ctl *Controller) UpdateName(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	if !ok {
@@ -158,7 +158,7 @@ func (ctl *Controller) UpdateName(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "username updated successfully"})
 }
 
-// UpdatePassword handles PATCH /api/user/auth/password.
+// 处理密码修改请求
 func (ctl *Controller) UpdatePassword(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	if !ok {
@@ -177,7 +177,7 @@ func (ctl *Controller) UpdatePassword(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "password updated; sign in again"})
 }
 
-// UpdateProfile handles PATCH /api/user/auth/profile.
+// 处理用户资料修改请求
 func (ctl *Controller) UpdateProfile(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	if !ok {
@@ -196,7 +196,7 @@ func (ctl *Controller) UpdateProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "profile updated successfully"})
 }
 
-// DeleteUser handles DELETE /api/user/auth.
+// 处理账号注销请求
 func (ctl *Controller) DeleteUser(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	if !ok {
@@ -210,7 +210,7 @@ func (ctl *Controller) DeleteUser(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// GetProfile handles GET /api/user/:id/profile.
+// 处理公开资料读取请求
 func (ctl *Controller) GetProfile(c *gin.Context) {
 	id, err := getPathID(c)
 	if err != nil {

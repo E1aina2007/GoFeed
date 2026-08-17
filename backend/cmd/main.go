@@ -19,12 +19,12 @@ import (
 func main() {
 	log.SetPrefix("[main] ")
 
-	// load env
+	// 加载环境变量
 	if err := godotenv.Load(); err != nil {
 		log.Println(".env not found; Using default config")
 	}
 
-	// load config
+	// 加载配置
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
 		configPath = "configs/config.dev.yaml"
@@ -46,7 +46,7 @@ func main() {
 
 	log.Println("Database connected successfully")
 
-	// load server
+	// 装配服务
 	r := router.New(DB, cfg.Dev, router.Options{})
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 
@@ -62,13 +62,13 @@ func main() {
 		}
 	}()
 
-	// wait for shutdown signal
+	// 等待关闭信号
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
 	log.Printf("Received signal %v, shutting down...", sig)
 
-	// shutdown
+	// 关闭服务资源
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

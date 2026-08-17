@@ -12,10 +12,14 @@ import (
 	"gorm.io/gorm"
 )
 
+// 测试目标：配置用户仓储集成测试进程
+// 预期效果：运行前初始化并在结束后清理独立测试数据库
 func TestMain(m *testing.M) {
 	os.Exit(testutil.Main(m))
 }
 
+// 测试目标：写入指定用户名的测试用户
+// 预期效果：返回已持久化的用户标识
 func seedUser(t *testing.T, db *gorm.DB, username string) uint {
 	t.Helper()
 	u := &User{Username: username, Password: "test-hash"}
@@ -25,6 +29,8 @@ func seedUser(t *testing.T, db *gorm.DB, username string) uint {
 	return u.ID
 }
 
+// 测试目标：设置测试用户的软删除时间
+// 预期效果：构造不同过期边界的用户记录
 func setDeletedAt(t *testing.T, db *gorm.DB, id uint, at time.Time) {
 	t.Helper()
 	if err := db.Exec("UPDATE users SET deleted_at = ? WHERE id = ?", at, id).Error; err != nil {
@@ -32,6 +38,8 @@ func setDeletedAt(t *testing.T, db *gorm.DB, id uint, at time.Time) {
 	}
 }
 
+// 测试目标：写入关联用户的会话记录
+// 预期效果：用于验证清理用户时的级联效果
 func seedSessionRow(t *testing.T, db *gorm.DB, id string, userID uint) {
 	t.Helper()
 	if err := db.Exec(
@@ -42,6 +50,8 @@ func seedSessionRow(t *testing.T, db *gorm.DB, id string, userID uint) {
 	}
 }
 
+// 测试目标：统计符合条件的测试数据行
+// 预期效果：为删除和保留断言提供准确数量
 func countRows(t *testing.T, db *gorm.DB, table, cond string, arg any) int64 {
 	t.Helper()
 	var count int64
@@ -51,6 +61,8 @@ func countRows(t *testing.T, db *gorm.DB, table, cond string, arg any) int64 {
 	return count
 }
 
+// 测试目标：验证仓储会清理到期的软删除用户及其会话
+// 预期效果：早于或等于截止时间的用户被硬删除，宽限期和活跃用户保持不变
 func TestRepositoryPurgeExpired(t *testing.T) {
 	db := testutil.DB(t)
 	repo := NewRepository(db)
@@ -102,6 +114,8 @@ func TestRepositoryPurgeExpired(t *testing.T) {
 	}
 }
 
+// 测试目标：验证重复执行过期用户清理的幂等性
+// 预期效果：首次删除符合条件的用户，后续执行成功但不再删除任何用户
 func TestRepositoryPurgeExpiredIdempotent(t *testing.T) {
 	db := testutil.DB(t)
 	repo := NewRepository(db)
@@ -128,6 +142,8 @@ func TestRepositoryPurgeExpiredIdempotent(t *testing.T) {
 	}
 }
 
+// 测试目标：验证软删除用户对常规读取和更新操作表现为不存在
+// 预期效果：查询和改名均返回记录不存在错误
 func TestRepositorySoftDeletedUserBehavesAsNotFound(t *testing.T) {
 	db := testutil.DB(t)
 	repo := NewRepository(db)
@@ -144,6 +160,8 @@ func TestRepositorySoftDeletedUserBehavesAsNotFound(t *testing.T) {
 	}
 }
 
+// 测试目标：验证将用户名更新为原值不会被误判为记录不存在
+// 预期效果：同值更新顺利完成且不返回错误
 func TestRepositoryUpdateNameSameValueIsNoop(t *testing.T) {
 	db := testutil.DB(t)
 	repo := NewRepository(db)
@@ -155,6 +173,8 @@ func TestRepositoryUpdateNameSameValueIsNoop(t *testing.T) {
 	}
 }
 
+// 测试目标：验证旧密码摘要不能覆盖已更新的密码
+// 预期效果：首次更新成功，携带旧摘要的后续更新被拒绝且新密码保持不变
 func TestRepositoryUpdatePasswordRejectsStaleHash(t *testing.T) {
 	db := testutil.DB(t)
 	repo := NewRepository(db)

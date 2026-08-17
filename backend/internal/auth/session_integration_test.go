@@ -10,15 +10,21 @@ import (
 	"gofeed/internal/testutil"
 )
 
+// 测试目标：配置会话集成测试进程
+// 预期效果：运行前初始化并在结束后清理独立测试数据库
 func TestMain(m *testing.M) {
 	os.Exit(testutil.Main(m))
 }
 
+// 测试目标：创建连接当前测试数据库的会话仓储
+// 预期效果：各用例获得隔离的数据访问对象
 func newSessionRepo(t *testing.T) *SessionRepository {
 	t.Helper()
 	return NewSessionRepository(testutil.DB(t))
 }
 
+// 测试目标：写入可用会话测试数据
+// 预期效果：返回已持久化且刷新令牌已摘要化的会话
 func seedSession(t *testing.T, repo *SessionRepository, id string, userID uint, refreshToken string) *AuthSession {
 	t.Helper()
 	s := &AuthSession{
@@ -33,6 +39,8 @@ func seedSession(t *testing.T, repo *SessionRepository, id string, userID uint, 
 	return s
 }
 
+// 测试目标：验证会话仓储可按会话标识或刷新令牌摘要读取有效会话
+// 预期效果：匹配会话完整返回，用户不匹配或会话不存在时返回无效会话错误
 func TestSessionRepositoryCreateAndFindActive(t *testing.T) {
 	repo := newSessionRepo(t)
 	ctx := context.Background()
@@ -63,6 +71,8 @@ func TestSessionRepositoryCreateAndFindActive(t *testing.T) {
 	}
 }
 
+// 测试目标：验证会话仓储会过滤过期和已撤销的会话
+// 预期效果：两类会话均不能通过会话标识或刷新令牌摘要被读取
 func TestSessionRepositoryFindActiveFiltersExpiredAndRevoked(t *testing.T) {
 	repo := newSessionRepo(t)
 	ctx := context.Background()
@@ -100,6 +110,8 @@ func TestSessionRepositoryFindActiveFiltersExpiredAndRevoked(t *testing.T) {
 	}
 }
 
+// 测试目标：验证刷新令牌轮换会替换旧摘要并阻止重放
+// 预期效果：新摘要可查询，旧摘要和不存在会话的轮换均返回无效会话错误
 func TestSessionRepositoryRotateRefresh(t *testing.T) {
 	repo := newSessionRepo(t)
 	ctx := context.Background()
@@ -115,7 +127,7 @@ func TestSessionRepositoryRotateRefresh(t *testing.T) {
 		t.Fatalf("旧 hash 应失效 err=%v", err)
 	}
 
-	// 用旧 hash 重放轮换必须失败
+	// 使用旧令牌摘要重放轮换必须失败
 	if err := repo.RotateRefresh(ctx, s, hashToken("old-token"), hashToken("another")); !errors.Is(err, ErrSessionInvalid) {
 		t.Fatalf("重放旧 hash 应失败 err=%v", err)
 	}
@@ -125,6 +137,8 @@ func TestSessionRepositoryRotateRefresh(t *testing.T) {
 	}
 }
 
+// 测试目标：验证单个撤销和按用户全量撤销的作用范围
+// 预期效果：单个撤销不影响同用户其他会话，全量撤销不影响其他用户会话
 func TestSessionRepositoryRevoke(t *testing.T) {
 	repo := newSessionRepo(t)
 	ctx := context.Background()
@@ -156,6 +170,8 @@ func TestSessionRepositoryRevoke(t *testing.T) {
 	}
 }
 
+// 测试目标：验证会话服务创建令牌时不会持久化明文刷新令牌
+// 预期效果：返回完整令牌对，数据库仅保存与刷新令牌对应的摘要
 func TestSessionServiceCreateHashesRefreshToken(t *testing.T) {
 	db := testutil.DB(t)
 	svc := NewSessionService(NewSessionRepository(db))
@@ -181,6 +197,8 @@ func TestSessionServiceCreateHashesRefreshToken(t *testing.T) {
 	}
 }
 
+// 测试目标：验证会话服务刷新令牌时轮换令牌且保留会话标识
+// 预期效果：旧刷新令牌失效，新刷新令牌可继续轮换且会话标识不变
 func TestSessionServiceRefreshRotatesAndPreservesSessionID(t *testing.T) {
 	db := testutil.DB(t)
 	svc := NewSessionService(NewSessionRepository(db))
@@ -214,6 +232,8 @@ func TestSessionServiceRefreshRotatesAndPreservesSessionID(t *testing.T) {
 	}
 }
 
+// 测试目标：验证会话服务仅认可属于当前用户且仍有效的会话
+// 预期效果：活跃会话通过校验，用户不匹配、不存在或已撤销的会话均校验失败
 func TestSessionServiceValidate(t *testing.T) {
 	db := testutil.DB(t)
 	repo := NewSessionRepository(db)

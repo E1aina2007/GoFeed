@@ -40,21 +40,21 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		r.Use(gin.Logger())
 	}
 
-	// middlewares
+	// 注册通用中间件
 
 	if err := r.SetTrustedProxies(nil); err != nil {
 		log.Printf("Failed to set trusted proxies: %v", err)
 	}
 
-	// health check
+	// 注册健康检查接口
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"name": "GoFeed", "status": "ok"})
 	})
 
-	// uploads
+	// 注册静态资源服务
 	r.Static("/static", uploadDir)
 
-	// User routes are split between public operations and authenticated account operations.
+	// 用户路由分为公开操作和需要认证的账户操作
 	sessionService := auth.NewSessionService(auth.NewSessionRepository(db))
 	userCtl := user.NewController(user.NewService(user.NewRepository(db)), sessionService)
 
@@ -77,7 +77,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		protectedUsers.DELETE("", userCtl.DeleteUser)
 	}
 
-	// Video routes: 公开读接口在 /api/video，写操作统一挂在 /api/video/auth
+	// 视频路由的公开读取和认证写入操作使用不同分组
 	videoCtl := video.NewController(
 		video.NewService(video.NewRepository(db), &userAuthorReader{repo: user.NewRepository(db)}),
 		video.NewLocalStorage(uploadDir),

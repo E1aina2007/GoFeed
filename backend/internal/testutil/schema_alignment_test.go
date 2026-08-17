@@ -9,20 +9,26 @@ import (
 	"gofeed/internal/video"
 )
 
+// 测试目标：配置模型结构集成测试进程
+// 预期效果：运行前初始化并在结束后清理独立测试数据库
 func TestMain(m *testing.M) {
 	os.Exit(Main(m))
 }
 
-// TestModelsAlignWithMigrations 把每个 GORM 模型与真实迁移结果逐项对照，
-// 防止未来类型名、表名或列定义与手写 DDL 漂移
+// 测试目标：验证模型定义与真实迁移后的数据库结构保持一致
+// 预期效果：每个模型都映射到正确数据表且声明的列全部存在
 func TestModelsAlignWithMigrations(t *testing.T) {
 	db := DB(t)
 
+	// 测试目标：描述单个模型与目标数据表的预期结构
+	// 预期效果：供后续逐项校验模型、数据表和列定义
 	type modelCheck struct {
 		model   any
 		table   string
 		columns []string
 	}
+	// 测试目标：列出需要与迁移结果对齐的模型、数据表和列集合
+	// 预期效果：覆盖全部业务模型的结构校验
 	checks := []modelCheck{
 		{
 			model: &user.User{},
@@ -56,6 +62,8 @@ func TestModelsAlignWithMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取迁移后的表清单失败: %v", err)
 	}
+	// 测试目标：收集真实迁移后的数据表名称
+	// 预期效果：用于判断每个模型对应的数据表是否存在
 	actual := make(map[string]bool, len(tables))
 	for _, table := range tables {
 		actual[table] = true
@@ -66,12 +74,14 @@ func TestModelsAlignWithMigrations(t *testing.T) {
 			t.Errorf("迁移缺少表 %s，实际表=%v", check.table, tables)
 			continue
 		}
-		// 用 GORM 自身的解析结果查询主键列，类型名映射错表时这里会失败
+		// 测试目标：使用对象关系映射的解析结果检查主键列
+		// 预期效果：错误的数据表映射会被发现
 		if !db.Migrator().HasColumn(check.model, "id") {
 			t.Errorf("模型 %T 未能解析到表 %s", check.model, check.table)
 		}
 
-		// 直接查 information_schema，不依赖 GORM 的解析结果
+		// 测试目标：直接读取数据库元数据
+		// 预期效果：不依赖对象关系映射的表名解析
 		var columns []string
 		if err := db.Raw(
 			"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?",
@@ -79,6 +89,8 @@ func TestModelsAlignWithMigrations(t *testing.T) {
 		).Scan(&columns).Error; err != nil {
 			t.Fatalf("读取表 %s 的列清单失败: %v", check.table, err)
 		}
+		// 测试目标：收集实际存在的列名称
+		// 预期效果：用于判断模型声明的每个列是否完成迁移
 		present := make(map[string]bool, len(columns))
 		for _, column := range columns {
 			present[column] = true

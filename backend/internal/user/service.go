@@ -120,7 +120,7 @@ func (s *Service) GetByUsername(ctx context.Context, username string) (*User, er
 	return s.Repo.GetByUsername(ctx, username)
 }
 
-// Delete soft-deletes a user and revokes all of its sessions atomically.
+// 在同一事务中软删除用户并撤销其全部会话
 func (s *Service) Delete(ctx context.Context, id uint) error {
 	return s.Repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		users := NewRepository(tx)

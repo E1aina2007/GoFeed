@@ -14,12 +14,12 @@ import (
 func main() {
 	log.SetPrefix("[worker] ")
 
-	// load env
+	// 加载环境变量
 	if err := godotenv.Load(); err != nil {
 		log.Println(".env not found; Using default config")
 	}
 
-	// load config
+	// 加载配置
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
 		configPath = "configs/config.dev.yaml"
@@ -36,7 +36,7 @@ func main() {
 
 	log.Println("Worker started - waiting for jobs...")
 
-	// wait for shutdown signal
+	// 等待关闭信号
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit

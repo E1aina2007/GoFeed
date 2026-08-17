@@ -59,21 +59,21 @@ func OverrideWithEnv(cfg *Config) {
 		return
 	}
 
-	// devMode or not
+	// 读取开发模式配置
 	if v := os.Getenv("MODE"); v != "" {
 		cfg.Dev = v == "dev"
 	} else {
 		cfg.Dev = true
 	}
 
-	// server
+	// 读取服务配置
 	if v := os.Getenv("SERVER_PORT"); v != "" {
 		if port, err := strconv.Atoi(v); err == nil {
 			cfg.Server.Port = port
 		}
 	}
 
-	// mysql
+	// 读取数据库配置
 	if v := os.Getenv("MYSQL_HOST"); v != "" {
 		cfg.DB.Host = v
 	}
@@ -95,7 +95,7 @@ func OverrideWithEnv(cfg *Config) {
 	if v := os.Getenv("MYSQL_DATABASE"); v != "" {
 		cfg.DB.DBName = v
 	}
-	// retention / sweeper
+	// 读取保留期和清扫任务配置
 	if v := os.Getenv("RETENTION_USER_DELETED_DAYS"); v != "" {
 		if days, err := strconv.Atoi(v); err == nil {
 			cfg.Retention.UserDeletedDays = days

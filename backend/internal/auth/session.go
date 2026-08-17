@@ -67,8 +67,8 @@ func (r *SessionRepository) FindActiveByRefreshTokenHash(ctx context.Context, ha
 	return &session, nil
 }
 
-// RotateRefresh atomically replaces a refresh token. A reused or racing token
-// cannot rotate the session after the first successful update.
+// 原子替换刷新令牌，重复使用或并发竞争的旧令牌
+// 在首次成功更新后无法再次轮换会话
 func (r *SessionRepository) RotateRefresh(ctx context.Context, session *AuthSession, expectedHash, nextHash string) error {
 	result := r.db.WithContext(ctx).Model(&AuthSession{}).
 		Where("id = ? AND user_id = ? AND refresh_token_hash = ? AND revoked_at IS NULL AND expires_at > ?", session.ID, session.UserID, expectedHash, time.Now()).
@@ -144,8 +144,8 @@ func (s *SessionService) Create(ctx context.Context, userID uint, username strin
 	return &TokenPair{AccessToken: accessToken, RefreshToken: refreshToken, ExpiresAt: session.ExpiresAt}, nil
 }
 
-// Refresh replaces the submitted refresh token while preserving the session ID.
-// The caller generates the access token after loading the current user profile.
+// 在保留会话标识的同时替换提交的刷新令牌
+// 调用方加载当前用户资料后生成访问令牌
 func (s *SessionService) Refresh(ctx context.Context, refreshToken string) (*AuthSession, string, error) {
 	if refreshToken == "" {
 		return nil, "", ErrSessionInvalid
