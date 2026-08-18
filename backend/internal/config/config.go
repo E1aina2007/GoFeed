@@ -32,6 +32,8 @@ type DatabaseConfig struct {
 type RetentionConfig struct {
 	// UserDeletedDays 注销账号从软删除到硬删除的保留天数
 	UserDeletedDays int `yaml:"user_deleted_days"`
+	// VideoDeletedDays 视频从软删除到清扫媒体和硬删除记录的保留天数
+	VideoDeletedDays int `yaml:"video_deleted_days"`
 }
 
 type SweeperConfig struct {
@@ -99,6 +101,11 @@ func OverrideWithEnv(cfg *Config) {
 	if v := os.Getenv("RETENTION_USER_DELETED_DAYS"); v != "" {
 		if days, err := strconv.Atoi(v); err == nil {
 			cfg.Retention.UserDeletedDays = days
+		}
+	}
+	if v := os.Getenv("RETENTION_VIDEO_DELETED_DAYS"); v != "" {
+		if days, err := strconv.Atoi(v); err == nil {
+			cfg.Retention.VideoDeletedDays = days
 		}
 	}
 	if v := os.Getenv("SWEEPER_INTERVAL_MINUTES"); v != "" {

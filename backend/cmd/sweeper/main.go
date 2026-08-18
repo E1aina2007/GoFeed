@@ -12,6 +12,7 @@ import (
 	"gofeed/internal/db"
 	"gofeed/internal/sweeper"
 	"gofeed/internal/user"
+	"gofeed/internal/video"
 
 	"github.com/joho/godotenv"
 )
@@ -42,9 +43,13 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v\nHint: create database %q manually and run migrations (docker compose run --rm migrate)", err, cfg.DB.DBName)
 	}
 
-	retentionDays := cfg.Retention.UserDeletedDays
-	if retentionDays <= 0 {
-		retentionDays = defaultRetentionDays
+	userRetentionDays := cfg.Retention.UserDeletedDays
+	if userRetentionDays <= 0 {
+		userRetentionDays = defaultRetentionDays
+	}
+	videoRetentionDays := cfg.Retention.VideoDeletedDays
+	if videoRetentionDays <= 0 {
+		videoRetentionDays = defaultRetentionDays
 	}
 	intervalMinutes := cfg.Sweeper.IntervalMinutes
 	if intervalMinutes <= 0 {
@@ -54,19 +59,29 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	purgeJob := sweeper.NewUserPurgeJob(user.NewRepository(dbConn), time.Duration(retentionDays)*24*time.Hour)
+	userPurgeJob := sweeper.NewUserPurgeJob(user.NewRepository(dbConn), time.Duration(userRetentionDays)*24*time.Hour)
+	videoPurgeJob := sweeper.NewVideoPurgeJob(
+		video.NewRepository(dbConn),
+		video.NewLocalStorage("./.run/uploads"),
+		time.Duration(videoRetentionDays)*24*time.Hour,
+	)
 	run := func() {
-		purged, err := purgeJob.Run(ctx)
+		purged, err := userPurgeJob.Run(ctx)
 		if err != nil {
 			log.Printf("User purge sweep failed: %v", err)
-			return
-		}
-		if purged > 0 {
+		} else if purged > 0 {
 			log.Printf("User purge swept %d expired accounts", purged)
+		}
+
+		purged, err = videoPurgeJob.Run(ctx)
+		if err != nil {
+			log.Printf("Video purge sweep failed: %v", err)
+		} else if purged > 0 {
+			log.Printf("Video purge swept %d expired videos", purged)
 		}
 	}
 
-	log.Printf("Sweeper started: retention=%dd interval=%dm", retentionDays, intervalMinutes)
+	log.Printf("Sweeper started: user retention=%dd video retention=%dd interval=%dm", userRetentionDays, videoRetentionDays, intervalMinutes)
 	run()
 	sweeper.RunEvery(ctx, time.Duration(intervalMinutes)*time.Minute, run)
 

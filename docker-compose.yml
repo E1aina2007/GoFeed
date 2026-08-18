@@ -98,9 +98,11 @@ services:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-feedsystem}
       RETENTION_USER_DELETED_DAYS: ${RETENTION_USER_DELETED_DAYS:-7}
+      RETENTION_VIDEO_DELETED_DAYS: ${RETENTION_VIDEO_DELETED_DAYS:-7}
       SWEEPER_INTERVAL_MINUTES: ${SWEEPER_INTERVAL_MINUTES:-60}
     volumes:
       - ./backend/configs:/app/configs:ro
+      - backend_uploads:/app/.run/uploads
     depends_on:
       migrate:
         condition: service_completed_successfully

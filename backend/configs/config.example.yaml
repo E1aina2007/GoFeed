@@ -25,6 +25,7 @@ database:
 
 retention:
   user_deleted_days: 7    # 注销账号软删除后的保留天数；可用 RETENTION_USER_DELETED_DAYS 覆盖
+  video_deleted_days: 7   # 视频软删除后的保留天数；到期后 sweeper 清除媒体和记录，可用 RETENTION_VIDEO_DELETED_DAYS 覆盖
 
 sweeper:
   interval_minutes: 60    # 注销用户清扫间隔（分钟）；可用 SWEEPER_INTERVAL_MINUTES 覆盖
