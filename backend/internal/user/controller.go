@@ -217,12 +217,15 @@ func (ctl *Controller) GetProfile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	user, err := ctl.Srv.GetByID(c.Request.Context(), id)
+	profile, err := ctl.Srv.GetProfile(c.Request.Context(), id)
 	if err != nil {
 		handleUserError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, GetProfileResponse{Account: publicUser(user)})
+	c.JSON(http.StatusOK, GetProfileResponse{
+		Account:    publicUser(profile.Account),
+		VideoCount: profile.VideoCount,
+	})
 }
 
 func publicUser(user *User) FindByIDResponse {

@@ -35,6 +35,16 @@ type authSession struct {
 	Username     string
 }
 
+// 测试目标：描述公开用户资料中的视频数量。
+// 预期效果：端到端测试可断言发布和软删除后的统计变化。
+type profileResponse struct {
+	Account struct {
+		ID       uint   `json:"id"`
+		Username string `json:"username"`
+	} `json:"account"`
+	VideoCount int64 `json:"video_count"`
+}
+
 // 测试目标：描述视频读取接口返回的关键字段
 // 预期效果：用于断言发布和查询结果保持一致
 type videoItem struct {
@@ -308,6 +318,51 @@ func TestVideoEndToEndFlow(t *testing.T) {
 	// 作者删除视频后读取详情，预期返回未找到状态
 	doJSON(t, client, http.MethodDelete, fmt.Sprintf("%s/api/video/auth/%d", base, item.ID), sess.AccessToken, nil, http.StatusNoContent, nil)
 	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, item.ID), "", nil, http.StatusNotFound, nil)
+}
+
+// 测试目标：验证公开用户资料实时统计当前公开可见的视频数量。
+// 预期效果：发布后增加，软删除后立即减少，注销用户资料不可再读取。
+func TestUserProfileVideoCount(t *testing.T) {
+	srv, client := newTestServer(t)
+	base := srv.URL
+
+	const username = "profile_video_author"
+	const password = "profile-video-password-123"
+	register(t, client, base, username, password)
+	sess := login(t, client, base, username, password)
+
+	profileURL := fmt.Sprintf("%s/api/user/%d/profile", base, sess.UserID)
+	var profile profileResponse
+	doJSON(t, client, http.MethodGet, profileURL, "", nil, http.StatusOK, &profile)
+	if profile.Account.ID != sess.UserID || profile.Account.Username != username || profile.VideoCount != 0 {
+		t.Fatalf("初始资料统计不正确, got=%+v", profile)
+	}
+
+	video := uploadMedia(t, client, base, sess.AccessToken, "/api/video/auth/upload/video", "file", "profile.mp4", mp4Bytes, http.StatusCreated)
+	cover := uploadMedia(t, client, base, sess.AccessToken, "/api/video/auth/upload/cover", "file", "profile.png", pngBytes, http.StatusCreated)
+	item := publish(t, client, base, sess.AccessToken, publishPayload{
+		Title:             "用于资料统计的视频",
+		PlayURL:           video.PlayURL,
+		PlayFileName:      video.PlayFileName,
+		PlayOriginalName:  video.PlayOriginalName,
+		CoverURL:          cover.CoverURL,
+		CoverFileName:     cover.CoverFileName,
+		CoverOriginalName: cover.CoverOriginalName,
+	}, http.StatusCreated)
+
+	doJSON(t, client, http.MethodGet, profileURL, "", nil, http.StatusOK, &profile)
+	if profile.VideoCount != 1 {
+		t.Fatalf("发布后视频数量应为 1, got=%d", profile.VideoCount)
+	}
+
+	doJSON(t, client, http.MethodDelete, fmt.Sprintf("%s/api/video/auth/%d", base, item.ID), sess.AccessToken, nil, http.StatusNoContent, nil)
+	doJSON(t, client, http.MethodGet, profileURL, "", nil, http.StatusOK, &profile)
+	if profile.VideoCount != 0 {
+		t.Fatalf("软删除后视频数量应立即为 0, got=%d", profile.VideoCount)
+	}
+
+	doJSON(t, client, http.MethodDelete, base+"/api/user/auth", sess.AccessToken, nil, http.StatusNoContent, nil)
+	doJSON(t, client, http.MethodGet, profileURL, "", nil, http.StatusNotFound, nil)
 }
 
 // 测试目标：验证所有受保护的视频接口均要求有效认证

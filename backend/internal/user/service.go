@@ -12,19 +12,27 @@ import (
 )
 
 type Service struct {
-	Repo *Repository
+	Repo         *Repository
+	videoCounter PublishedVideoCounter
+}
+
+// PublishedVideoCounter 是用户公开资料所需的视频统计能力。
+// 接口定义在消费方，避免 user 包依赖 video 包而产生循环依赖。
+type PublishedVideoCounter interface {
+	CountPublishedByAuthor(ctx context.Context, authorID uint) (int64, error)
 }
 
 var (
-	ErrUsernameTaken       = errors.New("username already exists")
-	ErrNewUserNameRequired = errors.New("new username is required")
-	ErrWrongPassword       = errors.New("wrong password")
-	ErrInvalidCredentials  = errors.New("invalid username or password")
-	ErrInvalidInput        = errors.New("invalid user input")
+	ErrUsernameTaken           = errors.New("username already exists")
+	ErrNewUserNameRequired     = errors.New("new username is required")
+	ErrWrongPassword           = errors.New("wrong password")
+	ErrInvalidCredentials      = errors.New("invalid username or password")
+	ErrInvalidInput            = errors.New("invalid user input")
+	ErrVideoCounterUnavailable = errors.New("video counter unavailable")
 )
 
-func NewService(repo *Repository) *Service {
-	return &Service{Repo: repo}
+func NewService(repo *Repository, videoCounter PublishedVideoCounter) *Service {
+	return &Service{Repo: repo, videoCounter: videoCounter}
 }
 
 func (s *Service) CreateUser(ctx context.Context, user *User) error {
@@ -114,6 +122,23 @@ func (s *Service) UpdateProfile(ctx context.Context, id uint, req *UpdateProfile
 
 func (s *Service) GetByID(ctx context.Context, id uint) (*User, error) {
 	return s.Repo.GetByID(ctx, id)
+}
+
+// GetProfile 返回活跃用户的公开资料及其当前公开可见的视频数量。
+func (s *Service) GetProfile(ctx context.Context, id uint) (*Profile, error) {
+	account, err := s.Repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if s.videoCounter == nil {
+		return nil, ErrVideoCounterUnavailable
+	}
+
+	videoCount, err := s.videoCounter.CountPublishedByAuthor(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &Profile{Account: account, VideoCount: videoCount}, nil
 }
 
 func (s *Service) GetByUsername(ctx context.Context, username string) (*User, error) {

@@ -20,7 +20,7 @@ const failSessionUpdateTrigger = "test_fail_auth_session_update"
 func TestUpdatePasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	service := NewService(NewRepository(db))
+	service := NewService(NewRepository(db), &fakePublishedVideoCounter{})
 	account := createUserWithSession(t, ctx, db, service, "atomic_password_user", "old-password-123")
 
 	forceSessionUpdateFailure(t, db)
@@ -48,7 +48,7 @@ func TestUpdatePasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
 func TestDeleteRollsBackWhenSessionRevocationFails(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	service := NewService(NewRepository(db))
+	service := NewService(NewRepository(db), &fakePublishedVideoCounter{})
 	account := createUserWithSession(t, ctx, db, service, "atomic_delete_user", "delete-password-123")
 
 	forceSessionUpdateFailure(t, db)
