@@ -28,3 +28,6 @@ docs/
 
 # —— AI ——
 .claude/
+
+# —— pnpm ——
+.pnpm-store/
