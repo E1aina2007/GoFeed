@@ -431,3 +431,43 @@ func TestRepositoryListPublishedNonPositiveLimit(t *testing.T) {
 		t.Fatalf("limit=0 应为空, got=%+v", items)
 	}
 }
+
+// 测试目标：验证用户主页的视频数量只统计当前公开可见的视频。
+// 预期效果：其他作者、非发布状态和软删除视频均不计入。
+func TestRepositoryCountPublishedByAuthor(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	seedVideo(t, repo, 1, "published-1", VideoStatusPublished, baseTime)
+	seedVideo(t, repo, 1, "published-2", VideoStatusPublished, baseTime.Add(time.Minute))
+	seedVideo(t, repo, 1, "draft", VideoStatusDraft, baseTime)
+	seedVideo(t, repo, 1, "processing", VideoStatusProcessing, baseTime)
+	seedVideo(t, repo, 1, "rejected", VideoStatusRejected, baseTime)
+	deleted := seedVideo(t, repo, 1, "deleted", VideoStatusPublished, baseTime)
+	seedVideo(t, repo, 2, "other-author", VideoStatusPublished, baseTime)
+	if err := repo.Delete(ctx, deleted.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	count, err := repo.CountPublishedByAuthor(ctx, 1)
+	if err != nil {
+		t.Fatalf("CountPublishedByAuthor: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("作者 1 应仅统计 2 条公开视频, got=%d", count)
+	}
+
+	otherCount, err := repo.CountPublishedByAuthor(ctx, 2)
+	if err != nil {
+		t.Fatalf("CountPublishedByAuthor other: %v", err)
+	}
+	if otherCount != 1 {
+		t.Fatalf("作者 2 的视频不应混入作者 1, got=%d", otherCount)
+	}
+
+	zeroCount, err := repo.CountPublishedByAuthor(ctx, 0)
+	if err != nil || zeroCount != 0 {
+		t.Fatalf("authorID=0 应返回零值, count=%d err=%v", zeroCount, err)
+	}
+}

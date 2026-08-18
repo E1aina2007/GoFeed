@@ -75,6 +75,20 @@ func (r *Repository) ListPublished(ctx context.Context, authorID uint, cursor *C
 	return videos, nil
 }
 
+// CountPublishedByAuthor 返回作者当前公开可见的视频数量。
+// GORM 默认过滤软删除记录，视频进入删除冷静期后会立即不再计入。
+func (r *Repository) CountPublishedByAuthor(ctx context.Context, authorID uint) (int64, error) {
+	if authorID == 0 {
+		return 0, nil
+	}
+
+	var count int64
+	err := r.db.WithContext(ctx).Model(&Video{}).
+		Where("author_id = ? AND status = ?", authorID, VideoStatusPublished).
+		Count(&count).Error
+	return count, err
+}
+
 // ListByAuthor 按作者查询视频（不限制状态，用于作者自己的管理列表）
 func (r *Repository) ListByAuthor(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error) {
 	if authorID == 0 || limit <= 0 {
