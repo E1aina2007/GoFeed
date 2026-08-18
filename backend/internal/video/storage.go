@@ -34,9 +34,10 @@ const (
 )
 
 var (
-	ErrInvalidMedia    = errors.New("invalid media file")
-	ErrMediaTooLarge   = errors.New("media file too large")
-	ErrInvalidMediaURL = errors.New("media url does not belong to the current user")
+	ErrInvalidMedia     = errors.New("invalid media file")
+	ErrMediaTooLarge    = errors.New("media file too large")
+	ErrInvalidMediaURL  = errors.New("media url does not belong to the current user")
+	ErrInvalidMediaPath = errors.New("invalid stored media path")
 )
 
 // SavedFile 描述一次保存到本地存储的媒体文件
@@ -49,6 +50,11 @@ type SavedFile struct {
 // 将来替换为 S3/OSS 时，只需更换实现，不改变发布接口
 type MediaStorage interface {
 	Save(ctx context.Context, ownerID uint, kind MediaKind, filename string, src io.Reader) (SavedFile, error)
+}
+
+// MediaRemover 抽象已发布媒体的删除能力，供到期视频清扫任务使用。
+type MediaRemover interface {
+	Remove(ctx context.Context, publicURL string) error
 }
 
 // LocalStorage 将媒体文件保存到本地 .run/uploads 目录，并通过 /static 暴露
@@ -118,6 +124,62 @@ func (s *LocalStorage) Save(ctx context.Context, ownerID uint, kind MediaKind, f
 		PublicURL: fmt.Sprintf("/static/%s/%d/%s/%s", kind, ownerID, date, savedName),
 		FileName:  savedName,
 	}, nil
+}
+
+// Remove 删除由 Save 生成的媒体文件。不存在的文件按成功处理，保证清扫任务可重试。
+// 仅接受严格受控的 /static/{kind}/{ownerID}/{yyyyMMdd}/{filename} 路径，避免越界删除。
+func (s *LocalStorage) Remove(_ context.Context, publicURL string) error {
+	path, err := s.pathForPublicURL(publicURL)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (s *LocalStorage) pathForPublicURL(publicURL string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(publicURL))
+	if err != nil || u.IsAbs() || u.Host != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", ErrInvalidMediaPath
+	}
+	const prefix = "/static/"
+	if !strings.HasPrefix(u.Path, prefix) {
+		return "", ErrInvalidMediaPath
+	}
+
+	parts := strings.Split(strings.TrimPrefix(u.Path, prefix), "/")
+	if len(parts) != 4 {
+		return "", ErrInvalidMediaPath
+	}
+	kind := MediaKind(parts[0])
+	if kind != MediaVideo && kind != MediaCover {
+		return "", ErrInvalidMediaPath
+	}
+	if _, err := strconv.ParseUint(parts[1], 10, 64); err != nil {
+		return "", ErrInvalidMediaPath
+	}
+	if _, err := time.Parse("20060102", parts[2]); err != nil {
+		return "", ErrInvalidMediaPath
+	}
+	if parts[3] == "" || sanitizeFilename(parts[3]) != parts[3] || !allowedExt(kind, strings.ToLower(filepath.Ext(parts[3]))) {
+		return "", ErrInvalidMediaPath
+	}
+
+	root, err := filepath.Abs(s.root)
+	if err != nil {
+		return "", err
+	}
+	target, err := filepath.Abs(filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(u.Path, prefix))))
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", ErrInvalidMediaPath
+	}
+	return target, nil
 }
 
 // OriginalName 返回用户指定的原始文件名（仅去掉路径部分，不做字符清洗），

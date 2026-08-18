@@ -240,6 +240,54 @@ func TestOriginalName(t *testing.T) {
 	}
 }
 
+// 测试目标：验证到期视频的本地媒体可被安全删除且重复清扫保持幂等。
+// 预期效果：只删除上传根目录内由 Save 生成的文件，不存在的文件视为已清理。
+func TestLocalStorageRemove(t *testing.T) {
+	root := t.TempDir()
+	s := NewLocalStorage(root)
+	saved, err := s.Save(context.Background(), 42, MediaVideo, "expired.mp4", bytes.NewReader([]byte("video")))
+	if err != nil {
+		t.Fatalf("保存测试媒体失败: %v", err)
+	}
+
+	path := filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(saved.PublicURL, "/static/")))
+	if err := s.Remove(context.Background(), saved.PublicURL); err != nil {
+		t.Fatalf("首次删除媒体失败: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("媒体文件应已删除, stat err=%v", err)
+	}
+	if err := s.Remove(context.Background(), saved.PublicURL); err != nil {
+		t.Fatalf("重复删除不存在媒体应成功: %v", err)
+	}
+}
+
+// 测试目标：验证清扫任务不能借由异常 URL 删除上传目录外的文件。
+// 预期效果：非规范媒体路径被拒绝，根目录外文件保持不变。
+func TestLocalStorageRemoveRejectsUnsafePath(t *testing.T) {
+	root := t.TempDir()
+	s := NewLocalStorage(root)
+	outside := filepath.Join(filepath.Dir(root), "outside.mp4")
+	if err := os.WriteFile(outside, []byte("keep"), 0o644); err != nil {
+		t.Fatalf("创建根目录外文件失败: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(outside) })
+
+	for _, rawURL := range []string{
+		"/static/videos/1/20260818/../../outside.mp4",
+		"/static/videos/1/not-a-date/clip.mp4",
+		"https://example.com/static/videos/1/20260818/clip.mp4",
+		"/static/videos/1/20260818/clip.mp4?download=1",
+	} {
+		if err := s.Remove(context.Background(), rawURL); !errors.Is(err, ErrInvalidMediaPath) {
+			t.Fatalf("不安全路径应被拒绝 url=%q err=%v", rawURL, err)
+		}
+	}
+	if data, err := os.ReadFile(outside); err != nil || string(data) != "keep" {
+		t.Fatalf("根目录外文件不应被删除 data=%q err=%v", data, err)
+	}
+}
+
 // 测试目标：验证本地存储拒绝不在白名单中的媒体扩展名
 // 预期效果：非法视频和封面扩展名均在落盘前返回媒体错误
 func TestLocalStorageSaveRejectsBadExtension(t *testing.T) {
