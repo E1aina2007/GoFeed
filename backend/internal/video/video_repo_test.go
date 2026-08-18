@@ -52,6 +52,15 @@ func seedVideo(t *testing.T, repo *Repository, authorID uint, title, status stri
 	return v
 }
 
+// 测试目标：设置视频软删除时间以构造宽限期边界。
+// 预期效果：测试可准确覆盖到期、边界和未到期三种记录。
+func setVideoDeletedAt(t *testing.T, db *gorm.DB, id uint, at time.Time) {
+	t.Helper()
+	if err := db.Exec("UPDATE videos SET deleted_at = ? WHERE id = ?", at, id).Error; err != nil {
+		t.Fatalf("设置视频 deleted_at 失败: %v", err)
+	}
+}
+
 // 测试目标：验证视频仓储创建并按标识读取视频
 // 预期效果：创建操作回填标识和时间，读取结果与写入字段一致
 func TestRepositoryCreateAndGetByID(t *testing.T) {
@@ -346,6 +355,63 @@ func TestRepositoryDeleteSoftDeletes(t *testing.T) {
 
 	if err := repo.Delete(ctx, v.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("重复删除应 not found, err=%v", err)
+	}
+}
+
+// 测试目标：验证到期软删除视频可被查询并硬删除。
+// 预期效果：早于或等于截止时间的软删记录被删除，宽限期内及活跃记录保持不变。
+func TestRepositoryPurgeExpiredDeleted(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+	cutoff := time.Date(2026, 8, 18, 12, 0, 0, 0, time.Local)
+
+	expired := seedVideo(t, repo, 1, "expired", VideoStatusPublished, baseTime)
+	boundary := seedVideo(t, repo, 1, "boundary", VideoStatusPublished, baseTime)
+	grace := seedVideo(t, repo, 1, "grace", VideoStatusPublished, baseTime)
+	active := seedVideo(t, repo, 1, "active", VideoStatusPublished, baseTime)
+	setVideoDeletedAt(t, db, expired.ID, cutoff.Add(-time.Minute))
+	setVideoDeletedAt(t, db, boundary.ID, cutoff)
+	setVideoDeletedAt(t, db, grace.ID, cutoff.Add(time.Minute))
+
+	items, err := repo.ListExpiredDeleted(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("ListExpiredDeleted: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("应只返回到期和边界视频, got=%+v", items)
+	}
+
+	for _, item := range items {
+		deleted, err := repo.HardDeleteExpired(ctx, item.ID, cutoff)
+		if err != nil {
+			t.Fatalf("HardDeleteExpired id=%d: %v", item.ID, err)
+		}
+		if !deleted {
+			t.Fatalf("到期视频应被硬删除 id=%d", item.ID)
+		}
+	}
+	if deleted, err := repo.HardDeleteExpired(ctx, expired.ID, cutoff); err != nil || deleted {
+		t.Fatalf("重复硬删除应为空 deleted=%t err=%v", deleted, err)
+	}
+
+	for _, id := range []uint{expired.ID, boundary.ID} {
+		var count int64
+		if err := db.Raw("SELECT COUNT(*) FROM videos WHERE id = ?", id).Scan(&count).Error; err != nil {
+			t.Fatalf("统计硬删除视频失败: %v", err)
+		}
+		if count != 0 {
+			t.Fatalf("视频 id=%d 应被硬删除", id)
+		}
+	}
+	for _, id := range []uint{grace.ID, active.ID} {
+		var count int64
+		if err := db.Raw("SELECT COUNT(*) FROM videos WHERE id = ?", id).Scan(&count).Error; err != nil {
+			t.Fatalf("统计保留视频失败: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("视频 id=%d 应在数据库中保留", id)
+		}
 	}
 }
 

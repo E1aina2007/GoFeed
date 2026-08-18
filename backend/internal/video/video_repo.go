@@ -2,6 +2,7 @@ package video
 
 import (
 	"context"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -110,4 +111,30 @@ func (r *Repository) Delete(ctx context.Context, id uint) error {
 		return gorm.ErrRecordNotFound
 	}
 	return nil
+}
+
+// ListExpiredDeleted 返回已软删除且宽限期届满的视频，供 sweeper 在删除媒体文件前读取。
+func (r *Repository) ListExpiredDeleted(ctx context.Context, cutoff time.Time) ([]Video, error) {
+	var videos []Video
+	if err := r.db.WithContext(ctx).Unscoped().
+		Where("deleted_at IS NOT NULL AND deleted_at <= ?", cutoff).
+		Find(&videos).Error; err != nil {
+		return nil, err
+	}
+	return videos, nil
+}
+
+// HardDeleteExpired 删除指定的、仍处于到期软删除状态的视频记录。
+// 返回 false 表示该记录已被其他清扫任务处理或不再符合清扫条件。
+func (r *Repository) HardDeleteExpired(ctx context.Context, id uint, cutoff time.Time) (bool, error) {
+	if id == 0 {
+		return false, nil
+	}
+	result := r.db.WithContext(ctx).Unscoped().
+		Where("id = ? AND deleted_at IS NOT NULL AND deleted_at <= ?", id, cutoff).
+		Delete(&Video{})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
 }
