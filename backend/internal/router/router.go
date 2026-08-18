@@ -1,8 +1,6 @@
 package router
 
 import (
-	"context"
-	"errors"
 	"log"
 	"net/http"
 
@@ -81,7 +79,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 
 	// 视频路由的公开读取和认证写入操作使用不同分组
 	videoCtl := video.NewController(
-		video.NewService(videoRepo, &userAuthorReader{repo: userRepo}),
+		video.NewService(videoRepo, video.NewUserAuthorReader(userRepo)),
 		video.NewLocalStorage(uploadDir),
 	)
 	videos := api.Group("/video")
@@ -99,22 +97,4 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	}
 
 	return r
-}
-
-// userAuthorReader 将 user 仓储的按 ID 查询包装成视频服务需要的作者读取接口，
-// 避免 video 包直接依赖 user 包内部仓储
-type userAuthorReader struct {
-	repo *user.Repository
-}
-
-func (r *userAuthorReader) GetPublicAuthor(ctx context.Context, id uint) (video.Author, error) {
-	u, err := r.repo.GetByID(ctx, id)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// 账号已注销或不存在时返回占位作者，保证历史视频仍可正常展示
-			return video.Author{ID: id, Username: "已注销用户"}, nil
-		}
-		return video.Author{}, err
-	}
-	return video.Author{ID: u.ID, Username: u.Username, AvatarURL: u.AvatarURL}, nil
 }
