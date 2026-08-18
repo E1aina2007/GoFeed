@@ -38,7 +38,7 @@ docker compose run --rm migrate
 # migrate -path backend/db/migrations -database "mysql://root:<密码>@tcp(localhost:3306)/feedsystem?multiStatements=true" up
 
 go run ./cmd            # API
-go run ./cmd/sweeper    # 注销用户定时清扫；worker 暂为消息队列占位，无需手动启动
+go run ./cmd/sweeper    # 注销用户和到期软删视频定时清扫；worker 暂为消息队列占位，无需手动启动
 ```
 
 ## 前端开发（pnpm）
@@ -81,7 +81,8 @@ pnpm preview        # 本地预览构建产物
 | MySQL 库名 | `MYSQL_DATABASE` | 本地默认 `feedsystem`；Docker 下默认读取 `config.yaml`，也可用根目录 `.env` 覆盖（两边保持一致） |
 | JWT 密钥 | `JWT_SECRET` | 本地在 `backend/.env`、Docker 在根目录 `.env` 设置；不设置时每次启动随机生成，重启后所有 token 失效 |
 | 注销保留天数 | `RETENTION_USER_DELETED_DAYS` | 默认 `7`；注销账号软删除后经过该天数由 sweeper 硬删除 |
-| 清扫间隔 | `SWEEPER_INTERVAL_MINUTES` | 默认 `60`；sweeper 执行注销用户清扫的间隔分钟数 |
+| 视频删除保留天数 | `RETENTION_VIDEO_DELETED_DAYS` | 默认 `7`；视频软删除后经过该天数由 sweeper 删除视频/封面文件并硬删除记录 |
+| 清扫间隔 | `SWEEPER_INTERVAL_MINUTES` | 默认 `60`；sweeper 执行用户和视频清扫的间隔分钟数 |
 
 ### 本地开发
 
@@ -108,6 +109,7 @@ MYSQL_USER=root
 MYSQL_ROOT_PASSWORD=your-mysql-password
 MYSQL_DATABASE=feedsystem
 RETENTION_USER_DELETED_DAYS=7
+RETENTION_VIDEO_DELETED_DAYS=7
 SWEEPER_INTERVAL_MINUTES=60
 ```
 
@@ -115,11 +117,10 @@ SWEEPER_INTERVAL_MINUTES=60
 
 ## 项目进度
 
-当前主线：视频内容模块。后端已完成视频/封面上传、发布、公开列表与详情、我的视频、作者删除，并接入会话鉴权；存储侧已落地物理文件名 4 步清洗、实际存储名与用户指定名分离、DB 只存相对路径（迁移 `000002_video_file_names`）。验收测试已补齐两层：仓储集成测试与 httptest 端到端（均跑真实 MySQL），并顺带修复了会话模型与 `auth_sessions` 表的映射 bug、新增模型与迁移的 schema 对齐防护。账号注销采用软删除 + 7 天宽限期，由独立 sweeper 进程定期硬删除。CI 已为后端测试引入 MySQL 8.0 service；前端仍是脚手架，尚无业务页面。
+当前主线：视频内容模块。后端已完成视频/封面上传、发布、公开列表与详情、我的视频、作者删除，并接入会话鉴权；存储侧已落地物理文件名 4 步清洗、实际存储名与用户指定名分离、DB 只存相对路径（迁移 `000002_video_file_names`）。验收测试已补齐两层：仓储集成测试与 httptest 端到端（均跑真实 MySQL），并顺带修复了会话模型与 `auth_sessions` 表的映射 bug、新增模型与迁移的 schema 对齐防护。账号和视频删除均采用软删除 + 7 天宽限期：sweeper 到期硬删除用户；到期视频会同时清除视频/封面文件和数据库记录。CI 已为后端测试引入 MySQL 8.0 service；前端仍是脚手架，尚无业务页面。
 
 下一步优先级：
 
-1. 用户/会话自动化测试：按 `docs/auth-api-test-plan.md` 补 refresh 轮换、单会话退出、改密/删号全会话撤销（当前端到端只顺带覆盖注册/登录）。
-2. 用户主页视频数统计（`GET /api/user/:id/profile` 的 `video_count` 落地）。
-3. 基础 Feed 与前端最小闭环（登录/注册、视频流、上传与发布、我的视频）；接口契约已被端到端测试锁定，可直接启动前端。
-4. 互动模块（点赞、评论、关注）及后续演进。
+1. 用户主页视频数统计（`GET /api/user/:id/profile` 的 `video_count` 落地）。
+2. 基础 Feed 与前端最小闭环（登录/注册、视频流、上传与发布、我的视频）；接口契约已被端到端测试锁定，可直接启动前端。
+3. 互动模块（点赞、评论、关注）及后续演进。
