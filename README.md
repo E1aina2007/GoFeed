@@ -4,21 +4,16 @@
 
 首次使用需要准备两个文件：
 
-1. 在项目根目录创建 `.env`（变量示例见 `backend/.env.example`，Docker 下使用「Docker 部署」小节的取值），设置 `MYSQL_ROOT_PASSWORD`、`MYSQL_DATABASE`，并建议设置固定的 `JWT_SECRET`（不设置时后端每次重启都会生成随机密钥，登录态全部失效）。
-2. 复制 `backend/configs/config.example.yaml` 为 `backend/configs/config.yaml`，把 `database.host` 改为 `mysql`、`database.password` 改为与 `.env` 中 `MYSQL_ROOT_PASSWORD` 一致。
+1. 在 `backend` 目录创建 `.env`（变量示例见 `backend/.env.example`），设置 `MYSQL_ROOT_PASSWORD`、`MYSQL_DATABASE` 和固定的 `JWT_SECRET`。
+2. 复制 `backend/configs/config.example.yaml` 为 `backend/configs/config.yaml`，把 `database.host` 改为 `mysql`；数据库密码由 `backend/.env` 注入，YAML 不包含密码字段。
 
-数据库需要手动创建一次，之后启动会自动跑迁移建表：
+数据库会由 Compose 自动创建，之后启动会自动跑迁移建表：
 
 ```bash
-docker compose up -d mysql
-
-# 手动建库（只执行一次，后续启动复用）
-docker compose exec mysql mysql -uroot -p -e "CREATE DATABASE IF NOT EXISTS feedsystem CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"
-
 docker compose up -d
 ```
 
-启动顺序：mysql 健康检查通过 → `migrate`（golang-migrate）应用 `backend/db/migrations` 下的迁移建表 → backend/worker/sweeper 启动。应用本身不负责建库建表。
+启动顺序：mysql 健康检查通过 → `init-db` 创建 `MYSQL_DATABASE`（已存在则跳过）→ `migrate`（golang-migrate）应用 `backend/db/migrations` 下的迁移建表 → backend/worker/sweeper 启动。应用本身不负责建库建表。
 
 > 需要 Docker Compose v2.17+（依赖 `service_completed_successfully` 条件）。
 
@@ -65,28 +60,28 @@ pnpm preview        # 本地预览构建产物
 
 ## 配置
 
-配置加载顺序：先读取 `CONFIG_PATH` 指定的 YAML（默认 `configs/config.dev.yaml`），再用环境变量覆盖，环境变量优先级最高。模板 `backend/configs/config.example.yaml` 中的 `redis`、`rabbitmq`、`observe` 为后续功能预留，当前版本尚未读取。
+配置加载顺序：先读取 `CONFIG_PATH` 指定的 YAML（默认 `configs/config.dev.yaml`），再用环境变量覆盖，环境变量优先级最高。数据库密码、JWT 密钥和运行模式只从环境变量读取，YAML 中即使存在同名字段也会被忽略。模板 `backend/configs/config.example.yaml` 中的 `redis`、`rabbitmq`、`observe` 为后续功能预留，当前版本尚未读取。
 
 当前生效的配置项：
 
 | 配置项 | 环境变量 | 默认值 / 说明 |
 | --- | --- | --- |
-| 运行模式 | `MODE` | 本地默认 `dev`；Docker 由 compose 注入，缺省 `prod`（关闭 Gin 调试日志） |
+| 运行模式 | `MODE` | 仅 `prod` 启用生产模式并关闭 Gin 调试日志；空值、`dev` 或其他值均按 `dev` 处理 |
 | 配置文件路径 | `CONFIG_PATH` | 本地默认 `configs/config.dev.yaml`；Docker 由 compose 设为 `/app/configs/config.yaml` |
 | HTTP 端口 | `SERVER_PORT` | `8080` |
-| MySQL 主机 | `MYSQL_HOST` | 本地默认 `localhost`；Docker 下在 `config.yaml` 中改为 `mysql`，也可用根目录 `.env` 覆盖 |
+| MySQL 主机 | `MYSQL_HOST` | 本地默认 `localhost`；Docker 容器由 Compose 覆盖为 `mysql` |
 | MySQL 端口 | `MYSQL_PORT` | `3306` |
 | MySQL 用户 | `MYSQL_USER` | `root` |
-| MySQL 密码 | `MYSQL_ROOT_PASSWORD` | 覆盖 `database.password`，优先于 `MYSQL_PASSWORD`；Docker 下默认读取 `config.yaml`，也可用根目录 `.env` 覆盖（两边保持一致） |
-| MySQL 库名 | `MYSQL_DATABASE` | 本地默认 `feedsystem`；Docker 下默认读取 `config.yaml`，也可用根目录 `.env` 覆盖（两边保持一致） |
-| JWT 密钥 | `JWT_SECRET` | 本地在 `backend/.env`、Docker 在根目录 `.env` 设置；不设置时每次启动随机生成，重启后所有 token 失效 |
+| MySQL 密码 | `MYSQL_ROOT_PASSWORD` | 仅从环境变量读取，优先于 `MYSQL_PASSWORD`；统一存放在 `backend/.env` |
+| MySQL 库名 | `MYSQL_DATABASE` | 默认 `feedsystem`；统一存放在 `backend/.env` |
+| JWT 密钥 | `JWT_SECRET` | 存放在 `backend/.env`；不设置时每次启动随机生成，重启后所有 token 失效 |
 | 注销保留天数 | `RETENTION_USER_DELETED_DAYS` | 默认 `7`；注销账号软删除后经过该天数由 sweeper 硬删除 |
 | 视频删除保留天数 | `RETENTION_VIDEO_DELETED_DAYS` | 默认 `7`；视频软删除后经过该天数由 sweeper 删除视频/封面文件并硬删除记录 |
 | 清扫间隔 | `SWEEPER_INTERVAL_MINUTES` | 默认 `60`；sweeper 执行用户和视频清扫的间隔分钟数 |
 
 ### 本地开发
 
-1. 复制 `backend/configs/config.example.yaml` 为 `backend/configs/config.dev.yaml`，把 `database.password` 改成你的 MySQL 密码；或保留默认路径，直接在 `backend/.env` 中用 `MYSQL_*` 覆盖（参考 `backend/.env.example`，环境变量优先）。
+1. 复制 `backend/configs/config.example.yaml` 为 `backend/configs/config.dev.yaml`，在 `backend/.env` 中设置数据库连接和密码环境变量（参考 `backend/.env.example`）；非敏感字段可按需修改 YAML。
 2. 在 `backend/.env` 中设置固定 `JWT_SECRET`，避免重启后登录态全部失效。
 3. 在 `backend` 目录执行 `go run ./cmd` 启动。
 
@@ -95,15 +90,15 @@ pnpm preview        # 本地预览构建产物
 Docker 同样采用复制修改的方式：
 
 1. 复制 `backend/configs/config.example.yaml` 为 `backend/configs/config.yaml`（已被 git 忽略，不会入库）。
-2. 修改 `database.host` 为 `mysql`，`database.password` 为你的 MySQL 密码（与根目录 `.env` 的 `MYSQL_ROOT_PASSWORD` 一致）。
+2. 修改 `database.host` 为 `mysql`；数据库密码由 `backend/.env` 注入，YAML 内不保存秘密。
 3. compose 将宿主机 `backend/configs` 挂载到容器 `/app/configs`，并设置 `CONFIG_PATH=/app/configs/config.yaml`，容器实际读取的就是这份 `config.yaml`。
-4. 在项目根目录创建 `.env`（变量参考 `backend/.env.example`，文件本身不入库），compose 会把 `MODE`、`SERVER_PORT`、`JWT_SECRET`、`MYSQL_*` 和保留期/清扫参数全部注入 backend / worker / sweeper 容器，可覆盖 `config.yaml` 中的对应字段（环境变量优先）。示例：
+4. 在 `backend` 目录创建 `.env`（变量参考 `backend/.env.example`，文件本身不入库）。Compose 通过 `env_file` 将其注入 MySQL、迁移和后端进程，并在容器内覆盖 `MODE=prod`、`MYSQL_HOST=mysql` 与 `CONFIG_PATH=/app/configs/config.yaml`。示例：
 
 ```env
-MODE=prod
+MODE=dev
 SERVER_PORT=8080
 JWT_SECRET=replace-with-a-32-characters-random-secret
-MYSQL_HOST=mysql
+MYSQL_HOST=localhost
 MYSQL_PORT=3306
 MYSQL_USER=root
 MYSQL_ROOT_PASSWORD=your-mysql-password

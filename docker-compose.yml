@@ -2,8 +2,9 @@ services:
   mysql:
     image: mysql:8.0
     restart: always
+    env_file:
+      - ./backend/.env
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
       TZ: "Asia/Shanghai"
     ports:
       - "3306:3306"
@@ -19,20 +20,36 @@ services:
       timeout: 5s
       retries: 20
 
+  # 初始化业务数据库；IF NOT EXISTS 保证已有数据卷可重复启动
+  init-db:
+    image: mysql:8.0
+    restart: "no"
+    env_file:
+      - ./backend/.env
+    depends_on:
+      mysql:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mysql -h mysql -uroot -p"$${MYSQL_ROOT_PASSWORD}" -e "CREATE DATABASE IF NOT EXISTS \`$${MYSQL_DATABASE}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"
+
   # 版本化迁移：由 golang-migrate 执行 backend/db/migrations 下的迁移文件
-  # 依赖数据库已手动创建；迁移服务跑完退出后，backend/worker/sweeper 才会启动
+  # 依赖数据库初始化完成；迁移服务跑完退出后，backend/worker/sweeper 才会启动
   migrate:
     image: migrate/migrate:v4.19.1
     restart: "no"
+    env_file:
+      - ./backend/.env
     depends_on:
+      init-db:
+        condition: service_completed_successfully
       mysql:
         condition: service_healthy
     volumes:
       - ./backend/db/migrations:/migrations
-    command:
-      - -path=/migrations
-      - -database=mysql://root:${MYSQL_ROOT_PASSWORD:-changeme}@tcp(mysql:3306)/${MYSQL_DATABASE:-feedsystem}?multiStatements=true
-      - up
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["migrate -path /migrations -database \"mysql://root:$${MYSQL_ROOT_PASSWORD}@tcp(mysql:3306)/$${MYSQL_DATABASE}?multiStatements=true\" up"]
 
   backend:
     build:
@@ -40,18 +57,12 @@ services:
       dockerfile: backend/Dockerfile
       target: api
     restart: always
+    env_file:
+      - ./backend/.env
     environment:
-      # 容器实际读取宿主机挂载的 configs/config.yaml（见 volumes）；
-      # 以下环境变量可覆盖 config.yaml 对应字段，均可通过根目录 .env 设置
-      CONFIG_PATH: ${CONFIG_PATH:-/app/configs/config.yaml}
-      MODE: ${MODE:-prod}
-      SERVER_PORT: ${SERVER_PORT:-8080}
-      JWT_SECRET: ${JWT_SECRET:-}
-      MYSQL_HOST: ${MYSQL_HOST:-mysql}
-      MYSQL_PORT: ${MYSQL_PORT:-3306}
-      MYSQL_USER: ${MYSQL_USER:-root}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-feedsystem}
+      CONFIG_PATH: /app/configs/config.yaml
+      MODE: prod
+      MYSQL_HOST: mysql
     ports:
       - "8080:8080"
     volumes:
@@ -67,16 +78,12 @@ services:
       dockerfile: backend/Dockerfile
       target: worker
     restart: always
+    env_file:
+      - ./backend/.env
     environment:
-      CONFIG_PATH: ${CONFIG_PATH:-/app/configs/config.yaml}
-      MODE: ${MODE:-prod}
-      SERVER_PORT: ${SERVER_PORT:-8080}
-      JWT_SECRET: ${JWT_SECRET:-}
-      MYSQL_HOST: ${MYSQL_HOST:-mysql}
-      MYSQL_PORT: ${MYSQL_PORT:-3306}
-      MYSQL_USER: ${MYSQL_USER:-root}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-feedsystem}
+      CONFIG_PATH: /app/configs/config.yaml
+      MODE: prod
+      MYSQL_HOST: mysql
     volumes:
       - ./backend/configs:/app/configs:ro
     depends_on:
@@ -89,17 +96,12 @@ services:
       dockerfile: backend/Dockerfile
       target: sweeper
     restart: always
+    env_file:
+      - ./backend/.env
     environment:
-      CONFIG_PATH: ${CONFIG_PATH:-/app/configs/config.yaml}
-      MODE: ${MODE:-prod}
-      MYSQL_HOST: ${MYSQL_HOST:-mysql}
-      MYSQL_PORT: ${MYSQL_PORT:-3306}
-      MYSQL_USER: ${MYSQL_USER:-root}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-feedsystem}
-      RETENTION_USER_DELETED_DAYS: ${RETENTION_USER_DELETED_DAYS:-7}
-      RETENTION_VIDEO_DELETED_DAYS: ${RETENTION_VIDEO_DELETED_DAYS:-7}
-      SWEEPER_INTERVAL_MINUTES: ${SWEEPER_INTERVAL_MINUTES:-60}
+      CONFIG_PATH: /app/configs/config.yaml
+      MODE: prod
+      MYSQL_HOST: mysql
     volumes:
       - ./backend/configs:/app/configs:ro
       - backend_uploads:/app/.run/uploads
