@@ -1,5 +1,17 @@
 <script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router'
+import { RouterLink, RouterView, useRouter } from 'vue-router'
+
+import { currentUser, isAuthenticated, logout } from '@/features/auth/session'
+
+const router = useRouter()
+
+async function handleLogout() {
+  try {
+    await logout()
+  } finally {
+    await router.push({ name: 'feed' })
+  }
+}
 </script>
 
 <template>
@@ -8,6 +20,12 @@ import { RouterLink, RouterView } from 'vue-router'
       <RouterLink class="brand" to="/" aria-label="GoFeed 首页">GoFeed</RouterLink>
       <nav class="primary-nav" aria-label="主导航">
         <RouterLink class="primary-nav__link" to="/">发现</RouterLink>
+        <template v-if="!isAuthenticated">
+          <RouterLink class="primary-nav__link" :to="{ name: 'login' }">登录</RouterLink>
+          <RouterLink class="primary-nav__link" :to="{ name: 'register' }">注册</RouterLink>
+        </template>
+        <span v-if="currentUser" class="current-user">{{ currentUser.username }}</span>
+        <button v-if="isAuthenticated" class="logout-button" type="button" @click="handleLogout">退出</button>
       </nav>
     </div>
   </header>
@@ -57,6 +75,30 @@ import { RouterLink, RouterView } from 'vue-router'
   text-decoration: none;
 }
 
+.current-user {
+  display: grid;
+  align-items: center;
+  max-width: 12ch;
+  overflow: hidden;
+  color: #d6d9dd;
+  font-size: 0.86rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logout-button {
+  border: 0;
+  padding: 0;
+  color: #aab0b7;
+  background: transparent;
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+
+.logout-button:hover {
+  color: #ffffff;
+}
+
 .primary-nav__link.router-link-exact-active {
   border-bottom-color: var(--accent);
   color: #ffffff;
@@ -71,6 +113,10 @@ import { RouterLink, RouterView } from 'vue-router'
 
   .primary-nav {
     gap: 12px;
+  }
+
+  .current-user {
+    display: none;
   }
 
 }
