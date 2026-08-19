@@ -1,0 +1,42 @@
+:root {
+  color: #202126;
+  background: #0e1012;
+  font-family: Inter, "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+
+  --surface: #ffffff;
+  --ink-strong: #202126;
+  --ink-muted: #666970;
+  --ink-subtle: #8b8e95;
+  --border-subtle: #dde1e0;
+  --accent: #087c6b;
+  --accent-strong: #056154;
+  --accent-soft: #e7f4f0;
+  --media-fallback: #1e2528;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background: #0e1012;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button:focus-visible,
+a:focus-visible,
+video:focus-visible {
+  outline: 3px solid #e4a43b;
+  outline-offset: 2px;
+}
