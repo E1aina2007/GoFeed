@@ -36,6 +36,8 @@ func main() {
 	}
 	if cfg.Dev {
 		log.Println("DEV MODE")
+	} else {
+		log.Println("PROD MODE")
 	}
 
 	// 连接数据库（数据库手动创建，表结构由 migrate 服务自动迁移）

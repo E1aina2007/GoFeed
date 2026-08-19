@@ -14,7 +14,8 @@ type Config struct {
 	Retention RetentionConfig `yaml:"retention"`
 	Sweeper   SweeperConfig   `yaml:"sweeper"`
 
-	Dev bool
+	// Dev is controlled by MODE and is intentionally not loaded from YAML.
+	Dev bool `yaml:"-"`
 }
 
 type ServerConfig struct {
@@ -22,10 +23,11 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	User     string `yaml:"user"`
-	Password string `yaml:"password"`
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
+	User string `yaml:"user"`
+	// Password is supplied through MYSQL_ROOT_PASSWORD or MYSQL_PASSWORD.
+	Password string `yaml:"-"`
 	DBName   string `yaml:"dbname"`
 }
 
@@ -61,9 +63,8 @@ func OverrideWithEnv(cfg *Config) {
 		return
 	}
 
-	// 读取开发模式配置
-	if v := os.Getenv("MODE"); v != "" {
-		cfg.Dev = v == "dev"
+	if os.Getenv("MODE") == "prod" {
+		cfg.Dev = false
 	} else {
 		cfg.Dev = true
 	}
@@ -87,6 +88,9 @@ func OverrideWithEnv(cfg *Config) {
 	if v := os.Getenv("MYSQL_USER"); v != "" {
 		cfg.DB.User = v
 	}
+	// Password is environment-only, so discard any value supplied by a caller
+	// before applying the supported environment variables.
+	cfg.DB.Password = ""
 	// MYSQL_PASSWORD 仅在没有设置 MYSQL_ROOT_PASSWORD 时生效，避免优先级歧义
 	if v := os.Getenv("MYSQL_PASSWORD"); v != "" && os.Getenv("MYSQL_ROOT_PASSWORD") == "" {
 		cfg.DB.Password = v

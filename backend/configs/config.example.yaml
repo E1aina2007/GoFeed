@@ -1,27 +1,27 @@
 # ===================== GoFeed 配置模板 =====================
 # 本文件是仓库的配置模板
 # 本地开发：
-#   复制为 configs/config.dev.yaml，修改 database 中标注【本地需修改】的字段；
-#   也可以不改文件，直接用 backend/.env 的 MYSQL_* 环境变量覆盖（环境变量优先）
+#   复制为 configs/config.dev.yaml，修改非敏感字段；
+#   数据库密码、运行模式和 JWT 密钥必须写在 backend/.env 中
 #
 # Docker 部署：
-#   复制为 configs/config.yaml 并修改：database.host 改为 mysql、
-#   database.password 改为你的 MySQL 密码（与项目根目录 .env 的
-#   MYSQL_ROOT_PASSWORD 保持一致）
+#   复制为 configs/config.yaml 并修改 database.host 为 mysql；
+#   数据库密码由 backend/.env 中的 MYSQL_ROOT_PASSWORD 注入。
 #   compose 会把宿主机 backend/configs 目录挂载到容器 /app/configs，
 #   并设置 CONFIG_PATH=/app/configs/config.yaml，因此容器实际读取的是这份副本；
-#   根目录 .env 中的 MODE / SERVER_PORT / MYSQL_* / JWT_SECRET 可覆盖对应字段（环境变量优先）
+#   Compose 会注入 MODE / MYSQL_HOST / CONFIG_PATH；仅 MODE=prod 启用生产模式，
+#   其余 MODE 值均按 dev 处理；其他运行参数和密钥
+#   由 backend/.env 提供（环境变量优先）
 # ================================================================
 
 server:
-  port: 8080          # HTTP 端口；本地可用 SERVER_PORT 覆盖；docker 下修改此值并同步 compose 端口映射
+  port: 8080          # HTTP 端口；可用 SERVER_PORT 覆盖
 
 database:
-  host: localhost     # 本地开发：本机 MySQL；docker：复制后改为 mysql（compose 网络内主机名）
-  port: 3306          # 本地开发：本机 MySQL 端口；docker：容器内 3306
-  user: root          # 本地开发：本机 MySQL 账号；docker：默认 root
-  password: 123456    # 【本地需修改】你的 MySQL 密码；docker：与 .env 的 MYSQL_ROOT_PASSWORD 保持一致
-  dbname: feedsystem  # 本地开发：需先手动建库；docker：与 .env 的 MYSQL_DATABASE 保持一致
+  host: localhost     # docker：复制后改为 mysql，或用 MYSQL_HOST 覆盖
+  port: 3306          # 可用 MYSQL_PORT 覆盖
+  user: root          # 可用 MYSQL_USER 覆盖
+  dbname: feedsystem  # 可用 MYSQL_DATABASE 覆盖
 
 retention:
   user_deleted_days: 7    # 注销账号软删除后的保留天数；可用 RETENTION_USER_DELETED_DAYS 覆盖
@@ -33,14 +33,12 @@ sweeper:
 redis:
   host: localhost
   port: 6379
-  password: 123456
   db: 0
 
 rabbitmq:
   host: localhost
   port: 5672
   username: admin
-  password: password123
 
 observe:
   pprof:
