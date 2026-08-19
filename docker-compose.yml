@@ -66,6 +66,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
+      - ./backend/.env:/app/.env:ro
       - ./backend/configs:/app/configs:ro
       - backend_uploads:/app/.run/uploads
     depends_on:
@@ -85,6 +86,7 @@ services:
       MODE: prod
       MYSQL_HOST: mysql
     volumes:
+      - ./backend/.env:/app/.env:ro
       - ./backend/configs:/app/configs:ro
     depends_on:
       migrate:
@@ -103,6 +105,7 @@ services:
       MODE: prod
       MYSQL_HOST: mysql
     volumes:
+      - ./backend/.env:/app/.env:ro
       - ./backend/configs:/app/configs:ro
       - backend_uploads:/app/.run/uploads
     depends_on:

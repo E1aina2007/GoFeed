@@ -92,7 +92,7 @@ Docker 同样采用复制修改的方式：
 1. 复制 `backend/configs/config.example.yaml` 为 `backend/configs/config.yaml`（已被 git 忽略，不会入库）。
 2. 修改 `database.host` 为 `mysql`；数据库密码由 `backend/.env` 注入，YAML 内不保存秘密。
 3. compose 将宿主机 `backend/configs` 挂载到容器 `/app/configs`，并设置 `CONFIG_PATH=/app/configs/config.yaml`，容器实际读取的就是这份 `config.yaml`。
-4. 在 `backend` 目录创建 `.env`（变量参考 `backend/.env.example`，文件本身不入库）。Compose 通过 `env_file` 将其注入 MySQL、迁移和后端进程，并在容器内覆盖 `MODE=prod`、`MYSQL_HOST=mysql` 与 `CONFIG_PATH=/app/configs/config.yaml`。示例：
+4. 在 `backend` 目录创建 `.env`（变量参考 `backend/.env.example`，文件本身不入库）。Compose 通过 `env_file` 将其注入 MySQL、迁移和后端进程；API、worker 与 sweeper 同时将该文件以只读方式挂载到 `/app/.env`，供 `godotenv` 加载。容器内覆盖 `MODE=prod`、`MYSQL_HOST=mysql` 与 `CONFIG_PATH=/app/configs/config.yaml`。示例：
 
 ```env
 MODE=dev
