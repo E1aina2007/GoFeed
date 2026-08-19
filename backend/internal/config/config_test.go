@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// 测试目标：验证视频删除保留期可由环境变量覆盖。
-// 预期效果：视频与用户保留期分别生效，方便独立调整清扫策略。
+// 测试目标：验证视频删除保留期可由环境变量覆盖
+// 预期效果：视频与用户保留期分别生效，方便独立调整清扫策略
 func TestOverrideWithEnvVideoRetention(t *testing.T) {
 	t.Setenv("RETENTION_USER_DELETED_DAYS", "14")
 	t.Setenv("RETENTION_VIDEO_DELETED_DAYS", "3")
@@ -23,12 +23,24 @@ func TestOverrideWithEnvVideoRetention(t *testing.T) {
 	}
 }
 
-// 测试目标：验证 YAML 中的密码和运行模式不会覆盖环境变量专属配置。
-// 预期效果：敏感配置只接受环境变量，普通配置仍从 YAML 读取。
+// 测试目标：验证 YAML 中的密码和运行模式不会覆盖环境变量专属配置
+// 预期效果：敏感配置只接受环境变量，普通配置仍从 YAML 读取
 func TestLoadEnvironmentOnlyFields(t *testing.T) {
 	t.Setenv("MODE", "prod")
 	t.Setenv("MYSQL_ROOT_PASSWORD", "env-root-password")
 	t.Setenv("MYSQL_PASSWORD", "env-password")
+	for _, key := range []string{
+		"SERVER_PORT",
+		"MYSQL_HOST",
+		"MYSQL_PORT",
+		"MYSQL_USER",
+		"MYSQL_DATABASE",
+		"RETENTION_USER_DELETED_DAYS",
+		"RETENTION_VIDEO_DELETED_DAYS",
+		"SWEEPER_INTERVAL_MINUTES",
+	} {
+		t.Setenv(key, "")
+	}
 
 	filename := filepath.Join(t.TempDir(), "config.yaml")
 	data := []byte(`
@@ -56,13 +68,13 @@ database:
 	if cfg.DB.Password != "env-root-password" {
 		t.Fatalf("数据库密码未使用环境变量或优先级错误 got=%q", cfg.DB.Password)
 	}
-	if cfg.Server.Port != 9090 || cfg.DB.Host != "db.example" || cfg.DB.DBName != "app_db" {
+	if cfg.Server.Port != 9090 || cfg.DB.Host != "db.example" || cfg.DB.Port != 3307 || cfg.DB.User != "app" || cfg.DB.DBName != "app_db" {
 		t.Fatalf("普通 YAML 配置未按预期读取: %+v", cfg)
 	}
 }
 
-// 测试目标：验证只有 prod 启用生产模式，其他值都归一为 dev。
-// 预期效果：模式控制统一归一到 Config.Dev。
+// 测试目标：验证只有 prod 启用生产模式，其他值都归一为 dev
+// 预期效果：模式控制统一归一到 Config.Dev
 func TestOverrideWithEnvMode(t *testing.T) {
 	for _, value := range []string{"", "dev", "staging", "production", "DEV"} {
 		t.Run("MODE="+value, func(t *testing.T) {
@@ -83,8 +95,8 @@ func TestOverrideWithEnvMode(t *testing.T) {
 	}
 }
 
-// 测试目标：验证环境变量缺失时不会保留调用方传入的数据库密码。
-// 预期效果：密码字段不会通过 Config 结构绕过环境变量约束。
+// 测试目标：验证环境变量缺失时不会保留调用方传入的数据库密码
+// 预期效果：密码字段不会通过 Config 结构绕过环境变量约束
 func TestOverrideWithEnvClearsPasswordWithoutEnv(t *testing.T) {
 	t.Setenv("MYSQL_ROOT_PASSWORD", "")
 	t.Setenv("MYSQL_PASSWORD", "")
