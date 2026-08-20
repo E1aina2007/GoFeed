@@ -1,10 +1,72 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/lib/api'
-import { listPublishedVideos } from '../api'
+import { clearSession, login } from '@/features/auth/session'
+import { listPublishedVideos, publishVideo, uploadCover, uploadVideo } from '../api'
+
+type MockUploadResponse = {
+  status: number
+  body: unknown
+}
+
+class MockXMLHttpRequest {
+  static requests: MockXMLHttpRequest[] = []
+  static responses: MockUploadResponse[] = []
+
+  status = 0
+  responseText = ''
+  method = ''
+  path = ''
+  body: FormData | undefined
+  headers = new Map<string, string>()
+  private readonly listeners = new Map<string, Array<() => void>>()
+  private readonly progressListeners: Array<(event: { lengthComputable: boolean, loaded: number, total: number }) => void> = []
+
+  upload = {
+    addEventListener: (type: string, listener: (event: { lengthComputable: boolean, loaded: number, total: number }) => void) => {
+      if (type === 'progress') {
+        this.progressListeners.push(listener)
+      }
+    },
+  }
+
+  open(method: string, path: string) {
+    this.method = method
+    this.path = path
+  }
+
+  setRequestHeader(name: string, value: string) {
+    this.headers.set(name, value)
+  }
+
+  addEventListener(type: string, listener: () => void) {
+    const typeListeners = this.listeners.get(type) ?? []
+    typeListeners.push(listener)
+    this.listeners.set(type, typeListeners)
+  }
+
+  send(body: FormData) {
+    this.body = body
+    MockXMLHttpRequest.requests.push(this)
+    for (const listener of this.progressListeners) {
+      listener({ lengthComputable: true, loaded: 1, total: 2 })
+    }
+
+    const response = MockXMLHttpRequest.responses.shift()
+    if (!response) {
+      throw new Error('missing mock upload response')
+    }
+    this.status = response.status
+    this.responseText = JSON.stringify(response.body)
+    for (const listener of this.listeners.get('load') ?? []) {
+      listener()
+    }
+  }
+}
 
 describe('listPublishedVideos', () => {
   afterEach(() => {
+    clearSession()
     vi.unstubAllGlobals()
   })
 
@@ -32,4 +94,96 @@ describe('listPublishedVideos', () => {
     await expect(listPublishedVideos()).rejects.toEqual(new ApiError(400, 'invalid cursor'))
   })
 
+  it('uploads video and cover media with the authenticated session', async () => {
+    const session = {
+      access_token: 'access-token',
+      refresh_token: 'refresh-token',
+      expires_at: '2026-08-26T08:00:00Z',
+      user: { id: 42, username: 'alice' },
+    }
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(session), {
+      headers: { 'content-type': 'application/json' },
+    })))
+    MockXMLHttpRequest.responses = [
+      { status: 201, body: { play_url: '/static/videos/42/demo.mp4', play_file_name: 'demo.mp4', play_original_name: 'demo.mp4' } },
+      { status: 201, body: { cover_url: '/static/covers/42/cover.png', cover_file_name: 'cover.png', cover_original_name: 'cover.png' } },
+    ]
+    MockXMLHttpRequest.requests = []
+    vi.stubGlobal('XMLHttpRequest', MockXMLHttpRequest)
+    await login({ username: 'alice', password: 'password-123' })
+
+    const progress: number[] = []
+    const video = new File(['video'], 'demo.mp4', { type: 'video/mp4' })
+    const cover = new File(['cover'], 'cover.png', { type: 'image/png' })
+
+    await expect(uploadVideo(video, (value) => progress.push(value))).resolves.toEqual({
+      play_url: '/static/videos/42/demo.mp4',
+      play_file_name: 'demo.mp4',
+      play_original_name: 'demo.mp4',
+    })
+    await expect(uploadCover(cover)).resolves.toEqual({
+      cover_url: '/static/covers/42/cover.png',
+      cover_file_name: 'cover.png',
+      cover_original_name: 'cover.png',
+    })
+
+    expect(progress).toEqual([0.5])
+    expect(MockXMLHttpRequest.requests.map((request) => request.path)).toEqual([
+      '/api/video/auth/upload/video',
+      '/api/video/auth/upload/cover',
+    ])
+    expect(MockXMLHttpRequest.requests.map((request) => request.method)).toEqual(['POST', 'POST'])
+    expect(MockXMLHttpRequest.requests.map((request) => request.headers.get('Authorization'))).toEqual([
+      'Bearer access-token',
+      'Bearer access-token',
+    ])
+    expect(MockXMLHttpRequest.requests[0]?.body?.get('file')).toBe(video)
+    expect(MockXMLHttpRequest.requests[1]?.body?.get('file')).toBe(cover)
+  })
+
+  it('publishes with the authenticated media payload', async () => {
+    const session = {
+      access_token: 'access-token',
+      refresh_token: 'refresh-token',
+      expires_at: '2026-08-26T08:00:00Z',
+      user: { id: 42, username: 'alice' },
+    }
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(session), {
+        headers: { 'content-type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ video: { id: 100 } }), {
+        headers: { 'content-type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    await login({ username: 'alice', password: 'password-123' })
+
+    await publishVideo({
+      title: '我的第一条视频',
+      description: '视频介绍',
+      play_url: '/static/videos/42/demo.mp4',
+      play_file_name: 'demo.mp4',
+      play_original_name: '我的视频.mp4',
+      cover_url: '/static/covers/42/cover.png',
+      cover_file_name: 'cover.png',
+      cover_original_name: '封面.png',
+    })
+
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/video/auth/publish', expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ get: expect.any(Function) }),
+      body: JSON.stringify({
+        title: '我的第一条视频',
+        description: '视频介绍',
+        play_url: '/static/videos/42/demo.mp4',
+        play_file_name: 'demo.mp4',
+        play_original_name: '我的视频.mp4',
+        cover_url: '/static/covers/42/cover.png',
+        cover_file_name: 'cover.png',
+        cover_original_name: '封面.png',
+      }),
+    }))
+    const requestInit = fetchMock.mock.calls[1]?.[1]
+    expect(new Headers(requestInit?.headers).get('Authorization')).toBe('Bearer access-token')
+  })
 })
