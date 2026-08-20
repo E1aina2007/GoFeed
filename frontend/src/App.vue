@@ -20,7 +20,8 @@ async function handleLogout() {
       <RouterLink class="brand" to="/" aria-label="GoFeed 首页">GoFeed</RouterLink>
       <nav class="primary-nav" aria-label="主导航">
         <RouterLink class="primary-nav__link" to="/">发现</RouterLink>
-        <template v-if="!isAuthenticated">
+        <RouterLink v-if="isAuthenticated" class="primary-nav__link" :to="{ name: 'publish' }">发布</RouterLink>
+        <template v-else>
           <RouterLink class="primary-nav__link" :to="{ name: 'login' }">登录</RouterLink>
           <RouterLink class="primary-nav__link" :to="{ name: 'register' }">注册</RouterLink>
         </template>
