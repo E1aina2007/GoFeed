@@ -7,6 +7,8 @@ const storageKey = 'gofeed.auth.session'
 export type AuthUser = {
   id: number
   username: string
+  avatar_url?: string
+  bio?: string
 }
 
 export type AuthSession = {
@@ -125,6 +127,17 @@ export function register(input: RegisterInput) {
 
 export function clearSession() {
   persistSession(null)
+}
+
+export function updateCurrentUser(fields: Partial<AuthUser>) {
+  if (!session.value) {
+    return
+  }
+
+  persistSession({
+    ...session.value,
+    user: { ...session.value.user, ...fields },
+  })
 }
 
 async function refreshSession() {

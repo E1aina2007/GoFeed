@@ -28,9 +28,14 @@ export type VideoListResponse = {
   next_cursor?: string
 }
 
+type VideoResponse = {
+  video: VideoItem
+}
+
 export type ListPublishedVideosOptions = {
   cursor?: string
   limit?: number
+  authorID?: number
 }
 
 export type UploadedVideo = Pick<VideoItem, 'play_url' | 'play_file_name' | 'play_original_name'>
@@ -46,12 +51,39 @@ type PublishVideoResponse = {
   video: VideoItem
 }
 
-export function listPublishedVideos({ cursor, limit = 12 }: ListPublishedVideosOptions = {}) {
+export function listPublishedVideos({ cursor, limit = 12, authorID }: ListPublishedVideosOptions = {}) {
   const query = new URLSearchParams({ limit: String(limit) })
   if (cursor) {
     query.set('cursor', cursor)
   }
+  if (authorID) {
+    query.set('author_id', String(authorID))
+  }
   return request<VideoListResponse>(`/api/video?${query.toString()}`)
+}
+
+export function getPublishedVideo(id: number) {
+  return request<VideoResponse>(`/api/video/${id}`)
+}
+
+export function listMyVideos({ cursor, limit = 20 }: ListPublishedVideosOptions = {}) {
+  const query = new URLSearchParams({ limit: String(limit) })
+  if (cursor) {
+    query.set('cursor', cursor)
+  }
+  return withAuthenticatedSession((accessToken) => request<VideoListResponse>(`/api/video/auth/mine?${query.toString()}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  }))
+}
+
+export function deleteVideo(id: number) {
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    return Promise.reject(new ApiError(400, '视频 ID 无效'))
+  }
+  return withAuthenticatedSession((accessToken) => request<null>(`/api/video/auth/${id}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  }))
 }
 
 function readUploadResponse<T>(xhr: XMLHttpRequest): T {
