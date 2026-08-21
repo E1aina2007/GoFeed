@@ -4,9 +4,11 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { register } from '@/features/auth/session'
 import { ApiError } from '@/lib/api'
+import { useToastStore } from '@/stores/toast'
 
 const route = useRoute()
 const router = useRouter()
+const toast = useToastStore()
 const username = ref('')
 const password = ref('')
 const confirmPassword = ref('')
@@ -40,8 +42,10 @@ async function submit() {
         registered: '1',
       },
     })
+    toast.success('注册成功，请登录')
   } catch (error) {
     errorMessage.value = error instanceof ApiError ? error.message : '注册失败，请检查网络后重试'
+    toast.error(errorMessage.value)
   } finally {
     isSubmitting.value = false
   }

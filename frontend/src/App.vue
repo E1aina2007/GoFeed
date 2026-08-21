@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { RouterLink, RouterView, useRouter } from 'vue-router'
 
+import ToastHost from '@/components/ToastHost.vue'
 import { currentUser, isAuthenticated, logout } from '@/features/auth/session'
 
 const router = useRouter()
@@ -35,6 +36,7 @@ async function handleLogout() {
   </header>
 
   <RouterView />
+  <ToastHost />
 </template>
 
 <style scoped>

@@ -5,9 +5,11 @@ import { RouterLink } from 'vue-router'
 
 import { login } from '@/features/auth/session'
 import { ApiError } from '@/lib/api'
+import { useToastStore } from '@/stores/toast'
 
 const route = useRoute()
 const router = useRouter()
+const toast = useToastStore()
 const username = ref('')
 const password = ref('')
 const isSubmitting = ref(false)
@@ -41,9 +43,11 @@ async function submit() {
 
   try {
     await login({ username: username.value.trim(), password: password.value })
+    toast.success('登录成功')
     await router.replace(redirectPath())
   } catch (error) {
     errorMessage.value = error instanceof ApiError ? error.message : '登录失败，请检查网络后重试'
+    toast.error(errorMessage.value)
   } finally {
     isSubmitting.value = false
   }

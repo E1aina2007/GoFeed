@@ -10,6 +10,7 @@ import {
   type UploadedVideo,
 } from '@/features/video/api'
 import { ApiError } from '@/lib/api'
+import { useToastStore } from '@/stores/toast'
 
 const maxVideoSize = 200 * 1024 * 1024
 const maxCoverSize = 10 * 1024 * 1024
@@ -17,6 +18,7 @@ const videoExtension = /\.(mp4|webm|mov)$/i
 const coverExtension = /\.(jpg|jpeg|png|webp)$/i
 
 const router = useRouter()
+const toast = useToastStore()
 const title = ref('')
 const description = ref('')
 const videoFile = ref<File>()
@@ -99,9 +101,11 @@ async function submit() {
       ...uploadedVideo.value,
       ...uploadedCover.value,
     })
+    toast.success('视频已发布，正在返回 Feed')
     await router.replace({ name: 'feed', query: { published: String(response.video.id) } })
   } catch (error) {
     errorMessage.value = error instanceof ApiError ? error.message : '发布失败，请检查网络后重试'
+    toast.error(errorMessage.value)
   } finally {
     isSubmitting.value = false
     currentStage.value = ''
@@ -119,6 +123,8 @@ async function submit() {
         </div>
         <RouterLink class="cancel-link" :to="{ name: 'feed' }">取消</RouterLink>
       </header>
+
+      <p class="publish-hint" role="note">视频不超过 200 MiB，封面不超过 10 MiB；上传完成后才会创建公开视频。</p>
 
       <label class="form-field">
         <span>标题</span>
@@ -208,6 +214,13 @@ async function submit() {
 .cancel-link {
   color: var(--ink-muted);
   font-size: 0.92rem;
+}
+
+.publish-hint {
+  margin: -10px 0 24px;
+  color: var(--ink-muted);
+  font-size: 0.86rem;
+  line-height: 1.5;
 }
 
 .form-field,

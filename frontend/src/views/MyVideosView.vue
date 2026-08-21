@@ -4,8 +4,10 @@ import { computed, onMounted, ref } from 'vue'
 import VideoListItem from '@/components/VideoListItem.vue'
 import { deleteVideo, listMyVideos, type VideoItem } from '@/features/video/api'
 import { ApiError } from '@/lib/api'
+import { useToastStore } from '@/stores/toast'
 
 const videos = ref<VideoItem[]>([])
+const toast = useToastStore()
 const nextCursor = ref<string>()
 const isLoading = ref(true)
 const isLoadingMore = ref(false)
@@ -26,6 +28,7 @@ async function loadFirstPage() {
     nextCursor.value = response.next_cursor
   } catch (error) {
     errorMessage.value = apiMessage(error, '我的视频加载失败，请稍后重试')
+    toast.error(errorMessage.value)
   } finally {
     isLoading.value = false
   }
@@ -43,6 +46,7 @@ async function loadMore() {
     nextCursor.value = response.next_cursor
   } catch (error) {
     errorMessage.value = apiMessage(error, '更多视频加载失败，请重试')
+    toast.error(errorMessage.value)
   } finally {
     isLoadingMore.value = false
   }
@@ -57,8 +61,10 @@ async function removeVideo(video: VideoItem) {
     await deleteVideo(video.id)
     videos.value = videos.value.filter((item) => item.id !== video.id)
     actionMessage.value = '视频已删除'
+    toast.success('视频已删除')
   } catch (error) {
     errorMessage.value = apiMessage(error, '删除失败，请稍后重试')
+    toast.error(errorMessage.value)
   }
 }
 

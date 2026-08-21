@@ -5,8 +5,10 @@ import { useRouter } from 'vue-router'
 import { clearSession, currentUser } from '@/features/auth/session'
 import { deleteAccount, updateName, updatePassword, updateProfile } from '@/features/user/api'
 import { ApiError } from '@/lib/api'
+import { useToastStore } from '@/stores/toast'
 
 const router = useRouter()
+const toast = useToastStore()
 const name = ref(currentUser.value?.username ?? '')
 const avatarURL = ref(currentUser.value?.avatar_url ?? '')
 const bio = ref(currentUser.value?.bio ?? '')
@@ -37,8 +39,10 @@ async function saveName() {
   try {
     await updateName(name.value)
     nameMessage.value = '用户名已更新'
+    toast.success('用户名已更新')
   } catch (error) {
     errorMessage.value = messageFor(error, '用户名更新失败，请稍后重试')
+    toast.error(errorMessage.value)
   } finally {
     isSavingName.value = false
   }
@@ -58,8 +62,10 @@ async function saveProfile() {
       ...(bio.value.trim() ? { bio: bio.value.trim() } : {}),
     })
     profileMessage.value = '个人资料已更新'
+    toast.success('个人资料已更新')
   } catch (error) {
     errorMessage.value = messageFor(error, '资料更新失败，请稍后重试')
+    toast.error(errorMessage.value)
   } finally {
     isSavingProfile.value = false
   }
@@ -76,9 +82,11 @@ async function savePassword() {
   try {
     await updatePassword(oldPassword.value, newPassword.value)
     clearSession()
+    toast.success('密码已更新，请重新登录')
     await router.replace({ name: 'login', query: { passwordUpdated: '1' } })
   } catch (error) {
     errorMessage.value = messageFor(error, '密码更新失败，请稍后重试')
+    toast.error(errorMessage.value)
   } finally {
     isSavingPassword.value = false
   }
@@ -93,9 +101,11 @@ async function removeAccount() {
   try {
     await deleteAccount()
     clearSession()
+    toast.info('账号已注销')
     await router.replace({ name: 'feed' })
   } catch (error) {
     errorMessage.value = messageFor(error, '注销失败，请稍后重试')
+    toast.error(errorMessage.value)
   } finally {
     isDeleting.value = false
   }
