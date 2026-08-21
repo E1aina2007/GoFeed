@@ -19,22 +19,73 @@ docker compose up -d
 
 启动后访问：前端 http://localhost:5173，后端 API http://localhost:8080。
 
-## 本地开发
+## 本地开发（不使用 Compose）
 
-本地不会自动建库，也不会自动迁移，需要先手动创建数据库，再执行迁移：
+本地开发直接启动后端和前端，数据库依赖本机已运行的 MySQL。应用启动时不会自动建库或迁移，避免服务重启时隐式修改表结构；表结构变更通过版本化迁移显式执行。
 
-```sql
-CREATE DATABASE IF NOT EXISTS feedsystem CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+### 1. 准备本地配置与数据库
+
+复制 `backend/.env.example` 为 `backend/.env`，复制 `backend/configs/config.example.yaml` 为 `backend/configs/config.dev.yaml`。在 `.env` 中配置本机 MySQL，至少确认以下字段：
+
+```env
+MODE=dev
+CONFIG_PATH=configs/config.dev.yaml
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_ROOT_PASSWORD=your-local-mysql-password
+MYSQL_DATABASE=feedsystem
+JWT_SECRET=replace-with-a-stable-local-secret
 ```
 
-```bash
-docker compose run --rm migrate
-# 或本地安装 golang-migrate CLI 后：
-# migrate -path backend/db/migrations -database "mysql://root:<密码>@tcp(localhost:3306)/feedsystem?multiStatements=true" up
+启动本机 MySQL 后，首次创建业务库。`-p` 会交互式询问密码，不会将密码写入命令历史：
 
+```powershell
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS feedsystem CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"
+```
+
+### 2. 安装并执行数据库迁移
+
+首次安装 [`golang-migrate`](https://github.com/golang-migrate/migrate) CLI：
+
+```powershell
+go install -tags 'mysql' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.19.1
+```
+
+确保 `$(go env GOPATH)\bin` 已加入 `PATH`。若仅需在当前 PowerShell 会话中使用：
+
+```powershell
+$env:Path += ";$(go env GOPATH)\bin"
+```
+
+从项目根目录切换到 `backend` 目录后，执行全部未应用的迁移：
+
+```powershell
+Set-Location backend
+migrate -path ./db/migrations -database "mysql://root:<URL 编码后的密码>@tcp(127.0.0.1:3306)/feedsystem?multiStatements=true" up
+```
+
+密码中包含 `@`、`:`、`/`、`?`、`#` 或 `%` 等 URL 特殊字符时必须先编码。每次新增迁移文件后重新执行同一条 `up` 命令即可；`schema_migrations` 会记录已执行版本，因此只会应用尚未执行的迁移。不要修改已执行的迁移文件，应新增一对递增版本的 `.up.sql` 和 `.down.sql` 文件。
+
+### 3. 直接启动后端与前端
+
+后端必须从 `backend` 目录启动，才能读取 `.env` 与默认的 `configs/config.dev.yaml`：
+
+```powershell
+Set-Location backend
 go run ./cmd            # API
-go run ./cmd/sweeper    # 注销用户和到期软删视频定时清扫；worker 暂为消息队列占位，无需手动启动
+# go run ./cmd/sweeper  # 按需启动注销用户和到期视频清扫任务
 ```
+
+另开一个终端启动前端开发服务器：
+
+```powershell
+Set-Location frontend
+pnpm.cmd install        # 首次安装依赖
+pnpm.cmd dev
+```
+
+前端开发服务器会代理 `/api` 和 `/static` 到本机后端 `http://localhost:8080`。日常修改 Go 或 Vue 源码不涉及 Docker 镜像；仅新增数据库迁移时运行一次 `migrate ... up`。
 
 ## 前端开发（pnpm）
 
@@ -79,11 +130,9 @@ pnpm preview        # 本地预览构建产物
 | 视频删除保留天数 | `RETENTION_VIDEO_DELETED_DAYS` | 默认 `7`；视频软删除后经过该天数由 sweeper 删除视频/封面文件并硬删除记录 |
 | 清扫间隔 | `SWEEPER_INTERVAL_MINUTES` | 默认 `60`；sweeper 执行用户和视频清扫的间隔分钟数 |
 
-### 本地开发
+### 本地开发配置
 
-1. 复制 `backend/configs/config.example.yaml` 为 `backend/configs/config.dev.yaml`，在 `backend/.env` 中设置数据库连接和密码环境变量（参考 `backend/.env.example`）；非敏感字段可按需修改 YAML。
-2. 在 `backend/.env` 中设置固定 `JWT_SECRET`，避免重启后登录态全部失效。
-3. 在 `backend` 目录执行 `go run ./cmd` 启动。
+本机 MySQL 的完整初始化、迁移和直接启动流程见上方「本地开发（不使用 Compose）」。`backend/.env` 存放数据库密码和固定 `JWT_SECRET`，`backend/configs/config.dev.yaml` 存放非敏感配置；两者均由从 `backend` 目录运行的 API 读取。
 
 ### Docker 部署
 
