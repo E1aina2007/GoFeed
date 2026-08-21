@@ -25,4 +25,15 @@ describe('router session boundaries', () => {
     expect(router.currentRoute.value.name).toBe('login')
     expect(router.currentRoute.value.query.redirect).toBe('/publish')
   })
+
+  it('protects personal videos and account settings while keeping public profiles open', async () => {
+    clearSession()
+
+    await router.push({ name: 'my-videos' })
+    expect(router.currentRoute.value.name).toBe('login')
+    expect(router.currentRoute.value.query.redirect).toBe('/mine')
+
+    await router.push({ name: 'user-profile', params: { id: 42 } })
+    expect(router.currentRoute.value.name).toBe('user-profile')
+  })
 })

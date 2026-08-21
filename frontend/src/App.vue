@@ -20,12 +20,15 @@ async function handleLogout() {
       <RouterLink class="brand" to="/" aria-label="GoFeed 首页">GoFeed</RouterLink>
       <nav class="primary-nav" aria-label="主导航">
         <RouterLink class="primary-nav__link" to="/">发现</RouterLink>
+        <RouterLink class="primary-nav__link" :to="{ name: 'user-list' }">用户</RouterLink>
         <RouterLink v-if="isAuthenticated" class="primary-nav__link" :to="{ name: 'publish' }">发布</RouterLink>
+        <RouterLink v-if="isAuthenticated" class="primary-nav__link" :to="{ name: 'my-videos' }">我的</RouterLink>
         <template v-else>
           <RouterLink class="primary-nav__link" :to="{ name: 'login' }">登录</RouterLink>
           <RouterLink class="primary-nav__link" :to="{ name: 'register' }">注册</RouterLink>
         </template>
         <span v-if="currentUser" class="current-user">{{ currentUser.username }}</span>
+        <RouterLink v-if="isAuthenticated" class="primary-nav__link" :to="{ name: 'account-settings' }">设置</RouterLink>
         <button v-if="isAuthenticated" class="logout-button" type="button" @click="handleLogout">退出</button>
       </nav>
     </div>
@@ -64,11 +67,19 @@ async function handleLogout() {
   align-items: stretch;
   align-self: stretch;
   gap: 18px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.primary-nav::-webkit-scrollbar {
+  display: none;
 }
 
 .primary-nav__link {
   display: grid;
   align-items: center;
+  flex: 0 0 auto;
   min-width: 52px;
   border-bottom: 2px solid transparent;
   color: #aab0b7;

@@ -12,7 +12,15 @@ const username = ref('')
 const password = ref('')
 const isSubmitting = ref(false)
 const errorMessage = ref('')
-const registrationNotice = computed(() => route.query.registered === '1' ? '注册成功，请使用新账号登录' : '')
+const registrationNotice = computed(() => {
+  if (route.query.registered === '1') {
+    return '注册成功，请使用新账号登录'
+  }
+  if (route.query.passwordUpdated === '1') {
+    return '密码已更新，请重新登录'
+  }
+  return ''
+})
 
 const registerLocation = computed(() => {
   const redirect = route.query.redirect

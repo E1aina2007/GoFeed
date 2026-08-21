@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { listPublishedVideos, type VideoItem } from '@/features/video/api'
 import { ApiError } from '@/lib/api'
 
+const route = useRoute()
+const router = useRouter()
 const feedElement = ref<HTMLElement>()
 const videos = ref<VideoItem[]>([])
 const nextCursor = ref<string>()
 const isInitialLoading = ref(true)
 const isLoadingMore = ref(false)
 const errorMessage = ref('')
+const publishedMessage = ref('')
 
 const hasMore = computed(() => Boolean(nextCursor.value))
 const playerElements = new Map<number, HTMLVideoElement>()
@@ -64,14 +68,39 @@ function requestErrorMessage(error: unknown) {
   return error instanceof ApiError ? error.message : '视频加载失败，请检查网络后重试'
 }
 
+function publishedVideoID() {
+  const value = route.query.published
+  const rawID = Array.isArray(value) ? value[0] : value
+  if (typeof rawID !== 'string') {
+    return undefined
+  }
+
+  const id = Number(rawID)
+  return Number.isSafeInteger(id) && id > 0 ? id : undefined
+}
+
+async function clearPublishedQuery() {
+  const query = { ...route.query }
+  delete query.published
+  await router.replace({ query })
+}
+
 async function loadFirstPage() {
   isInitialLoading.value = true
   errorMessage.value = ''
+  publishedMessage.value = ''
+  const publishedID = publishedVideoID()
 
   try {
     const response = await listPublishedVideos()
     videos.value = response.items
     nextCursor.value = response.next_cursor
+    if (publishedID) {
+      if (response.items.some((video) => video.id === publishedID)) {
+        publishedMessage.value = '视频已发布'
+      }
+      await clearPublishedQuery()
+    }
     await nextTick()
     observePlayers()
   } catch (error) {
@@ -134,6 +163,8 @@ onBeforeUnmount(() => {
   <main ref="feedElement" class="short-feed" aria-label="最新视频" @scroll="handleScroll">
     <h1 class="sr-only">最新视频</h1>
 
+    <p v-if="publishedMessage" class="feed-notice" role="status">{{ publishedMessage }}</p>
+
     <section v-if="isInitialLoading" class="loading-feed" aria-label="正在加载视频">
       <article v-for="index in 2" :key="index" class="short-video short-video--skeleton" aria-hidden="true">
         <div class="skeleton-copy">
@@ -161,8 +192,10 @@ onBeforeUnmount(() => {
           抱歉，你的浏览器不支持视频播放。
         </video>
         <div class="short-video__meta">
-          <p class="short-video__author">@{{ video.author.username }}</p>
-          <h2>{{ video.title }}</h2>
+          <RouterLink class="short-video__author" :to="{ name: 'user-profile', params: { id: video.author.id } }">
+            @{{ video.author.username }}
+          </RouterLink>
+          <h2><RouterLink :to="{ name: 'video-detail', params: { id: video.id } }">{{ video.title }}</RouterLink></h2>
           <p v-if="video.description" class="short-video__description">{{ video.description }}</p>
         </div>
       </article>
@@ -194,6 +227,21 @@ onBeforeUnmount(() => {
 .loading-feed,
 .video-stream {
   min-height: 100%;
+}
+
+.feed-notice {
+  position: fixed;
+  z-index: 20;
+  top: 80px;
+  left: 50%;
+  margin: 0;
+  border: 1px solid #4c8e83;
+  border-radius: 4px;
+  padding: 8px 12px;
+  color: #e6fffa;
+  background: #193d36;
+  font-size: 0.9rem;
+  transform: translateX(-50%);
 }
 
 .short-video {
@@ -230,10 +278,18 @@ onBeforeUnmount(() => {
   margin-top: 0;
 }
 
+.short-video__author,
+.short-video__meta h2 a {
+  color: inherit;
+  text-decoration: none;
+  pointer-events: auto;
+}
+
 .short-video__author {
   margin-bottom: 8px;
   font-size: 0.92rem;
   font-weight: 700;
+  pointer-events: auto;
 }
 
 .short-video__meta h2 {
@@ -350,6 +406,10 @@ onBeforeUnmount(() => {
     right: 18px;
     bottom: 92px;
     left: 18px;
+  }
+
+  .feed-notice {
+    top: 68px;
   }
 
   .short-video__meta h2 {

@@ -26,6 +26,33 @@ const router = createRouter({
       component: () => import('@/views/PublishVideoView.vue'),
       meta: { requiresAuth: true },
     },
+    {
+      path: '/video/:id',
+      name: 'video-detail',
+      component: () => import('@/views/VideoDetailView.vue'),
+    },
+    {
+      path: '/users',
+      name: 'user-list',
+      component: () => import('@/views/UserListView.vue'),
+    },
+    {
+      path: '/users/:id',
+      name: 'user-profile',
+      component: () => import('@/views/UserProfileView.vue'),
+    },
+    {
+      path: '/mine',
+      name: 'my-videos',
+      component: () => import('@/views/MyVideosView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/settings',
+      name: 'account-settings',
+      component: () => import('@/views/AccountSettingsView.vue'),
+      meta: { requiresAuth: true },
+    },
   ],
 })
 
