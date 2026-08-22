@@ -31,9 +31,10 @@
 | DELETE | `/api/user/auth` | 是 | 注销当前账号 |
 | GET | `/api/video` | 否 | 查询公开视频流 |
 | GET | `/api/video/:id` | 否 | 查询公开视频详情 |
-| POST | `/api/video/auth/upload/video` | 是 | 上传视频文件 |
-| POST | `/api/video/auth/upload/cover` | 是 | 上传封面图片 |
-| POST | `/api/video/auth/publish` | 是 | 发布视频 |
+| POST | `/api/video/auth/drafts` | 是 | 创建视频草稿 |
+| POST | `/api/video/auth/drafts/:id/play` | 是 | 上传草稿视频文件 |
+| POST | `/api/video/auth/drafts/:id/cover` | 是 | 上传草稿封面图片 |
+| POST | `/api/video/auth/drafts/:id/publish` | 是 | 发布完整草稿 |
 | GET | `/api/video/auth/mine` | 是 | 查询我的视频 |
 | DELETE | `/api/video/auth/:id` | 是 | 删除自己的视频 |
 
@@ -417,11 +418,48 @@ GET /static/videos/42/20260819/demo.mp4
 
 常见失败：`400` `id` 不合法，`404` 视频不存在、未发布或已删除。
 
-### 上传视频文件
+### 创建视频草稿
 
-`POST /api/video/auth/upload/video`
+`POST /api/video/auth/drafts`
 
-请求类型为 `multipart/form-data`，表单必须包含 `file` 文件字段。
+请求体：
+
+```json
+{
+  "title": "我的第一条视频",
+  "description": "视频介绍"
+}
+```
+
+| 字段 | 类型 | 必填 | 约束 |
+| --- | --- | --- | --- |
+| `title` | string | 是 | 去除首尾空格后不能为空，最多 255 个字符 |
+| `description` | string | 否 | 最多 1000 个字符 |
+
+成功响应：`201 Created`
+
+```json
+{
+  "draft": {
+    "id": 100,
+    "title": "我的第一条视频",
+    "description": "视频介绍",
+    "status": "draft",
+    "created_at": "2026-08-21T08:00:00Z",
+    "updated_at": "2026-08-21T08:00:00Z"
+  }
+}
+```
+
+草稿没有 `published_at`，也没有客户端可填写的媒体字段。
+
+常见失败：`400` 请求体或标题、简介不合法，`401` 未认证。
+
+### 上传草稿视频文件
+
+`POST /api/video/auth/drafts/:id/play`
+
+路径参数 `id` 必须是当前用户处于 `draft` 状态的草稿标识。请求类型为 `multipart/form-data`，表单必须包含 `file` 文件字段。
 
 | 项目 | 要求 |
 | --- | --- |
@@ -433,21 +471,22 @@ GET /static/videos/42/20260819/demo.mp4
 
 ```json
 {
-  "play_url": "/static/videos/42/20260819/demo.mp4",
+  "draft_id": 100,
+  "play_url": "/static/videos/42/20260821/demo.mp4",
   "play_file_name": "demo.mp4",
   "play_original_name": "我的视频.mp4"
 }
 ```
 
-`play_file_name` 是服务端清洗并实际保存的文件名，`play_original_name` 是客户端文件名去掉路径后的原始展示名称。发布视频时必须将三项原样提交。
+`play_file_name` 是服务端清洗并实际保存的文件名；`play_original_name` 是客户端文件名去掉路径后的展示名称。草稿的同一媒体类型不能重复绑定。
 
-常见失败：`400` 缺少文件、文件过大或类型校验失败，`401` 未认证。
+常见失败：`400` 缺少文件或类型校验失败，`401` 未认证，`403` 草稿不属于当前用户，`404` 草稿不存在，`409` 草稿不再可写或该媒体已绑定，`413` 文件过大。
 
-### 上传封面图片
+### 上传草稿封面图片
 
-`POST /api/video/auth/upload/cover`
+`POST /api/video/auth/drafts/:id/cover`
 
-请求类型为 `multipart/form-data`，表单必须包含 `file` 文件字段。
+路径参数 `id` 必须是当前用户处于 `draft` 状态的草稿标识。请求类型为 `multipart/form-data`，表单必须包含 `file` 文件字段。
 
 | 项目 | 要求 |
 | --- | --- |
@@ -459,76 +498,24 @@ GET /static/videos/42/20260819/demo.mp4
 
 ```json
 {
-  "cover_url": "/static/covers/42/20260819/cover.png",
+  "draft_id": 100,
+  "cover_url": "/static/covers/42/20260821/cover.png",
   "cover_file_name": "cover.png",
   "cover_original_name": "封面.png"
 }
 ```
 
-发布视频时必须将三项原样提交。
+常见失败：`400` 缺少文件或类型校验失败，`401` 未认证，`403` 草稿不属于当前用户，`404` 草稿不存在，`409` 草稿不再可写或该媒体已绑定，`413` 文件过大。
 
-常见失败：`400` 缺少文件、文件过大或类型校验失败，`401` 未认证。
+### 发布草稿
 
-### 发布视频
+`POST /api/video/auth/drafts/:id/publish`
 
-`POST /api/video/auth/publish`
+路径参数 `id` 必须是当前用户完整的 `draft` 草稿。该接口没有请求体；客户端不能提交 `play_url`、`cover_url`、物理文件名或原始文件名。服务端在单个事务中验证两类媒体都已绑定，再写入实际 `published_at` 并转换为 `published`。
 
-应先分别上传视频和封面，再使用两个上传响应中的地址与文件名提交本接口。
+成功响应：`201 Created`，响应体为 `{"video": <VideoItem>}`。
 
-请求体：
-
-```json
-{
-  "title": "我的第一条视频",
-  "description": "视频介绍",
-  "play_url": "/static/videos/42/20260819/demo.mp4",
-  "play_file_name": "demo.mp4",
-  "play_original_name": "我的视频.mp4",
-  "cover_url": "/static/covers/42/20260819/cover.png",
-  "cover_file_name": "cover.png",
-  "cover_original_name": "封面.png"
-}
-```
-
-| 字段 | 类型 | 必填 | 约束 |
-| --- | --- | --- | --- |
-| `title` | string | 是 | 去除首尾空格后不能为空，最多 255 个字符 |
-| `description` | string | 否 | 最多 1000 个字符 |
-| `play_url` | string | 是 | 必须属于当前用户上传目录 `/static/videos/{当前用户ID}/...` |
-| `play_file_name` | string | 是 | 必须等于 `play_url` 的实际文件名 |
-| `play_original_name` | string | 是 | 最多 255 个字符 |
-| `cover_url` | string | 是 | 必须属于当前用户上传目录 `/static/covers/{当前用户ID}/...` |
-| `cover_file_name` | string | 是 | 必须等于 `cover_url` 的实际文件名 |
-| `cover_original_name` | string | 是 | 最多 255 个字符 |
-
-服务端只保存媒体 URL 的路径部分。因此即使传入完整站内 URL，成功后的 `play_url` 和 `cover_url` 也会是以 `/static/` 开头的相对路径。
-
-成功响应：`201 Created`
-
-```json
-{
-  "video": {
-    "id": 100,
-    "title": "我的第一条视频",
-    "description": "视频介绍",
-    "play_url": "/static/videos/42/20260819/demo.mp4",
-    "play_file_name": "demo.mp4",
-    "play_original_name": "我的视频.mp4",
-    "cover_url": "/static/covers/42/20260819/cover.png",
-    "cover_file_name": "cover.png",
-    "cover_original_name": "封面.png",
-    "published_at": "2026-08-19T08:00:00Z",
-    "likes_count": 0,
-    "comments_count": 0,
-    "author": {
-      "id": 42,
-      "username": "alice"
-    }
-  }
-}
-```
-
-常见失败：`400` 请求字段、媒体 URL 或文件名不合法，`401` 未认证，`403` 媒体不属于当前用户。
+常见失败：`400` 提交了请求体或路径参数不合法，`401` 未认证，`403` 草稿不属于当前用户，`404` 草稿不存在，`409` 草稿未完成或不再可发布。
 
 ### 查询我的视频
 
@@ -541,7 +528,7 @@ GET /static/videos/42/20260819/demo.mp4
 | `cursor` | string | 否 | 上一页响应中的 `next_cursor` |
 | `limit` | int | 否 | 每页数量，范围 1-50，默认 20 |
 
-成功响应：`200 OK`，响应体为 [`VideoListResponse`](#videolistresponse)。该接口仅返回当前用户未软删除的视频，包含所有视频状态；响应的 `VideoItem` 不暴露状态字段。
+成功响应：`200 OK`，响应体为 [`VideoListResponse`](#videolistresponse)。该接口仅返回当前用户已发布且未软删除的视频；草稿不混入没有状态字段的 `VideoItem` 列表。
 
 常见失败：`400` `cursor` 或 `limit` 不合法，`401` 未认证。
 
@@ -559,6 +546,7 @@ GET /static/videos/42/20260819/demo.mp4
 
 1. `POST /api/user/register` 注册账号。
 2. `POST /api/user/login` 获取访问令牌和刷新令牌。
-3. 携带 `Authorization: Bearer <access_token>` 上传视频和封面。
-4. 使用两个上传响应构造 `POST /api/video/auth/publish` 请求。
-5. 通过 `GET /api/video` 消费公开视频流；令牌即将过期或已过期时，使用 `POST /api/user/refresh` 更新令牌对。
+3. 携带 `Authorization: Bearer <access_token>` 调用 `POST /api/video/auth/drafts` 创建草稿。
+4. 使用草稿 ID 调用视频和封面上传接口。
+5. 调用 `POST /api/video/auth/drafts/:id/publish`，不提交请求体。
+6. 通过 `GET /api/video` 消费公开视频流；令牌即将过期或已过期时，使用 `POST /api/user/refresh` 更新令牌对。

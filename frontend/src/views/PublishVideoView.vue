@@ -3,7 +3,8 @@ import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import {
-  publishVideo,
+  createDraft,
+  publishDraft,
   uploadCover,
   uploadVideo,
   type UploadedCover,
@@ -25,24 +26,47 @@ const videoFile = ref<File>()
 const coverFile = ref<File>()
 const uploadedVideo = ref<UploadedVideo>()
 const uploadedCover = ref<UploadedCover>()
+const draftID = ref<number>()
+const draftTitle = ref('')
+const draftDescription = ref('')
 const currentStage = ref('')
 const uploadProgress = ref(0)
 const errorMessage = ref('')
 const isSubmitting = ref(false)
 
 const progressLabel = computed(() => `${Math.round(uploadProgress.value * 100)}%`)
+const videoDisplayName = computed(
+  () => uploadedVideo.value?.play_original_name || videoFile.value?.name,
+)
+const coverDisplayName = computed(
+  () => uploadedCover.value?.cover_original_name || coverFile.value?.name,
+)
+
+function resetDraft() {
+  draftID.value = undefined
+  draftTitle.value = ''
+  draftDescription.value = ''
+  uploadedVideo.value = undefined
+  uploadedCover.value = undefined
+}
 
 function selectVideo(event: Event) {
   const input = event.target as HTMLInputElement
-  videoFile.value = input.files?.[0]
-  uploadedVideo.value = undefined
+  const file = input.files?.[0]
+  if (file !== videoFile.value) {
+    resetDraft()
+  }
+  videoFile.value = file
   errorMessage.value = ''
 }
 
 function selectCover(event: Event) {
   const input = event.target as HTMLInputElement
-  coverFile.value = input.files?.[0]
-  uploadedCover.value = undefined
+  const file = input.files?.[0]
+  if (file !== coverFile.value) {
+    resetDraft()
+  }
+  coverFile.value = file
   errorMessage.value = ''
 }
 
@@ -57,13 +81,21 @@ function validationError() {
   if (!videoFile.value) {
     return '请选择一个视频文件'
   }
-  if (!videoExtension.test(videoFile.value.name) || videoFile.value.size === 0 || videoFile.value.size > maxVideoSize) {
+  if (
+    !videoExtension.test(videoFile.value.name) ||
+    videoFile.value.size === 0 ||
+    videoFile.value.size > maxVideoSize
+  ) {
     return '视频仅支持不超过 200 MiB 的 MP4、WebM 或 MOV 文件'
   }
   if (!coverFile.value) {
     return '请选择一张封面图片'
   }
-  if (!coverExtension.test(coverFile.value.name) || coverFile.value.size === 0 || coverFile.value.size > maxCoverSize) {
+  if (
+    !coverExtension.test(coverFile.value.name) ||
+    coverFile.value.size === 0 ||
+    coverFile.value.size > maxCoverSize
+  ) {
     return '封面仅支持不超过 10 MiB 的 JPG、PNG 或 WebP 文件'
   }
   return ''
@@ -77,10 +109,33 @@ async function submit() {
 
   isSubmitting.value = true
   try {
+    const normalizedTitle = title.value.trim()
+    const normalizedDescription = description.value.trim()
+    if (
+      draftID.value &&
+      (draftTitle.value !== normalizedTitle || draftDescription.value !== normalizedDescription)
+    ) {
+      resetDraft()
+    }
+    if (!draftID.value) {
+      currentStage.value = '正在创建草稿'
+      const response = await createDraft({
+        title: normalizedTitle,
+        description: normalizedDescription,
+      })
+      draftID.value = response.draft.id
+      draftTitle.value = normalizedTitle
+      draftDescription.value = normalizedDescription
+    }
+    const currentDraftID = draftID.value
+    if (!currentDraftID) {
+      throw new ApiError(500, '草稿创建失败，请重试')
+    }
+
     if (!uploadedVideo.value) {
       currentStage.value = '正在上传视频'
       uploadProgress.value = 0
-      uploadedVideo.value = await uploadVideo(videoFile.value, (progress) => {
+      uploadedVideo.value = await uploadVideo(currentDraftID, videoFile.value, (progress) => {
         uploadProgress.value = progress
       })
     }
@@ -88,19 +143,14 @@ async function submit() {
     if (!uploadedCover.value) {
       currentStage.value = '正在上传封面'
       uploadProgress.value = 0
-      uploadedCover.value = await uploadCover(coverFile.value, (progress) => {
+      uploadedCover.value = await uploadCover(currentDraftID, coverFile.value, (progress) => {
         uploadProgress.value = progress
       })
     }
 
     currentStage.value = '正在发布视频'
     uploadProgress.value = 1
-    const response = await publishVideo({
-      title: title.value.trim(),
-      description: description.value.trim(),
-      ...uploadedVideo.value,
-      ...uploadedCover.value,
-    })
+    const response = await publishDraft(currentDraftID)
     toast.success('视频已发布，正在返回 Feed')
     await router.replace({ name: 'feed', query: { published: String(response.video.id) } })
   } catch (error) {
@@ -124,30 +174,51 @@ async function submit() {
         <RouterLink class="cancel-link" :to="{ name: 'feed' }">取消</RouterLink>
       </header>
 
-      <p class="publish-hint" role="note">视频不超过 200 MiB，封面不超过 10 MiB；上传完成后才会创建公开视频。</p>
+      <p class="publish-hint" role="note">
+        视频不超过 200 MiB，封面不超过 10 MiB；上传完成后才会创建公开视频。
+      </p>
 
       <label class="form-field">
         <span>标题</span>
-        <input v-model="title" maxlength="255" required>
+        <input v-model="title" maxlength="255" required :disabled="isSubmitting" />
       </label>
 
       <label class="form-field">
         <span>简介</span>
-        <textarea v-model="description" maxlength="1000" rows="4"></textarea>
+        <textarea
+          v-model="description"
+          maxlength="1000"
+          rows="4"
+          :disabled="isSubmitting"
+        ></textarea>
       </label>
 
       <div class="file-fields">
         <label class="file-field">
           <span>视频文件</span>
-          <input accept=".mp4,.webm,.mov,video/mp4,video/webm,video/quicktime" type="file" @change="selectVideo">
-          <small v-if="videoFile">{{ videoFile.name }} · {{ formatFileSize(videoFile.size) }}</small>
+          <input
+            accept=".mp4,.webm,.mov,video/mp4,video/webm,video/quicktime"
+            type="file"
+            :disabled="isSubmitting"
+            @change="selectVideo"
+          />
+          <small v-if="videoFile"
+            >{{ videoDisplayName }} · {{ formatFileSize(videoFile.size) }}</small
+          >
           <small v-else>MP4、WebM 或 MOV，最大 200 MiB</small>
         </label>
 
         <label class="file-field">
           <span>封面图片</span>
-          <input accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" type="file" @change="selectCover">
-          <small v-if="coverFile">{{ coverFile.name }} · {{ formatFileSize(coverFile.size) }}</small>
+          <input
+            accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+            type="file"
+            :disabled="isSubmitting"
+            @change="selectCover"
+          />
+          <small v-if="coverFile"
+            >{{ coverDisplayName }} · {{ formatFileSize(coverFile.size) }}</small
+          >
           <small v-else>JPG、PNG 或 WebP，最大 10 MiB</small>
         </label>
       </div>

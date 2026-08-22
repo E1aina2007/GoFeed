@@ -62,9 +62,10 @@ type videoItem struct {
 	} `json:"author"`
 }
 
-// 测试目标：描述媒体上传接口返回的地址和文件名
-// 预期效果：用于构造后续发布请求
+// 测试目标：描述草稿媒体上传接口返回的地址和文件名
+// 预期效果：用于断言服务端保存的媒体元数据
 type uploadResult struct {
+	DraftID           uint   `json:"draft_id"`
 	PlayURL           string `json:"play_url"`
 	PlayFileName      string `json:"play_file_name"`
 	PlayOriginalName  string `json:"play_original_name"`
@@ -73,17 +74,11 @@ type uploadResult struct {
 	CoverOriginalName string `json:"cover_original_name"`
 }
 
-// 测试目标：描述发布视频所需的请求字段
-// 预期效果：覆盖媒体归属和文件名校验数据
-type publishPayload struct {
-	Title             string `json:"title"`
-	Description       string `json:"description"`
-	PlayURL           string `json:"play_url"`
-	PlayFileName      string `json:"play_file_name"`
-	PlayOriginalName  string `json:"play_original_name"`
-	CoverURL          string `json:"cover_url"`
-	CoverFileName     string `json:"cover_file_name"`
-	CoverOriginalName string `json:"cover_original_name"`
+type draftItem struct {
+	ID          uint   `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
 }
 
 // 测试目标：配置路由端到端测试进程
@@ -221,14 +216,28 @@ func uploadMedia(t *testing.T, client *http.Client, base, token, path, field, fi
 	return out
 }
 
-// 测试目标：发送视频发布请求
-// 预期效果：返回服务端创建的视频信息
-func publish(t *testing.T, client *http.Client, base, token string, payload publishPayload, wantStatus int) videoItem {
+// 测试目标：创建视频草稿
+// 预期效果：返回仅包含客户端可编辑元数据的草稿标识
+func createDraft(t *testing.T, client *http.Client, base, token, title, description string, wantStatus int) draftItem {
+	t.Helper()
+	var out struct {
+		Draft draftItem `json:"draft"`
+	}
+	doJSON(t, client, http.MethodPost, base+"/api/video/auth/drafts", token, map[string]string{
+		"title":       title,
+		"description": description,
+	}, wantStatus, &out)
+	return out.Draft
+}
+
+// 测试目标：发布指定草稿
+// 预期效果：接口不接收客户端媒体元数据，只返回状态转换后的公开视频
+func publishDraft(t *testing.T, client *http.Client, base, token string, draftID uint, wantStatus int) videoItem {
 	t.Helper()
 	var out struct {
 		Video videoItem `json:"video"`
 	}
-	doJSON(t, client, http.MethodPost, base+"/api/video/auth/publish", token, payload, wantStatus, &out)
+	doJSON(t, client, http.MethodPost, fmt.Sprintf("%s/api/video/auth/drafts/%d/publish", base, draftID), token, nil, wantStatus, &out)
 	return out.Video
 }
 
@@ -242,10 +251,11 @@ func TestVideoEndToEndFlow(t *testing.T) {
 	const password = "e2e-password-123"
 	register(t, client, base, username, password)
 	sess := login(t, client, base, username, password)
+	draft := createDraft(t, client, base, sess.AccessToken, "第一条视频", "端到端验证", http.StatusCreated)
 
 	// 上传视频与封面，预期素材地址归属当前用户目录
-	video := uploadMedia(t, client, base, sess.AccessToken, "/api/video/auth/upload/video", "file", "我的 视频!!.mp4", mp4Bytes, http.StatusCreated)
-	cover := uploadMedia(t, client, base, sess.AccessToken, "/api/video/auth/upload/cover", "file", "封面.png", pngBytes, http.StatusCreated)
+	video := uploadMedia(t, client, base, sess.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", draft.ID), "file", "我的 视频!!.mp4", mp4Bytes, http.StatusCreated)
+	cover := uploadMedia(t, client, base, sess.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draft.ID), "file", "封面.png", pngBytes, http.StatusCreated)
 
 	videoPrefix := fmt.Sprintf("/static/videos/%d/", sess.UserID)
 	coverPrefix := fmt.Sprintf("/static/covers/%d/", sess.UserID)
@@ -274,16 +284,7 @@ func TestVideoEndToEndFlow(t *testing.T) {
 	}
 
 	// 发布后读取各接口，预期均返回同一条视频及其作者信息
-	item := publish(t, client, base, sess.AccessToken, publishPayload{
-		Title:             "第一条视频",
-		Description:       "端到端验证",
-		PlayURL:           video.PlayURL,
-		PlayFileName:      video.PlayFileName,
-		PlayOriginalName:  video.PlayOriginalName,
-		CoverURL:          cover.CoverURL,
-		CoverFileName:     cover.CoverFileName,
-		CoverOriginalName: cover.CoverOriginalName,
-	}, http.StatusCreated)
+	item := publishDraft(t, client, base, sess.AccessToken, draft.ID, http.StatusCreated)
 	if item.ID == 0 || item.Title != "第一条视频" || item.Author.Username != username {
 		t.Fatalf("发布响应不正确 got=%+v", item)
 	}
@@ -338,17 +339,10 @@ func TestUserProfileVideoCount(t *testing.T) {
 		t.Fatalf("初始资料统计不正确, got=%+v", profile)
 	}
 
-	video := uploadMedia(t, client, base, sess.AccessToken, "/api/video/auth/upload/video", "file", "profile.mp4", mp4Bytes, http.StatusCreated)
-	cover := uploadMedia(t, client, base, sess.AccessToken, "/api/video/auth/upload/cover", "file", "profile.png", pngBytes, http.StatusCreated)
-	item := publish(t, client, base, sess.AccessToken, publishPayload{
-		Title:             "用于资料统计的视频",
-		PlayURL:           video.PlayURL,
-		PlayFileName:      video.PlayFileName,
-		PlayOriginalName:  video.PlayOriginalName,
-		CoverURL:          cover.CoverURL,
-		CoverFileName:     cover.CoverFileName,
-		CoverOriginalName: cover.CoverOriginalName,
-	}, http.StatusCreated)
+	draft := createDraft(t, client, base, sess.AccessToken, "用于资料统计的视频", "", http.StatusCreated)
+	uploadMedia(t, client, base, sess.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", draft.ID), "file", "profile.mp4", mp4Bytes, http.StatusCreated)
+	uploadMedia(t, client, base, sess.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draft.ID), "file", "profile.png", pngBytes, http.StatusCreated)
+	item := publishDraft(t, client, base, sess.AccessToken, draft.ID, http.StatusCreated)
 
 	doJSON(t, client, http.MethodGet, profileURL, "", nil, http.StatusOK, &profile)
 	if profile.VideoCount != 1 {
@@ -377,9 +371,10 @@ func TestVideoEndToEndAuthRequired(t *testing.T) {
 		method string
 		path   string
 	}{
-		{http.MethodPost, "/api/video/auth/upload/video"},
-		{http.MethodPost, "/api/video/auth/upload/cover"},
-		{http.MethodPost, "/api/video/auth/publish"},
+		{http.MethodPost, "/api/video/auth/drafts"},
+		{http.MethodPost, "/api/video/auth/drafts/1/play"},
+		{http.MethodPost, "/api/video/auth/drafts/1/cover"},
+		{http.MethodPost, "/api/video/auth/drafts/1/publish"},
 		{http.MethodGet, "/api/video/auth/mine"},
 		{http.MethodDelete, "/api/video/auth/1"},
 	}
@@ -391,43 +386,30 @@ func TestVideoEndToEndAuthRequired(t *testing.T) {
 	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", "not-a-real-token", nil, http.StatusUnauthorized, nil)
 }
 
-// 测试目标：验证发布视频时会校验媒体素材的用户归属
-// 预期效果：使用他人素材被拒绝，使用本人素材可成功发布
-func TestVideoEndToEndForeignMediaURLRejected(t *testing.T) {
+// 测试目标：验证草稿媒体与发布操作均受草稿作者约束
+// 预期效果：客户端不能借用他人草稿或媒体路径，自己的完整草稿可发布
+func TestVideoEndToEndForeignDraftRejected(t *testing.T) {
 	srv, client := newTestServer(t)
 	base := srv.URL
 
 	register(t, client, base, "e2e_owner", "e2e-password-123")
 	owner := login(t, client, base, "e2e_owner", "e2e-password-123")
-	foreignVideo := uploadMedia(t, client, base, owner.AccessToken, "/api/video/auth/upload/video", "file", "owner.mp4", mp4Bytes, http.StatusCreated)
-	foreignCover := uploadMedia(t, client, base, owner.AccessToken, "/api/video/auth/upload/cover", "file", "owner.png", pngBytes, http.StatusCreated)
+	ownerDraft := createDraft(t, client, base, owner.AccessToken, "作者草稿", "", http.StatusCreated)
+	uploadMedia(t, client, base, owner.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", ownerDraft.ID), "file", "owner.mp4", mp4Bytes, http.StatusCreated)
+	uploadMedia(t, client, base, owner.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", ownerDraft.ID), "file", "owner.png", pngBytes, http.StatusCreated)
 
 	register(t, client, base, "e2e_other", "e2e-password-123")
 	other := login(t, client, base, "e2e_other", "e2e-password-123")
 
-	// 使用他人素材发布，预期返回禁止状态
-	publish(t, client, base, other.AccessToken, publishPayload{
-		Title:             "盗用素材",
-		PlayURL:           foreignVideo.PlayURL,
-		PlayFileName:      foreignVideo.PlayFileName,
-		PlayOriginalName:  foreignVideo.PlayOriginalName,
-		CoverURL:          foreignCover.CoverURL,
-		CoverFileName:     foreignCover.CoverFileName,
-		CoverOriginalName: foreignCover.CoverOriginalName,
-	}, http.StatusForbidden)
+	// 他人不能写入或发布作者草稿
+	uploadMedia(t, client, base, other.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", ownerDraft.ID), "file", "stolen.mp4", mp4Bytes, http.StatusForbidden)
+	publishDraft(t, client, base, other.AccessToken, ownerDraft.ID, http.StatusForbidden)
 
-	// 使用本人素材继续发布，预期成功以证明归属校验按用户标识判定
-	ownVideo := uploadMedia(t, client, base, other.AccessToken, "/api/video/auth/upload/video", "file", "mine.mp4", mp4Bytes, http.StatusCreated)
-	ownCover := uploadMedia(t, client, base, other.AccessToken, "/api/video/auth/upload/cover", "file", "mine.png", pngBytes, http.StatusCreated)
-	item := publish(t, client, base, other.AccessToken, publishPayload{
-		Title:             "自己的视频",
-		PlayURL:           ownVideo.PlayURL,
-		PlayFileName:      ownVideo.PlayFileName,
-		PlayOriginalName:  ownVideo.PlayOriginalName,
-		CoverURL:          ownCover.CoverURL,
-		CoverFileName:     ownCover.CoverFileName,
-		CoverOriginalName: ownCover.CoverOriginalName,
-	}, http.StatusCreated)
+	// 使用本人草稿继续发布，预期成功以证明归属校验按草稿作者判定
+	otherDraft := createDraft(t, client, base, other.AccessToken, "自己的视频", "", http.StatusCreated)
+	uploadMedia(t, client, base, other.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", otherDraft.ID), "file", "mine.mp4", mp4Bytes, http.StatusCreated)
+	uploadMedia(t, client, base, other.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", otherDraft.ID), "file", "mine.png", pngBytes, http.StatusCreated)
+	item := publishDraft(t, client, base, other.AccessToken, otherDraft.ID, http.StatusCreated)
 	if item.Author.Username != "e2e_other" {
 		t.Fatalf("作者应为 e2e_other got=%+v", item.Author)
 	}
@@ -441,17 +423,10 @@ func TestVideoEndToEndDeleteForbiddenForNonAuthor(t *testing.T) {
 
 	register(t, client, base, "e2e_author2", "e2e-password-123")
 	author := login(t, client, base, "e2e_author2", "e2e-password-123")
-	video := uploadMedia(t, client, base, author.AccessToken, "/api/video/auth/upload/video", "file", "a.mp4", mp4Bytes, http.StatusCreated)
-	cover := uploadMedia(t, client, base, author.AccessToken, "/api/video/auth/upload/cover", "file", "a.png", pngBytes, http.StatusCreated)
-	item := publish(t, client, base, author.AccessToken, publishPayload{
-		Title:             "待删除",
-		PlayURL:           video.PlayURL,
-		PlayFileName:      video.PlayFileName,
-		PlayOriginalName:  video.PlayOriginalName,
-		CoverURL:          cover.CoverURL,
-		CoverFileName:     cover.CoverFileName,
-		CoverOriginalName: cover.CoverOriginalName,
-	}, http.StatusCreated)
+	draft := createDraft(t, client, base, author.AccessToken, "待删除", "", http.StatusCreated)
+	uploadMedia(t, client, base, author.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", draft.ID), "file", "a.mp4", mp4Bytes, http.StatusCreated)
+	uploadMedia(t, client, base, author.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draft.ID), "file", "a.png", pngBytes, http.StatusCreated)
+	item := publishDraft(t, client, base, author.AccessToken, draft.ID, http.StatusCreated)
 
 	register(t, client, base, "e2e_intruder", "e2e-password-123")
 	intruder := login(t, client, base, "e2e_intruder", "e2e-password-123")
@@ -461,8 +436,8 @@ func TestVideoEndToEndDeleteForbiddenForNonAuthor(t *testing.T) {
 	doJSON(t, client, http.MethodDelete, fmt.Sprintf("%s/api/video/auth/%d", base, item.ID), author.AccessToken, nil, http.StatusNoContent, nil)
 }
 
-// 测试目标：验证公开读取和发布接口对无效参数的边界处理
-// 预期效果：不存在资源、错误分页参数和缺少必填字段均返回对应客户端错误状态
+// 测试目标：验证公开读取和草稿接口对无效参数的边界处理
+// 预期效果：不存在资源、错误分页参数、缺少标题和伪造媒体均返回对应客户端错误状态
 func TestVideoEndToEndBadRequests(t *testing.T) {
 	srv, client := newTestServer(t)
 	base := srv.URL
@@ -473,8 +448,15 @@ func TestVideoEndToEndBadRequests(t *testing.T) {
 	doJSON(t, client, http.MethodGet, base+"/api/video?author_id=abc", "", nil, http.StatusBadRequest, nil)
 	doJSON(t, client, http.MethodGet, base+"/api/video?cursor=garbage", "", nil, http.StatusBadRequest, nil)
 
-	// 已登录但发布请求缺少必填字段，预期返回请求无效状态
+	// 已登录但创建草稿缺少标题，预期返回请求无效状态
 	register(t, client, base, "e2e_badreq", "e2e-password-123")
 	sess := login(t, client, base, "e2e_badreq", "e2e-password-123")
-	doJSON(t, client, http.MethodPost, base+"/api/video/auth/publish", sess.AccessToken, publishPayload{Title: "缺字段"}, http.StatusBadRequest, nil)
+	doJSON(t, client, http.MethodPost, base+"/api/video/auth/drafts", sess.AccessToken, map[string]string{}, http.StatusBadRequest, nil)
+
+	// 发布接口拒绝客户端伪造的媒体元数据
+	draft := createDraft(t, client, base, sess.AccessToken, "待发布", "", http.StatusCreated)
+	doJSON(t, client, http.MethodPost, fmt.Sprintf("%s/api/video/auth/drafts/%d/publish", base, draft.ID), sess.AccessToken, map[string]string{
+		"play_url":  "/static/videos/999/stolen.mp4",
+		"cover_url": "/static/covers/999/stolen.png",
+	}, http.StatusBadRequest, nil)
 }

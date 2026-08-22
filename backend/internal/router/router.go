@@ -89,9 +89,10 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	protectedVideos := videos.Group("/auth")
 	protectedVideos.Use(jwt.Auth(sessionService))
 	{
-		protectedVideos.POST("/upload/video", videoCtl.UploadVideo)
-		protectedVideos.POST("/upload/cover", videoCtl.UploadCover)
-		protectedVideos.POST("/publish", videoCtl.Publish)
+		protectedVideos.POST("/drafts", videoCtl.CreateDraft)
+		protectedVideos.POST("/drafts/:id/play", videoCtl.UploadDraftVideo)
+		protectedVideos.POST("/drafts/:id/cover", videoCtl.UploadDraftCover)
+		protectedVideos.POST("/drafts/:id/publish", videoCtl.PublishDraft)
 		protectedVideos.GET("/mine", videoCtl.Mine)
 		protectedVideos.DELETE("/:id", videoCtl.Delete)
 	}

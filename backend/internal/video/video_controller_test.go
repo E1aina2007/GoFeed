@@ -45,7 +45,7 @@ func TestHandlerGetVideo(t *testing.T) {
 	// 2 请求视频详情接口
 	// 3 验证 200 且响应中的视频字段与作者资料正确
 	ctl, repo, authors := newTestVideoController(t)
-	repo.getVideo = &Video{ID: 1, AuthorID: 2, Title: "t", PublishedAt: time.Now()}
+	repo.getVideo = &Video{ID: 1, AuthorID: 2, Title: "t", PublishedAt: timePtr(time.Now())}
 	authors.authors = map[uint]Author{2: {ID: 2, Username: "u"}}
 
 	r := gin.New()
@@ -100,13 +100,43 @@ func TestHandlerListVideosInvalidLimit(t *testing.T) {
 	}
 }
 
-// 测试目标：验证已认证用户可上传合法视频文件
-// 预期效果：接口返回创建状态，播放地址归属当前用户的上传目录
-func TestHandlerUploadVideo(t *testing.T) {
+// 测试目标：验证创建草稿只接受可编辑元数据
+// 预期效果：服务端创建当前用户的空媒体 draft 并返回草稿标识
+func TestHandlerCreateDraft(t *testing.T) {
+	ctl, repo, _ := newTestVideoController(t)
+	r := gin.New()
+	r.Use(withUserID(1))
+	r.POST("/drafts", ctl.CreateDraft)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/drafts", strings.NewReader(`{"title":"  标题  ","description":" 简介 "}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status got=%d want=201 body=%s", w.Code, w.Body.String())
+	}
+	if repo.created == nil || repo.created.AuthorID != 1 || repo.created.Status != VideoStatusDraft || repo.created.PlayURL != "" || repo.created.CoverURL != "" {
+		t.Fatalf("草稿未按预期创建 got=%#v", repo.created)
+	}
+	var body struct {
+		Draft DraftItem `json:"draft"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("响应解析失败 error=%v", err)
+	}
+	if body.Draft.ID != 7 || body.Draft.Title != "标题" || body.Draft.Description != "简介" || body.Draft.Status != VideoStatusDraft {
+		t.Fatalf("草稿响应错误 got=%#v", body.Draft)
+	}
+}
+
+// 测试目标：验证已认证用户可向本人草稿上传合法视频文件
+// 预期效果：接口返回创建状态，播放地址归属当前用户且媒体写入草稿
+func TestHandlerUploadDraftVideo(t *testing.T) {
 	// 1 构造带合法视频文件头的多部分表单请求
 	// 2 模拟已登录用户上传视频
 	// 3 验证创建状态且返回的播放地址归属当前用户的上传目录
-	ctl, _, _ := newTestVideoController(t)
+	ctl, repo, _ := newTestVideoController(t)
+	repo.drafts = map[uint]*Video{1: {ID: 1, AuthorID: 1, Status: VideoStatusDraft}}
 
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
@@ -121,8 +151,8 @@ func TestHandlerUploadVideo(t *testing.T) {
 
 	r := gin.New()
 	r.Use(withUserID(1))
-	r.POST("/upload", ctl.UploadVideo)
-	req := httptest.NewRequest(http.MethodPost, "/upload", &buf)
+	r.POST("/drafts/:id/play", ctl.UploadDraftVideo)
+	req := httptest.NewRequest(http.MethodPost, "/drafts/1/play", &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -130,18 +160,26 @@ func TestHandlerUploadVideo(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status got=%d want=201 body=%s", w.Code, w.Body.String())
 	}
-	var body map[string]string
+	var body struct {
+		DraftID          uint   `json:"draft_id"`
+		PlayURL          string `json:"play_url"`
+		PlayFileName     string `json:"play_file_name"`
+		PlayOriginalName string `json:"play_original_name"`
+	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("响应解析失败 error=%v", err)
 	}
-	if !strings.HasPrefix(body["play_url"], "/static/videos/1/") {
-		t.Fatalf("play_url 归属错误 got=%q", body["play_url"])
+	if body.DraftID != 1 {
+		t.Fatalf("上传响应 draft_id 错误 got=%d want=1", body.DraftID)
 	}
-	if body["play_file_name"] != "clip.mp4" {
-		t.Fatalf("play_file_name 错误 got=%q want=clip.mp4", body["play_file_name"])
+	if !strings.HasPrefix(body.PlayURL, "/static/videos/1/") {
+		t.Fatalf("play_url 归属错误 got=%q", body.PlayURL)
 	}
-	if body["play_original_name"] != "clip.mp4" {
-		t.Fatalf("play_original_name 错误 got=%q want=clip.mp4", body["play_original_name"])
+	if body.PlayFileName != "clip.mp4" {
+		t.Fatalf("play_file_name 错误 got=%q want=clip.mp4", body.PlayFileName)
+	}
+	if body.PlayOriginalName != "clip.mp4" || repo.drafts[1].PlayFileName != "clip.mp4" {
+		t.Fatalf("play_original_name 错误 got=%q want=clip.mp4", body.PlayOriginalName)
 	}
 }
 
@@ -159,8 +197,8 @@ func TestHandlerUploadRejectsSpoofedFile(t *testing.T) {
 
 	r := gin.New()
 	r.Use(withUserID(1))
-	r.POST("/upload", ctl.UploadVideo)
-	req := httptest.NewRequest(http.MethodPost, "/upload", &buf)
+	r.POST("/drafts/:id/play", ctl.UploadDraftVideo)
+	req := httptest.NewRequest(http.MethodPost, "/drafts/1/play", &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -170,12 +208,13 @@ func TestHandlerUploadRejectsSpoofedFile(t *testing.T) {
 	}
 }
 
-// 测试目标：验证已认证用户可上传合法封面文件
+// 测试目标：验证已认证用户可向本人草稿上传合法封面文件
 // 预期效果：接口返回创建状态及正确的封面地址和文件名字段
-func TestHandlerUploadCover(t *testing.T) {
+func TestHandlerUploadDraftCover(t *testing.T) {
 	// 1 构造带合法图片文件头的多部分表单请求
 	// 2 验证创建状态且返回封面地址和文件名字段
-	ctl, _, _ := newTestVideoController(t)
+	ctl, repo, _ := newTestVideoController(t)
+	repo.drafts = map[uint]*Video{1: {ID: 1, AuthorID: 1, Status: VideoStatusDraft}}
 
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
@@ -190,8 +229,8 @@ func TestHandlerUploadCover(t *testing.T) {
 
 	r := gin.New()
 	r.Use(withUserID(1))
-	r.POST("/cover", ctl.UploadCover)
-	req := httptest.NewRequest(http.MethodPost, "/cover", &buf)
+	r.POST("/drafts/:id/cover", ctl.UploadDraftCover)
+	req := httptest.NewRequest(http.MethodPost, "/drafts/1/cover", &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -199,18 +238,26 @@ func TestHandlerUploadCover(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status got=%d want=201 body=%s", w.Code, w.Body.String())
 	}
-	var body map[string]string
+	var body struct {
+		DraftID           uint   `json:"draft_id"`
+		CoverURL          string `json:"cover_url"`
+		CoverFileName     string `json:"cover_file_name"`
+		CoverOriginalName string `json:"cover_original_name"`
+	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("响应解析失败 error=%v", err)
 	}
-	if !strings.HasPrefix(body["cover_url"], "/static/covers/1/") {
-		t.Fatalf("cover_url 归属错误 got=%q", body["cover_url"])
+	if body.DraftID != 1 {
+		t.Fatalf("上传响应 draft_id 错误 got=%d want=1", body.DraftID)
 	}
-	if body["cover_file_name"] != "cover.png" {
-		t.Fatalf("cover_file_name 错误 got=%q want=cover.png", body["cover_file_name"])
+	if !strings.HasPrefix(body.CoverURL, "/static/covers/1/") {
+		t.Fatalf("cover_url 归属错误 got=%q", body.CoverURL)
 	}
-	if body["cover_original_name"] != "cover.PNG" {
-		t.Fatalf("cover_original_name 错误 got=%q want=cover.PNG", body["cover_original_name"])
+	if body.CoverFileName != "cover.png" {
+		t.Fatalf("cover_file_name 错误 got=%q want=cover.png", body.CoverFileName)
+	}
+	if body.CoverOriginalName != "cover.PNG" || repo.drafts[1].CoverFileName != "cover.png" {
+		t.Fatalf("cover_original_name 错误 got=%q want=cover.PNG", body.CoverOriginalName)
 	}
 }
 
@@ -221,35 +268,34 @@ func TestHandlerUploadRequiresAuth(t *testing.T) {
 	ctl, _, _ := newTestVideoController(t)
 
 	r := gin.New()
-	r.POST("/upload", ctl.UploadVideo)
+	r.POST("/drafts/:id/play", ctl.UploadDraftVideo)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/upload", nil))
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/drafts/1/play", nil))
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("未登录上传未被拒绝 status got=%d want=401", w.Code)
 	}
 }
 
-// 测试目标：验证用户可使用本人素材发布视频
-// 预期效果：接口返回创建状态，视频写入仓储且响应包含创建后的数据
-func TestHandlerPublish(t *testing.T) {
-	// 1 使用属于当前用户上传目录的播放和封面地址发布
-	// 2 验证创建状态、视频写入仓储且响应包含创建后的视频
+// 测试目标：验证用户可发布完整的本人草稿
+// 预期效果：发布接口不接收客户端媒体字段，只转换草稿状态
+func TestHandlerPublishDraft(t *testing.T) {
 	ctl, repo, authors := newTestVideoController(t)
 	authors.authors = map[uint]Author{1: {ID: 1, Username: "me"}}
+	repo.drafts = map[uint]*Video{1: {
+		ID: 1, AuthorID: 1, Title: "t", Status: VideoStatusDraft,
+		PlayURL: "/static/videos/1/20260810/a.mp4", PlayFileName: "a.mp4", PlayOriginalName: "服务器视频.mp4",
+		CoverURL: "/static/covers/1/20260810/c.png", CoverFileName: "c.png", CoverOriginalName: "服务器封面.png",
+	}}
 
-	payload := `{"title":"t","play_url":"/static/videos/1/20260810/a.mp4","play_file_name":"a.mp4","play_original_name":"a.mp4","cover_url":"/static/covers/1/20260810/c.png","cover_file_name":"c.png","cover_original_name":"c.png"}`
 	r := gin.New()
 	r.Use(withUserID(1))
-	r.POST("/publish", ctl.Publish)
+	r.POST("/drafts/:id/publish", ctl.PublishDraft)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/publish", strings.NewReader(payload)))
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/drafts/1/publish", nil))
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status got=%d want=201 body=%s", w.Code, w.Body.String())
-	}
-	if repo.created == nil || repo.created.AuthorID != 1 {
-		t.Fatalf("发布未写入仓储 got=%#v", repo.created)
 	}
 	var body struct {
 		Video VideoItem `json:"video"`
@@ -257,44 +303,71 @@ func TestHandlerPublish(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("响应解析失败 error=%v", err)
 	}
-	if body.Video.ID != 7 {
-		t.Fatalf("响应视频 ID 错误 got=%d want=7", body.Video.ID)
+	if body.Video.ID != 1 || repo.drafts[1].Status != VideoStatusPublished {
+		t.Fatalf("响应视频或草稿状态错误 body=%#v draft=%#v", body.Video, repo.drafts[1])
+	}
+	if body.Video.PlayOriginalName != "服务器视频.mp4" {
+		t.Fatalf("发布未使用服务端原始名 got=%q", body.Video.PlayOriginalName)
 	}
 }
 
-// 测试目标：验证发布接口拒绝其他用户的媒体素材
-// 预期效果：跨用户素材地址返回禁止状态以防止盗用
-func TestHandlerPublishRejectsForeignURL(t *testing.T) {
-	// 发布时提交其他用户上传目录的地址应返回禁止状态
-	ctl, _, _ := newTestVideoController(t)
+// 测试目标：验证发布接口拒绝不属于当前用户的草稿
+// 预期效果：跨用户草稿返回禁止状态
+func TestHandlerPublishDraftRejectsForeignDraft(t *testing.T) {
+	ctl, repo, _ := newTestVideoController(t)
+	repo.drafts = map[uint]*Video{1: {ID: 1, AuthorID: 2, Status: VideoStatusDraft}}
 
-	payload := `{"title":"t","play_url":"/static/videos/2/20260810/a.mp4","play_file_name":"a.mp4","play_original_name":"a.mp4","cover_url":"/static/covers/1/20260810/c.png","cover_file_name":"c.png","cover_original_name":"c.png"}`
 	r := gin.New()
 	r.Use(withUserID(1))
-	r.POST("/publish", ctl.Publish)
+	r.POST("/drafts/:id/publish", ctl.PublishDraft)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/publish", strings.NewReader(payload)))
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/drafts/1/publish", nil))
 
 	if w.Code != http.StatusForbidden {
-		t.Fatalf("跨用户 URL 发布未被拒绝 status got=%d want=403 body=%s", w.Code, w.Body.String())
+		t.Fatalf("跨用户草稿未被拒绝 status got=%d want=403 body=%s", w.Code, w.Body.String())
 	}
 }
 
-// 测试目标：验证发布接口校验媒体文件名与地址末段的一致性
-// 预期效果：两者不一致时返回请求无效状态
-func TestHandlerPublishRejectsMismatchedFileName(t *testing.T) {
-	// 请求中的实际存储文件名与播放地址最后一段不一致时应返回请求无效状态
-	ctl, _, _ := newTestVideoController(t)
+// 测试目标：验证发布接口拒绝缺少媒体的草稿
+// 预期效果：不完整草稿返回冲突状态且不创建公开视频
+func TestHandlerPublishDraftRejectsIncompleteDraft(t *testing.T) {
+	ctl, repo, _ := newTestVideoController(t)
+	repo.drafts = map[uint]*Video{1: {ID: 1, AuthorID: 1, Status: VideoStatusDraft}}
 
-	payload := `{"title":"t","play_url":"/static/videos/1/20260810/a.mp4","play_file_name":"other.mp4","play_original_name":"a.mp4","cover_url":"/static/covers/1/20260810/c.png","cover_file_name":"c.png","cover_original_name":"c.png"}`
 	r := gin.New()
 	r.Use(withUserID(1))
-	r.POST("/publish", ctl.Publish)
+	r.POST("/drafts/:id/publish", ctl.PublishDraft)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/publish", strings.NewReader(payload)))
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/drafts/1/publish", nil))
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("不完整草稿未被拒绝 status got=%d want=409 body=%s", w.Code, w.Body.String())
+	}
+}
+
+// 测试目标：验证发布草稿拒绝客户端提交的任何媒体元数据
+// 预期效果：请求体返回参数错误且草稿不发生状态转换
+func TestHandlerPublishDraftRejectsRequestBody(t *testing.T) {
+	ctl, repo, _ := newTestVideoController(t)
+	repo.drafts = map[uint]*Video{1: {
+		ID: 1, AuthorID: 1, Status: VideoStatusDraft,
+		PlayURL: "/static/videos/1/20260810/a.mp4", PlayFileName: "a.mp4", PlayOriginalName: "视频.mp4",
+		CoverURL: "/static/covers/1/20260810/c.png", CoverFileName: "c.png", CoverOriginalName: "封面.png",
+	}}
+
+	r := gin.New()
+	r.Use(withUserID(1))
+	r.POST("/drafts/:id/publish", ctl.PublishDraft)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/drafts/1/publish", strings.NewReader(`{"play_url":"/static/videos/1/forged.mp4"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("存储文件名不匹配未被拒绝 status got=%d want=400 body=%s", w.Code, w.Body.String())
+		t.Fatalf("发布请求体未被拒绝 status got=%d want=400 body=%s", w.Code, w.Body.String())
+	}
+	if repo.drafts[1].Status != VideoStatusDraft {
+		t.Fatalf("拒绝请求不应转换草稿状态 got=%s", repo.drafts[1].Status)
 	}
 }
 
@@ -305,9 +378,9 @@ func TestHandlerPublishRequiresAuth(t *testing.T) {
 	ctl, _, _ := newTestVideoController(t)
 
 	r := gin.New()
-	r.POST("/publish", ctl.Publish)
+	r.POST("/drafts/:id/publish", ctl.PublishDraft)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/publish", strings.NewReader(`{}`)))
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/drafts/1/publish", nil))
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("未登录发布未被拒绝 status got=%d want=401", w.Code)

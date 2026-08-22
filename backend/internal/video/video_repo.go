@@ -2,9 +2,11 @@ package video
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Repository struct {
@@ -18,6 +20,78 @@ func NewRepository(db *gorm.DB) *Repository {
 // Create 写入一条视频记录
 func (r *Repository) Create(ctx context.Context, video *Video) error {
 	return r.db.WithContext(ctx).Create(video).Error
+}
+
+// AttachDraftMedia 将已保存的媒体元数据写入当前用户的可写草稿。
+func (r *Repository) AttachDraftMedia(ctx context.Context, draftID, authorID uint, kind MediaKind, saved SavedFile, originalName string) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var draft Video
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&draft, draftID).Error; err != nil {
+			return err
+		}
+		if draft.AuthorID != authorID {
+			return ErrNotAuthor
+		}
+		if draft.Status != VideoStatusDraft {
+			return ErrDraftNotWritable
+		}
+
+		switch kind {
+		case MediaVideo:
+			if draft.PlayURL != "" {
+				return ErrDraftNotWritable
+			}
+			draft.PlayURL = saved.PublicURL
+			draft.PlayFileName = saved.FileName
+			draft.PlayOriginalName = originalName
+		case MediaCover:
+			if draft.CoverURL != "" {
+				return ErrDraftNotWritable
+			}
+			draft.CoverURL = saved.PublicURL
+			draft.CoverFileName = saved.FileName
+			draft.CoverOriginalName = originalName
+		default:
+			return ErrInvalidMedia
+		}
+		return tx.Save(&draft).Error
+	})
+}
+
+// PublishDraft 原子验证草稿完整性并切换为公开可见状态。
+func (r *Repository) PublishDraft(ctx context.Context, draftID, authorID uint) (*Video, error) {
+	if draftID == 0 || authorID == 0 {
+		return nil, ErrInvalidVideoID
+	}
+
+	var published Video
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&published, draftID).Error; err != nil {
+			return err
+		}
+		if published.AuthorID != authorID {
+			return ErrNotAuthor
+		}
+		if published.Status != VideoStatusDraft {
+			return ErrDraftNotWritable
+		}
+		if published.PlayURL == "" || published.PlayFileName == "" || published.PlayOriginalName == "" ||
+			published.CoverURL == "" || published.CoverFileName == "" || published.CoverOriginalName == "" {
+			return ErrDraftIncomplete
+		}
+
+		publishedAt := time.Now()
+		published.Status = VideoStatusPublished
+		published.PublishedAt = &publishedAt
+		return tx.Save(&published).Error
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrVideoNotFound
+		}
+		return nil, err
+	}
+	return &published, nil
 }
 
 // GetByID 查询任意状态的视频（GORM 自动过滤已软删除记录）
@@ -89,13 +163,14 @@ func (r *Repository) CountPublishedByAuthor(ctx context.Context, authorID uint) 
 	return count, err
 }
 
-// ListByAuthor 按作者查询视频（不限制状态，用于作者自己的管理列表）
+// ListByAuthor 按作者查询已发布视频，用于作者自己的管理列表。
+// 草稿没有完整媒体，也没有单独的管理响应结构，不能混入 VideoItem 列表。
 func (r *Repository) ListByAuthor(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error) {
 	if authorID == 0 || limit <= 0 {
 		return []Video{}, nil
 	}
 
-	query := r.db.WithContext(ctx).Where("author_id = ?", authorID)
+	query := r.db.WithContext(ctx).Where("author_id = ? AND status = ?", authorID, VideoStatusPublished)
 	if cursor != nil {
 		query = query.Where(
 			"(published_at < ?) OR (published_at = ? AND id < ?)",

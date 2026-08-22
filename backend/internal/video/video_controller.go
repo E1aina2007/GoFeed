@@ -59,33 +59,64 @@ func (ctl *Controller) ListVideos(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// UploadVideo 处理 POST /api/video/auth/upload/video
-func (ctl *Controller) UploadVideo(c *gin.Context) {
-	ctl.upload(c, MediaVideo, "play_url", "play_file_name", "play_original_name")
-}
-
-// UploadCover 处理 POST /api/video/auth/upload/cover
-func (ctl *Controller) UploadCover(c *gin.Context) {
-	ctl.upload(c, MediaCover, "cover_url", "cover_file_name", "cover_original_name")
-}
-
-func (ctl *Controller) upload(c *gin.Context, kind MediaKind, urlKey, fileNameKey, originalNameKey string) {
+// CreateDraft 处理 POST /api/video/auth/drafts。
+func (ctl *Controller) CreateDraft(c *gin.Context) {
 	userID, ok := jwt.UserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
 		return
 	}
 
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxMediaSize(kind))
+	var req DraftRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid draft payload"})
+		return
+	}
+	draft, err := ctl.srv.CreateDraft(c.Request.Context(), userID, req)
+	if err != nil {
+		handleVideoError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"draft": draft})
+}
+
+// UploadDraftVideo 处理 POST /api/video/auth/drafts/:id/play。
+func (ctl *Controller) UploadDraftVideo(c *gin.Context) {
+	ctl.uploadDraftMedia(c, MediaVideo, "play_url", "play_file_name", "play_original_name")
+}
+
+// UploadDraftCover 处理 POST /api/video/auth/drafts/:id/cover。
+func (ctl *Controller) UploadDraftCover(c *gin.Context) {
+	ctl.uploadDraftMedia(c, MediaCover, "cover_url", "cover_file_name", "cover_original_name")
+}
+
+func (ctl *Controller) uploadDraftMedia(c *gin.Context, kind MediaKind, urlKey, fileNameKey, originalNameKey string) {
+	userID, ok := jwt.UserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		return
+	}
+	draftID, err := parsePathID(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxMediaRequestSize(kind))
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": ErrMediaTooLarge.Error()})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid upload payload"})
 		return
 	}
 	defer file.Close()
 
 	if header.Size <= 0 || header.Size > maxMediaSize(kind) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": ErrMediaTooLarge.Error()})
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": ErrMediaTooLarge.Error()})
 		return
 	}
 
@@ -110,31 +141,43 @@ func (ctl *Controller) upload(c *gin.Context, kind MediaKind, urlKey, fileNameKe
 		return
 	}
 	originalName := OriginalName(header.Filename)
-	if originalName == "" {
-		originalName = saved.FileName
+	err = ctl.srv.AttachDraftMedia(c.Request.Context(), draftID, userID, kind, saved, originalName)
+	if err != nil {
+		if remover, ok := ctl.storage.(MediaRemover); ok {
+			_ = remover.Remove(c.Request.Context(), saved.PublicURL)
+		}
+		handleVideoError(c, err)
+		return
 	}
 	c.JSON(http.StatusCreated, gin.H{
+		"draft_id":      draftID,
 		urlKey:          saved.PublicURL,
 		fileNameKey:     saved.FileName,
 		originalNameKey: originalName,
 	})
 }
 
-// Publish 处理 POST /api/video/auth/publish
-func (ctl *Controller) Publish(c *gin.Context) {
+// PublishDraft 处理 POST /api/video/auth/drafts/:id/publish。
+func (ctl *Controller) PublishDraft(c *gin.Context) {
 	userID, ok := jwt.UserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
 		return
 	}
-
-	var req PublishRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid video payload"})
+	if c.Request.Body != nil {
+		var firstByte [1]byte
+		n, err := c.Request.Body.Read(firstByte[:])
+		if n > 0 || (err != nil && !errors.Is(err, io.EOF)) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "publish draft does not accept a request body"})
+			return
+		}
+	}
+	draftID, err := parsePathID(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-
-	item, err := ctl.srv.Publish(c.Request.Context(), userID, req)
+	item, err := ctl.srv.PublishDraft(c.Request.Context(), draftID, userID)
 	if err != nil {
 		handleVideoError(c, err)
 		return
@@ -226,6 +269,8 @@ func handleVideoError(c *gin.Context, err error) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "video not found"})
 	case errors.Is(err, ErrNotAuthor), errors.Is(err, ErrInvalidMediaURL):
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+	case errors.Is(err, ErrDraftNotWritable), errors.Is(err, ErrDraftIncomplete):
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "video operation failed"})
 	}

@@ -29,6 +29,8 @@ var (
 	ErrNotAuthor               = errors.New("only the author can modify this video")
 	ErrRepositoryUnavailable   = errors.New("video repository unavailable")
 	ErrAuthorReaderUnavailable = errors.New("author reader unavailable")
+	ErrDraftNotWritable        = errors.New("video draft is not writable")
+	ErrDraftIncomplete         = errors.New("video draft is incomplete")
 )
 
 type VideoReader interface {
@@ -43,6 +45,8 @@ type VideoRepository interface {
 	GetByID(ctx context.Context, id uint) (*Video, error)
 	ListByAuthor(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error)
 	Delete(ctx context.Context, id uint) error
+	AttachDraftMedia(ctx context.Context, draftID, authorID uint, kind MediaKind, saved SavedFile, originalName string) error
+	PublishDraft(ctx context.Context, draftID, authorID uint) (*Video, error)
 }
 
 type AuthorReader interface {
@@ -58,7 +62,81 @@ func NewService(repository VideoRepository, authorReader AuthorReader) *Service 
 	return &Service{repository: repository, authorReader: authorReader}
 }
 
-// 获取包含作者资料的视频详情
+// CreateDraft 创建一个仅当前用户可写的草稿。媒体字段只会由后续上传接口填充。
+func (s *Service) CreateDraft(ctx context.Context, authorID uint, req DraftRequest) (DraftItem, error) {
+	if authorID == 0 {
+		return DraftItem{}, ErrInvalidVideoID
+	}
+	if s.repository == nil {
+		return DraftItem{}, ErrRepositoryUnavailable
+	}
+
+	req.Title = strings.TrimSpace(req.Title)
+	req.Description = strings.TrimSpace(req.Description)
+	if req.Title == "" || utf8.RuneCountInString(req.Title) > 255 {
+		return DraftItem{}, fmt.Errorf("%w: title is required", ErrInvalidPublishRequest)
+	}
+	if utf8.RuneCountInString(req.Description) > 1000 {
+		return DraftItem{}, fmt.Errorf("%w: description must be at most 1000 characters", ErrInvalidPublishRequest)
+	}
+
+	draft := &Video{
+		AuthorID:    authorID,
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      VideoStatusDraft,
+	}
+	if err := s.repository.Create(ctx, draft); err != nil {
+		return DraftItem{}, err
+	}
+	return draftItem(*draft), nil
+}
+
+// AttachDraftMedia 将已经落盘的文件绑定到草稿。客户端不能提交或覆盖任何媒体元数据。
+func (s *Service) AttachDraftMedia(ctx context.Context, draftID, ownerID uint, kind MediaKind, saved SavedFile, originalName string) error {
+	if draftID == 0 || ownerID == 0 || (kind != MediaVideo && kind != MediaCover) ||
+		!isOwnedMediaURL(saved.PublicURL, kind, ownerID) || !isValidStoredFile(saved.PublicURL, saved.FileName) {
+		return ErrInvalidMedia
+	}
+	if s.repository == nil {
+		return ErrRepositoryUnavailable
+	}
+	if originalName == "" {
+		originalName = saved.FileName
+	}
+	return s.repository.AttachDraftMedia(ctx, draftID, ownerID, kind, saved, originalName)
+}
+
+// PublishDraft 只允许将当前用户完整的 draft 状态视频转换为 published。
+func (s *Service) PublishDraft(ctx context.Context, draftID, authorID uint) (VideoItem, error) {
+	if draftID == 0 || authorID == 0 {
+		return VideoItem{}, ErrInvalidVideoID
+	}
+	if s.repository == nil {
+		return VideoItem{}, ErrRepositoryUnavailable
+	}
+
+	video, err := s.repository.PublishDraft(ctx, draftID, authorID)
+	if err != nil {
+		return VideoItem{}, err
+	}
+	return s.toVideoItem(ctx, video)
+}
+
+func draftItem(video Video) DraftItem {
+	return DraftItem{
+		ID:                video.ID,
+		Title:             video.Title,
+		Description:       video.Description,
+		Status:            video.Status,
+		PlayOriginalName:  video.PlayOriginalName,
+		CoverOriginalName: video.CoverOriginalName,
+		CreatedAt:         video.CreatedAt,
+		UpdatedAt:         video.UpdatedAt,
+	}
+}
+
+// GetPublished 获取包含作者资料的视频详情。
 func (s *Service) GetPublished(ctx context.Context, id uint) (VideoItem, error) {
 	if id == 0 {
 		return VideoItem{}, ErrInvalidVideoID
@@ -96,75 +174,8 @@ func (s *Service) ListPublished(ctx context.Context, authorID uint, encodedCurso
 	return s.buildListResponse(ctx, videos, limit)
 }
 
-// Publish 校验发布参数与媒体归属后创建一条 published 视频
-func (s *Service) Publish(ctx context.Context, authorID uint, req PublishRequest) (VideoItem, error) {
-	if authorID == 0 {
-		return VideoItem{}, ErrInvalidVideoID
-	}
-	if s.repository == nil {
-		return VideoItem{}, ErrRepositoryUnavailable
-	}
-
-	req.Title = strings.TrimSpace(req.Title)
-	req.Description = strings.TrimSpace(req.Description)
-	req.PlayURL = strings.TrimSpace(req.PlayURL)
-	req.CoverURL = strings.TrimSpace(req.CoverURL)
-	req.PlayFileName = strings.TrimSpace(req.PlayFileName)
-	req.PlayOriginalName = strings.TrimSpace(req.PlayOriginalName)
-	req.CoverFileName = strings.TrimSpace(req.CoverFileName)
-	req.CoverOriginalName = strings.TrimSpace(req.CoverOriginalName)
-
-	if req.Title == "" {
-		return VideoItem{}, fmt.Errorf("%w: title is required", ErrInvalidPublishRequest)
-	}
-	if utf8.RuneCountInString(req.Description) > 1000 {
-		return VideoItem{}, fmt.Errorf("%w: description must be at most 1000 characters", ErrInvalidPublishRequest)
-	}
-	if req.PlayURL == "" || req.CoverURL == "" {
-		return VideoItem{}, fmt.Errorf("%w: play_url and cover_url are required", ErrInvalidPublishRequest)
-	}
-	if req.PlayFileName == "" || req.PlayOriginalName == "" ||
-		req.CoverFileName == "" || req.CoverOriginalName == "" {
-		return VideoItem{}, fmt.Errorf("%w: media file names are required", ErrInvalidPublishRequest)
-	}
-	if !isOwnedMediaURL(req.PlayURL, MediaVideo, authorID) || !isOwnedMediaURL(req.CoverURL, MediaCover, authorID) {
-		return VideoItem{}, ErrInvalidMediaURL
-	}
-	// 数据库只存相对路径：完整 URL 统一归一化为 path 部分，避免依赖协议与主机
-	playPath, err := mediaURLPath(req.PlayURL)
-	if err != nil {
-		return VideoItem{}, fmt.Errorf("%w: invalid play_url", ErrInvalidPublishRequest)
-	}
-	coverPath, err := mediaURLPath(req.CoverURL)
-	if err != nil {
-		return VideoItem{}, fmt.Errorf("%w: invalid cover_url", ErrInvalidPublishRequest)
-	}
-	req.PlayURL = playPath
-	req.CoverURL = coverPath
-	if !isValidStoredFile(req.PlayURL, req.PlayFileName) || !isValidStoredFile(req.CoverURL, req.CoverFileName) {
-		return VideoItem{}, fmt.Errorf("%w: stored file name does not match media url", ErrInvalidPublishRequest)
-	}
-
-	video := &Video{
-		AuthorID:          authorID,
-		Title:             req.Title,
-		Description:       req.Description,
-		PlayURL:           req.PlayURL,
-		PlayFileName:      req.PlayFileName,
-		PlayOriginalName:  req.PlayOriginalName,
-		CoverURL:          req.CoverURL,
-		CoverFileName:     req.CoverFileName,
-		CoverOriginalName: req.CoverOriginalName,
-		Status:            VideoStatusPublished,
-		PublishedAt:       time.Now(),
-	}
-	if err := s.repository.Create(ctx, video); err != nil {
-		return VideoItem{}, err
-	}
-	return s.toVideoItem(ctx, video)
-}
-
-// ListMine 返回当前用户自己的视频管理列表（不限制状态）
+// ListMine 返回当前用户已发布的视频管理列表。
+// draft 和 purging 都没有可供 VideoItem 表达的公开媒体，不应混入该接口。
 func (s *Service) ListMine(ctx context.Context, authorID uint, encodedCursor string, limit int) (ListResponse, error) {
 	if authorID == 0 {
 		return ListResponse{}, ErrInvalidVideoID
@@ -238,9 +249,13 @@ func (s *Service) buildListResponse(ctx context.Context, videos []Video, limit i
 
 	response := ListResponse{Items: items}
 	if hasMore {
+		last := videos[len(videos)-1]
+		if last.PublishedAt == nil {
+			return ListResponse{}, fmt.Errorf("published video %d has no publication time", last.ID)
+		}
 		next, err := encodeCursor(&Cursor{
-			PublishedAt: videos[len(videos)-1].PublishedAt,
-			ID:          videos[len(videos)-1].ID,
+			PublishedAt: *last.PublishedAt,
+			ID:          last.ID,
 		})
 		if err != nil {
 			return ListResponse{}, err
@@ -276,11 +291,18 @@ func videoItem(video Video, author Author) VideoItem {
 		CoverURL:          video.CoverURL,
 		CoverFileName:     video.CoverFileName,
 		CoverOriginalName: video.CoverOriginalName,
-		PublishedAt:       video.PublishedAt,
+		PublishedAt:       valueOrZero(video.PublishedAt),
 		LikesCount:        video.LikesCount,
 		CommentsCount:     video.CommentsCount,
 		Author:            author,
 	}
+}
+
+func valueOrZero(value *time.Time) time.Time {
+	if value == nil {
+		return time.Time{}
+	}
+	return *value
 }
 
 // isValidStoredFile 校验请求中的实际存储文件名与媒体 URL 最后一段一致，

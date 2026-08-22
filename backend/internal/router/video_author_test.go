@@ -15,17 +15,10 @@ func TestVideoSurvivesAuthorDeletion(t *testing.T) {
 	register(t, client, base, "tombstone_author", "tombstone-password-123")
 	sess := login(t, client, base, "tombstone_author", "tombstone-password-123")
 
-	video := uploadMedia(t, client, base, sess.AccessToken, "/api/video/auth/upload/video", "file", "a.mp4", mp4Bytes, http.StatusCreated)
-	cover := uploadMedia(t, client, base, sess.AccessToken, "/api/video/auth/upload/cover", "file", "a.png", pngBytes, http.StatusCreated)
-	item := publish(t, client, base, sess.AccessToken, publishPayload{
-		Title:             "注销前的视频",
-		PlayURL:           video.PlayURL,
-		PlayFileName:      video.PlayFileName,
-		PlayOriginalName:  video.PlayOriginalName,
-		CoverURL:          cover.CoverURL,
-		CoverFileName:     cover.CoverFileName,
-		CoverOriginalName: cover.CoverOriginalName,
-	}, http.StatusCreated)
+	draft := createDraft(t, client, base, sess.AccessToken, "注销前的视频", "", http.StatusCreated)
+	uploadMedia(t, client, base, sess.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", draft.ID), "file", "a.mp4", mp4Bytes, http.StatusCreated)
+	uploadMedia(t, client, base, sess.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draft.ID), "file", "a.png", pngBytes, http.StatusCreated)
+	item := publishDraft(t, client, base, sess.AccessToken, draft.ID, http.StatusCreated)
 
 	// 注销账号并保留软删除记录
 	doJSON(t, client, http.MethodDelete, base+"/api/user/auth", sess.AccessToken, nil, http.StatusNoContent, nil)

@@ -78,7 +78,7 @@ describe('auth session', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await login({ username: 'alice', password: 'password-123' })
-    await expect(authenticatedRequest<{ ok: boolean }>('/api/video/auth/publish', { method: 'POST' }))
+    await expect(authenticatedRequest<{ ok: boolean }>('/api/video/auth/drafts/7/publish', { method: 'POST' }))
       .resolves.toEqual({ ok: true })
 
     const firstProtectedRequest = fetchMock.mock.calls[1]

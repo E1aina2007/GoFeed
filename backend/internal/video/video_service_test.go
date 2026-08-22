@@ -22,6 +22,9 @@ type fakeVideoReader struct {
 	getAny       *Video
 	created      *Video
 	createErr    error
+	drafts       map[uint]*Video
+	attachErr    error
+	publishErr   error
 	mineVideos   []Video
 	deletedID    uint
 }
@@ -47,8 +50,72 @@ func (r *fakeVideoReader) Create(_ context.Context, video *Video) error {
 	r.created = video
 	if r.createErr == nil && video != nil {
 		video.ID = 7
+		if video.Status == VideoStatusDraft {
+			if r.drafts == nil {
+				r.drafts = make(map[uint]*Video)
+			}
+			r.drafts[video.ID] = video
+		}
 	}
 	return r.createErr
+}
+
+// 测试目标：模拟将服务端保存的媒体绑定到草稿
+// 预期效果：仅作者本人的 draft 可写入对应种类的元数据
+func (r *fakeVideoReader) AttachDraftMedia(_ context.Context, draftID, authorID uint, kind MediaKind, saved SavedFile, originalName string) error {
+	if r.attachErr != nil {
+		return r.attachErr
+	}
+	draft := r.drafts[draftID]
+	if draft == nil {
+		return gorm.ErrRecordNotFound
+	}
+	if draft.AuthorID != authorID {
+		return ErrNotAuthor
+	}
+	if draft.Status != VideoStatusDraft {
+		return ErrDraftNotWritable
+	}
+	switch kind {
+	case MediaVideo:
+		if draft.PlayURL != "" {
+			return ErrDraftNotWritable
+		}
+		draft.PlayURL, draft.PlayFileName, draft.PlayOriginalName = saved.PublicURL, saved.FileName, originalName
+	case MediaCover:
+		if draft.CoverURL != "" {
+			return ErrDraftNotWritable
+		}
+		draft.CoverURL, draft.CoverFileName, draft.CoverOriginalName = saved.PublicURL, saved.FileName, originalName
+	default:
+		return ErrInvalidMedia
+	}
+	return nil
+}
+
+// 测试目标：模拟草稿发布状态转换
+// 预期效果：只有完整的作者草稿可转换为 published
+func (r *fakeVideoReader) PublishDraft(_ context.Context, draftID, authorID uint) (*Video, error) {
+	if r.publishErr != nil {
+		return nil, r.publishErr
+	}
+	draft := r.drafts[draftID]
+	if draft == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	if draft.AuthorID != authorID {
+		return nil, ErrNotAuthor
+	}
+	if draft.Status != VideoStatusDraft {
+		return nil, ErrDraftNotWritable
+	}
+	if draft.PlayURL == "" || draft.CoverURL == "" || draft.PlayFileName == "" || draft.CoverFileName == "" ||
+		draft.PlayOriginalName == "" || draft.CoverOriginalName == "" {
+		return nil, ErrDraftIncomplete
+	}
+	draft.Status = VideoStatusPublished
+	draft.PublishedAt = timePtr(time.Now())
+	return draft, nil
 }
 
 // 测试目标：模拟任意状态的视频读取
@@ -103,7 +170,7 @@ func TestServiceGetPublished(t *testing.T) {
 	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
 	service := NewService(
 		&fakeVideoReader{getVideo: &Video{
-			ID: 1, AuthorID: 2, Title: "title", PlayURL: "play", CoverURL: "cover", PublishedAt: publishedAt,
+			ID: 1, AuthorID: 2, Title: "title", PlayURL: "play", CoverURL: "cover", PublishedAt: timePtr(publishedAt),
 			PlayFileName: "clip.mp4", PlayOriginalName: "我的 clip.mp4",
 			CoverFileName: "cover.png", CoverOriginalName: "封面.png",
 		}},
@@ -133,9 +200,9 @@ func TestServiceListPublishedUsesExtraRecordForCursor(t *testing.T) {
 	// 5 验证同一作者资料在一次列表查询中只读取一次
 	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
 	repository := &fakeVideoReader{listVideos: []Video{
-		{ID: 3, AuthorID: 2, PublishedAt: publishedAt},
-		{ID: 2, AuthorID: 2, PublishedAt: publishedAt.Add(-time.Second)},
-		{ID: 1, AuthorID: 4, PublishedAt: publishedAt.Add(-2 * time.Second)},
+		{ID: 3, AuthorID: 2, PublishedAt: timePtr(publishedAt)},
+		{ID: 2, AuthorID: 2, PublishedAt: timePtr(publishedAt.Add(-time.Second))},
+		{ID: 1, AuthorID: 4, PublishedAt: timePtr(publishedAt.Add(-2 * time.Second))},
 	}}
 	authors := &fakeAuthorReader{authors: map[uint]Author{
 		2: {ID: 2, Username: "first"},
@@ -170,7 +237,7 @@ func TestServiceListPublishedPopulatesAuthor(t *testing.T) {
 	// 3 验证作者资料透出到列表项（防止局部变量遮蔽回归）
 	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
 	service := NewService(
-		&fakeVideoReader{listVideos: []Video{{ID: 1, AuthorID: 2, PublishedAt: publishedAt}}},
+		&fakeVideoReader{listVideos: []Video{{ID: 1, AuthorID: 2, PublishedAt: timePtr(publishedAt)}}},
 		&fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}},
 	)
 
@@ -203,135 +270,65 @@ func TestServiceListPublishedRejectsInvalidInput(t *testing.T) {
 	}
 }
 
-// 测试目标：验证发布服务设置默认字段并校验本人媒体地址
-// 预期效果：视频以发布状态创建，标题和媒体信息正确写入并返回
-func TestServicePublishSetsDefaultsAndValidatesURL(t *testing.T) {
-	// 1 准备仓储与作者资料
-	// 2 使用属于当前用户上传目录的媒体地址调用发布
-	// 3 验证默认状态/发布时间/计数字段与响应组装
+// 测试目标：验证服务层创建草稿时只保存可编辑元数据
+// 预期效果：草稿归属当前用户、状态为 draft，媒体字段保持为空
+func TestServiceCreateDraft(t *testing.T) {
 	repository := &fakeVideoReader{}
+	service := NewService(repository, &fakeAuthorReader{})
+
+	draft, err := service.CreateDraft(context.Background(), 2, DraftRequest{Title: "  title  ", Description: "  description  "})
+	if err != nil {
+		t.Fatalf("创建草稿失败 error=%v", err)
+	}
+	if draft.ID != 7 || draft.Status != VideoStatusDraft || repository.created == nil {
+		t.Fatalf("草稿创建结果错误 draft=%#v created=%#v", draft, repository.created)
+	}
+	if repository.created.Title != "title" || repository.created.Description != "description" || repository.created.PlayURL != "" || repository.created.CoverURL != "" {
+		t.Fatalf("草稿字段错误 got=%#v", repository.created)
+	}
+}
+
+// 测试目标：验证草稿媒体只能由服务端保存结果绑定
+// 预期效果：绑定后写入保存结果的地址和名称，跨用户草稿被拒绝
+func TestServiceAttachDraftMedia(t *testing.T) {
+	draft := &Video{ID: 7, AuthorID: 2, Status: VideoStatusDraft}
+	repository := &fakeVideoReader{drafts: map[uint]*Video{7: draft}}
+	service := NewService(repository, &fakeAuthorReader{})
+	saved := SavedFile{PublicURL: "/static/videos/2/20260810/a.mp4", FileName: "a.mp4"}
+
+	if err := service.AttachDraftMedia(context.Background(), 7, 2, MediaVideo, saved, "我的 视频.mp4"); err != nil {
+		t.Fatalf("绑定视频失败 error=%v", err)
+	}
+	if draft.PlayURL != saved.PublicURL || draft.PlayFileName != saved.FileName || draft.PlayOriginalName != "我的 视频.mp4" {
+		t.Fatalf("视频媒体元数据错误 got=%#v", draft)
+	}
+	if err := service.AttachDraftMedia(context.Background(), 7, 3, MediaVideo, saved, "a.mp4"); !errors.Is(err, ErrInvalidMedia) {
+		t.Fatalf("伪造当前用户目录的跨用户绑定未被拒绝 error=%v", err)
+	}
+}
+
+// 测试目标：验证完整草稿可原子发布且不完整草稿被拒绝
+// 预期效果：发布只切换草稿状态，缺少任一媒体时返回草稿不完整错误
+func TestServicePublishDraft(t *testing.T) {
+	complete := &Video{
+		ID: 7, AuthorID: 2, Status: VideoStatusDraft,
+		PlayURL: "/static/videos/2/20260810/a.mp4", PlayFileName: "a.mp4", PlayOriginalName: "我的视频.mp4",
+		CoverURL: "/static/covers/2/20260810/c.png", CoverFileName: "c.png", CoverOriginalName: "封面.png",
+	}
+	repository := &fakeVideoReader{drafts: map[uint]*Video{7: complete, 8: {ID: 8, AuthorID: 2, Status: VideoStatusDraft}}}
 	authors := &fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}}
 	service := NewService(repository, authors)
 
-	item, err := service.Publish(context.Background(), 2, PublishRequest{
-		Title:             "  title  ",
-		PlayURL:           "/static/videos/2/20260810/a1b2.mp4",
-		PlayFileName:      "a1b2.mp4",
-		PlayOriginalName:  "我的视频.mp4",
-		CoverURL:          "/static/covers/2/20260810/c3d4.png",
-		CoverFileName:     "c3d4.png",
-		CoverOriginalName: "封面.png",
-	})
+	item, err := service.PublishDraft(context.Background(), 7, 2)
 	if err != nil {
-		t.Fatalf("发布失败 error=%v", err)
+		t.Fatalf("发布草稿失败 error=%v", err)
 	}
-	if repository.created == nil {
-		t.Fatal("仓储未收到待发布的视频")
+	if complete.Status != VideoStatusPublished || complete.PublishedAt == nil || complete.PublishedAt.IsZero() || item.PlayOriginalName != "我的视频.mp4" {
+		t.Fatalf("草稿发布结果错误 draft=%#v item=%#v", complete, item)
 	}
-	if repository.created.Status != VideoStatusPublished || repository.created.AuthorID != 2 {
-		t.Fatalf("发布默认值错误 got=%#v", repository.created)
-	}
-	if repository.created.PublishedAt.IsZero() {
-		t.Fatal("发布时间未设置")
-	}
-	if repository.created.Title != "title" {
-		t.Fatalf("标题未去除首尾空白 got=%q", repository.created.Title)
-	}
-	if repository.created.PlayFileName != "a1b2.mp4" || repository.created.PlayOriginalName != "我的视频.mp4" ||
-		repository.created.CoverFileName != "c3d4.png" || repository.created.CoverOriginalName != "封面.png" {
-		t.Fatalf("媒体文件名未写入仓储 got=%#v", repository.created)
-	}
-	if item.ID != 7 || item.Author.Username != "author" {
-		t.Fatalf("发布响应组装错误 got=%#v", item)
-	}
-	if item.PlayFileName != "a1b2.mp4" || item.PlayOriginalName != "我的视频.mp4" {
-		t.Fatalf("发布响应未透出媒体文件名 got=%#v", item)
-	}
-}
-
-// 测试目标：验证发布服务拒绝跨用户和外部媒体地址
-// 预期效果：两种非法媒体地址均返回媒体地址错误
-func TestServicePublishRejectsForeignMediaURL(t *testing.T) {
-	// 1 使用其他用户上传目录的媒体地址必须被拒绝
-	// 2 使用任意外链作为封面也必须被拒绝
-	service := NewService(&fakeVideoReader{}, &fakeAuthorReader{})
-
-	_, err := service.Publish(context.Background(), 2, PublishRequest{
-		Title:             "title",
-		PlayURL:           "/static/videos/3/20260810/a1b2.mp4",
-		PlayFileName:      "a1b2.mp4",
-		PlayOriginalName:  "a.mp4",
-		CoverURL:          "/static/covers/2/20260810/c3d4.png",
-		CoverFileName:     "c3d4.png",
-		CoverOriginalName: "c.png",
-	})
-	if !errors.Is(err, ErrInvalidMediaURL) {
-		t.Fatalf("跨用户 URL 未被拒绝 got error=%v want error=%v", err, ErrInvalidMediaURL)
-	}
-
-	_, err = service.Publish(context.Background(), 2, PublishRequest{
-		Title:             "title",
-		PlayURL:           "/static/videos/2/20260810/a1b2.mp4",
-		PlayFileName:      "a1b2.mp4",
-		PlayOriginalName:  "a.mp4",
-		CoverURL:          "http://evil.example.com/c3d4.png",
-		CoverFileName:     "c3d4.png",
-		CoverOriginalName: "c.png",
-	})
-	if !errors.Is(err, ErrInvalidMediaURL) {
-		t.Fatalf("任意外链未被拒绝 got error=%v want error=%v", err, ErrInvalidMediaURL)
-	}
-}
-
-// 测试目标：验证发布服务校验文件名与媒体地址的一致性
-// 预期效果：文件名和地址末段不一致时拒绝发布请求
-func TestServicePublishRejectsMismatchedFileName(t *testing.T) {
-	// 请求中的实际存储文件名与媒体地址最后一段不一致时必须被拒绝
-	service := NewService(&fakeVideoReader{}, &fakeAuthorReader{})
-
-	_, err := service.Publish(context.Background(), 2, PublishRequest{
-		Title:             "title",
-		PlayURL:           "/static/videos/2/20260810/a1b2.mp4",
-		PlayFileName:      "other.mp4",
-		PlayOriginalName:  "a.mp4",
-		CoverURL:          "/static/covers/2/20260810/c3d4.png",
-		CoverFileName:     "c3d4.png",
-		CoverOriginalName: "c.png",
-	})
-	if !errors.Is(err, ErrInvalidPublishRequest) {
-		t.Fatalf("存储文件名不匹配未被拒绝 got error=%v want error=%v", err, ErrInvalidPublishRequest)
-	}
-}
-
-// 测试目标：验证发布服务将完整媒体地址归一化为相对路径
-// 预期效果：入库记录和响应均仅保留静态资源相对路径
-func TestServicePublishStoresRelativePath(t *testing.T) {
-	// 1 发布时提交完整媒体地址
-	// 2 入库前必须归一化为静态资源相对路径，响应同样只返回相对路径
-	repository := &fakeVideoReader{}
-	authors := &fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}}
-	service := NewService(repository, authors)
-
-	item, err := service.Publish(context.Background(), 2, PublishRequest{
-		Title:             "title",
-		PlayURL:           "http://localhost:8080/static/videos/2/20260810/a1b2.mp4",
-		PlayFileName:      "a1b2.mp4",
-		PlayOriginalName:  "a.mp4",
-		CoverURL:          "https://cdn.example.com/static/covers/2/20260810/c3d4.png",
-		CoverFileName:     "c3d4.png",
-		CoverOriginalName: "c.png",
-	})
-	if err != nil {
-		t.Fatalf("发布失败 error=%v", err)
-	}
-	if repository.created.PlayURL != "/static/videos/2/20260810/a1b2.mp4" {
-		t.Fatalf("play_url 未归一化为相对路径 got=%q", repository.created.PlayURL)
-	}
-	if repository.created.CoverURL != "/static/covers/2/20260810/c3d4.png" {
-		t.Fatalf("cover_url 未归一化为相对路径 got=%q", repository.created.CoverURL)
-	}
-	if item.PlayURL != "/static/videos/2/20260810/a1b2.mp4" || item.CoverURL != "/static/covers/2/20260810/c3d4.png" {
-		t.Fatalf("响应未返回相对路径 got=%#v", item)
+	_, err = service.PublishDraft(context.Background(), 8, 2)
+	if !errors.Is(err, ErrDraftIncomplete) {
+		t.Fatalf("不完整草稿未被拒绝 got error=%v want error=%v", err, ErrDraftIncomplete)
 	}
 }
 
@@ -371,9 +368,9 @@ func TestServiceListMinePassesExtraRecordForCursor(t *testing.T) {
 	// 与公开列表一致，仓储多取一条记录用于判断下一页
 	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
 	repository := &fakeVideoReader{mineVideos: []Video{
-		{ID: 3, AuthorID: 2, PublishedAt: publishedAt},
-		{ID: 2, AuthorID: 2, PublishedAt: publishedAt.Add(-time.Second)},
-		{ID: 1, AuthorID: 2, PublishedAt: publishedAt.Add(-2 * time.Second)},
+		{ID: 3, AuthorID: 2, PublishedAt: timePtr(publishedAt)},
+		{ID: 2, AuthorID: 2, PublishedAt: timePtr(publishedAt.Add(-time.Second))},
+		{ID: 1, AuthorID: 2, PublishedAt: timePtr(publishedAt.Add(-2 * time.Second))},
 	}}
 	authors := &fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}}
 	service := NewService(repository, authors)

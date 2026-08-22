@@ -17,6 +17,10 @@ import (
 // 预期效果：统一使用本地时区，避免读写往返产生时区断言差异
 var baseTime = time.Date(2026, 8, 1, 12, 0, 0, 0, time.Local)
 
+func timePtr(value time.Time) *time.Time {
+	return &value
+}
+
 // 测试目标：配置视频仓储集成测试进程
 // 预期效果：运行前初始化并在结束后清理独立测试数据库
 func TestMain(m *testing.M) {
@@ -37,7 +41,7 @@ func newVideoFixture(authorID uint, title, status string, publishedAt time.Time)
 		CoverFileName:     "a.webp",
 		CoverOriginalName: "封面.webp",
 		Status:            status,
-		PublishedAt:       publishedAt,
+		PublishedAt:       timePtr(publishedAt),
 	}
 }
 
@@ -92,7 +96,7 @@ func TestRepositoryCreateAndGetByID(t *testing.T) {
 	if got.Status != v.Status {
 		t.Fatalf("状态读回不一致 got=%s want=%s", got.Status, v.Status)
 	}
-	if !got.PublishedAt.Equal(v.PublishedAt) {
+	if got.PublishedAt == nil || v.PublishedAt == nil || !got.PublishedAt.Equal(*v.PublishedAt) {
 		t.Fatalf("PublishedAt 读回不一致 got=%v want=%v", got.PublishedAt, v.PublishedAt)
 	}
 }
@@ -139,6 +143,46 @@ func TestRepositoryGetByIDZero(t *testing.T) {
 	}
 	if _, err := repo.GetPublishedByID(ctx, 0); !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("公开读 id=0 应返回 not found, err=%v", err)
+	}
+}
+
+// 测试目标：验证草稿媒体归属、完整性和发布状态转换均由仓储原子约束
+// 预期效果：跨作者或重复绑定被拒绝，不完整草稿不能发布，完整草稿写入实际发布时间
+func TestRepositoryDraftMediaAndPublish(t *testing.T) {
+	repo := NewRepository(testutil.DB(t))
+	ctx := context.Background()
+	draft := &Video{AuthorID: 1, Title: "草稿", Status: VideoStatusDraft}
+	if err := repo.Create(ctx, draft); err != nil {
+		t.Fatalf("创建草稿失败: %v", err)
+	}
+
+	videoFile := SavedFile{PublicURL: "/static/videos/1/20260810/a.mp4", FileName: "a.mp4"}
+	coverFile := SavedFile{PublicURL: "/static/covers/1/20260810/c.png", FileName: "c.png"}
+	if err := repo.AttachDraftMedia(ctx, draft.ID, 2, MediaVideo, videoFile, "视频.mp4"); !errors.Is(err, ErrNotAuthor) {
+		t.Fatalf("跨作者绑定未被拒绝 error=%v", err)
+	}
+	if err := repo.AttachDraftMedia(ctx, draft.ID, 1, MediaVideo, videoFile, "视频.mp4"); err != nil {
+		t.Fatalf("绑定视频失败: %v", err)
+	}
+	if err := repo.AttachDraftMedia(ctx, draft.ID, 1, MediaVideo, videoFile, "视频.mp4"); !errors.Is(err, ErrDraftNotWritable) {
+		t.Fatalf("重复绑定未被拒绝 error=%v", err)
+	}
+	if _, err := repo.PublishDraft(ctx, draft.ID, 1); !errors.Is(err, ErrDraftIncomplete) {
+		t.Fatalf("不完整草稿未被拒绝 error=%v", err)
+	}
+	if err := repo.AttachDraftMedia(ctx, draft.ID, 1, MediaCover, coverFile, "封面.png"); err != nil {
+		t.Fatalf("绑定封面失败: %v", err)
+	}
+
+	published, err := repo.PublishDraft(ctx, draft.ID, 1)
+	if err != nil {
+		t.Fatalf("发布草稿失败: %v", err)
+	}
+	if published.Status != VideoStatusPublished || published.PublishedAt == nil || published.PlayURL != videoFile.PublicURL || published.CoverURL != coverFile.PublicURL {
+		t.Fatalf("发布结果错误 got=%+v", published)
+	}
+	if err := repo.AttachDraftMedia(ctx, draft.ID, 1, MediaCover, coverFile, "封面.png"); !errors.Is(err, ErrDraftNotWritable) {
+		t.Fatalf("发布后写入媒体未被拒绝 error=%v", err)
 	}
 }
 
@@ -216,7 +260,7 @@ func TestRepositoryListPublishedCursorPagination(t *testing.T) {
 			got = append(got, item.ID)
 		}
 		last := items[len(items)-1]
-		cursor = &Cursor{PublishedAt: last.PublishedAt, ID: last.ID}
+		cursor = &Cursor{PublishedAt: *last.PublishedAt, ID: last.ID}
 	}
 
 	if len(got) != 5 {
@@ -254,7 +298,7 @@ func TestRepositoryListPublishedCursorTieBreak(t *testing.T) {
 	}
 
 	last := first[1]
-	second, err := repo.ListPublished(ctx, 0, &Cursor{PublishedAt: last.PublishedAt, ID: last.ID}, 2)
+	second, err := repo.ListPublished(ctx, 0, &Cursor{PublishedAt: *last.PublishedAt, ID: last.ID}, 2)
 	if err != nil {
 		t.Fatalf("第二页查询失败: %v", err)
 	}
@@ -271,9 +315,9 @@ func TestRepositoryListPublishedCursorTieBreak(t *testing.T) {
 	}
 }
 
-// 测试目标：验证个人视频列表包含该作者的全部状态
-// 预期效果：返回发布、草稿和处理中的视频，其他作者和零值作者不返回数据
-func TestRepositoryListByAuthorIncludesAllStatuses(t *testing.T) {
+// 测试目标：验证个人视频列表只包含该作者已发布的视频
+// 预期效果：草稿和处理中视频不会混入 VideoItem 列表，其他作者和零值作者不返回数据
+func TestRepositoryListByAuthorIncludesPublishedOnly(t *testing.T) {
 	repo := NewRepository(testutil.DB(t))
 	ctx := context.Background()
 
@@ -286,19 +330,8 @@ func TestRepositoryListByAuthorIncludesAllStatuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListByAuthor: %v", err)
 	}
-	if len(mine) != 3 {
-		t.Fatalf("author 1 应有 3 条不分状态, got=%d", len(mine))
-	}
-	// 测试目标：收集个人列表中的视频状态
-	// 预期效果：可验证每种预期状态均被返回
-	statuses := map[string]bool{}
-	for _, v := range mine {
-		statuses[v.Status] = true
-	}
-	for _, want := range []string{VideoStatusPublished, VideoStatusDraft, VideoStatusProcessing} {
-		if !statuses[want] {
-			t.Fatalf("缺少状态 %s, got=%v", want, statuses)
-		}
+	if len(mine) != 1 || mine[0].Status != VideoStatusPublished || mine[0].Title != "pub" {
+		t.Fatalf("个人列表应只返回已发布视频, got=%+v", mine)
 	}
 
 	if empty, err := repo.ListByAuthor(ctx, 999, nil, 10); err != nil || len(empty) != 0 {

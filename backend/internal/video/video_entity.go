@@ -20,8 +20,8 @@ type Video struct {
 	AuthorID    uint   `gorm:"not null;index:idx_videos_author_published,priority:1" json:"author_id"`
 	Title       string `gorm:"type:varchar(255);not null" json:"title"`
 	Description string `gorm:"type:varchar(1000);not null;default:''" json:"description"`
-	PlayURL     string `gorm:"type:varchar(512);not null" json:"play_url"`
-	CoverURL    string `gorm:"type:varchar(512);not null" json:"cover_url"`
+	PlayURL     string `gorm:"type:varchar(512);not null;default:''" json:"play_url"`
+	CoverURL    string `gorm:"type:varchar(512);not null;default:''" json:"cover_url"`
 
 	// 实际存储文件名与用户指定文件名分离存储；URL 只负责访问，文件名用于展示与溯源
 	PlayFileName      string `gorm:"type:varchar(255);not null;default:''" json:"play_file_name"`
@@ -31,9 +31,10 @@ type Video struct {
 
 	Status string `gorm:"type:varchar(16);not null;index;default:'published'" json:"status"`
 
-	PublishedAt   time.Time `gorm:"not null;index:idx_videos_published_id,priority:1,sort:desc;index:idx_videos_author_published,priority:2,sort:desc" json:"published_at"`
-	LikesCount    int64     `gorm:"not null;default:0" json:"likes_count"`
-	CommentsCount int64     `gorm:"not null;default:0" json:"comments_count"`
+	// PublishedAt is nil until a draft is actually published.
+	PublishedAt   *time.Time `gorm:"index:idx_videos_published_id,priority:1,sort:desc;index:idx_videos_author_published,priority:2,sort:desc" json:"published_at"`
+	LikesCount    int64      `gorm:"not null;default:0" json:"likes_count"`
+	CommentsCount int64      `gorm:"not null;default:0" json:"comments_count"`
 
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
@@ -70,16 +71,22 @@ type VideoItem struct {
 	Author            Author    `json:"author"`
 }
 
-// PublishRequest 表示发布视频请求
-type PublishRequest struct {
-	Title             string `json:"title" binding:"required,max=255"`
-	Description       string `json:"description" binding:"omitempty,max=1000"`
-	PlayURL           string `json:"play_url" binding:"required"`
-	PlayFileName      string `json:"play_file_name" binding:"required,max=255"`
-	PlayOriginalName  string `json:"play_original_name" binding:"required,max=255"`
-	CoverURL          string `json:"cover_url" binding:"required"`
-	CoverFileName     string `json:"cover_file_name" binding:"required,max=255"`
-	CoverOriginalName string `json:"cover_original_name" binding:"required,max=255"`
+// DraftRequest 表示创建草稿时可由用户编辑的元数据。
+type DraftRequest struct {
+	Title       string `json:"title" binding:"required,max=255"`
+	Description string `json:"description" binding:"omitempty,max=1000"`
+}
+
+// DraftItem 表示当前用户可继续上传或发布的草稿。
+type DraftItem struct {
+	ID                uint      `json:"id"`
+	Title             string    `json:"title"`
+	Description       string    `json:"description"`
+	Status            string    `json:"status"`
+	PlayOriginalName  string    `json:"play_original_name,omitempty"`
+	CoverOriginalName string    `json:"cover_original_name,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // ListResponse 表示视频列表响应
