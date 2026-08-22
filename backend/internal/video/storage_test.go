@@ -158,6 +158,28 @@ func TestLocalStorageSaveKeepsNameOnCollision(t *testing.T) {
 	}
 }
 
+// 测试目标：验证达到长度上限的文件在重名时仍保持可发布的规范名称
+// 预期效果：追加序号后名称不超过上限且再次清洗不会发生变化
+func TestLocalStorageSaveKeepsLongCollisionNameSanitized(t *testing.T) {
+	s := NewLocalStorage(t.TempDir())
+	content := []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
+	filename := strings.Repeat("a", maxFilenameBytes-len(".mp4")) + ".mp4"
+
+	if _, err := s.Save(context.Background(), 3, MediaVideo, filename, bytes.NewReader(content)); err != nil {
+		t.Fatalf("首次保存失败 error=%v", err)
+	}
+	second, err := s.Save(context.Background(), 3, MediaVideo, filename, bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("第二次保存失败 error=%v", err)
+	}
+	if len(second.FileName) > maxFilenameBytes || sanitizeFilename(second.FileName) != second.FileName {
+		t.Fatalf("重名后的文件名不再符合存储规则 got=%q", second.FileName)
+	}
+	if !strings.HasSuffix(second.FileName, "_1.mp4") {
+		t.Fatalf("重名后的文件名未保留序号 got=%q", second.FileName)
+	}
+}
+
 // 测试目标：验证本地存储截断超过文件系统限制的文件名
 // 预期效果：截断后文件名不超过上限且保留原扩展名
 func TestLocalStorageSaveTruncatesLongFilename(t *testing.T) {
@@ -226,7 +248,7 @@ func TestOriginalName(t *testing.T) {
 		{"普通文件名", "clip.mp4", "clip.mp4"},
 		{"保留空格与中文", "a/b/我的 clip.mp4", "我的 clip.mp4"},
 		{"兼容反斜杠路径", `a\b\clip.mp4`, "clip.mp4"},
-		{"超长截断到 255 字节", strings.Repeat("a", 300) + ".mp4", strings.Repeat("a", 255)},
+		{"超长截断保留扩展名", strings.Repeat("a", 300) + ".mp4", strings.Repeat("a", 251) + ".mp4"},
 	}
 
 	for _, tt := range tests {

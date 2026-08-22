@@ -29,6 +29,8 @@ const (
 	MaxCoverSize = 10 << 20
 	// maxFilenameBytes 单个文件名最大字节数（含扩展名），避免超出文件系统限制
 	maxFilenameBytes = 200
+	// maxMultipartOverhead 为 multipart 边界、字段和文件名预留的请求体开销。
+	maxMultipartOverhead = 1 << 20
 	// defaultStemName 清洗后主名为空时的兜底主名
 	defaultStemName = "file"
 )
@@ -93,9 +95,13 @@ func (s *LocalStorage) Save(ctx context.Context, ownerID uint, kind MediaKind, f
 	var dst *os.File
 	var savedName string
 	for i := 0; i < 10000; i++ {
-		savedName = name
+		suffix := ""
 		if i > 0 {
-			savedName = fmt.Sprintf("%s_%d%s", stem, i, ext)
+			suffix = fmt.Sprintf("_%d", i)
+		}
+		savedName = filenameWithSuffix(stem, ext, suffix)
+		if savedName == "" {
+			return SavedFile{}, ErrInvalidMedia
 		}
 		f, err := os.OpenFile(filepath.Join(dir, savedName), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err == nil {
@@ -191,7 +197,20 @@ func OriginalName(filename string) string {
 	if name == "" {
 		return ""
 	}
-	return truncateBytes(name, 255)
+	return truncateOriginalFilename(name, 255)
+}
+
+// truncateOriginalFilename 在截断展示用原始名时尽可能保留用户看到的扩展名。
+func truncateOriginalFilename(name string, max int) string {
+	if len(name) <= max {
+		return name
+	}
+	ext := filepath.Ext(name)
+	if ext == "" || len(ext) >= max {
+		return truncateBytes(name, max)
+	}
+	stem := strings.TrimSuffix(name, ext)
+	return truncateBytes(stem, max-len(ext)) + ext
 }
 
 // sanitizeFilename 按 4 步清洗物理文件名：
@@ -228,6 +247,19 @@ func sanitizeFilename(filename string) string {
 		name = stem + "." + ext
 	}
 	return name
+}
+
+// filenameWithSuffix 在拼接重名序号前为后缀预留空间，保证结果仍满足文件名长度上限。
+func filenameWithSuffix(stem, ext, suffix string) string {
+	availableStemBytes := maxFilenameBytes - len(ext) - len(suffix)
+	if availableStemBytes <= 0 {
+		return ""
+	}
+	stem = truncateBytes(stem, availableStemBytes)
+	if stem == "" {
+		return ""
+	}
+	return stem + suffix + ext
 }
 
 // splitNameExt 分离主名与扩展名：最后一个点之前为主名，之后为扩展名（小写）
@@ -288,6 +320,10 @@ func maxMediaSize(kind MediaKind) int64 {
 		return MaxVideoSize
 	}
 	return MaxCoverSize
+}
+
+func maxMediaRequestSize(kind MediaKind) int64 {
+	return maxMediaSize(kind) + maxMultipartOverhead
 }
 
 func allowedExt(kind MediaKind, ext string) bool {
