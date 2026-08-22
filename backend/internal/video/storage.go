@@ -3,6 +3,8 @@ package video
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -33,6 +35,11 @@ const (
 	maxMultipartOverhead = 1 << 20
 	// defaultStemName 清洗后主名为空时的兜底主名
 	defaultStemName = "file"
+	// storageObjectIDBytes 决定物理对象后缀的随机字节数。
+	// 128 bit 随机值足以让一次 Save 得到不可复用的对象键。
+	storageObjectIDBytes = 16
+	// maxObjectNameAttempts 为随机键意外碰撞保留有限重试次数。
+	maxObjectNameAttempts = 16
 )
 
 var (
@@ -61,16 +68,21 @@ type MediaRemover interface {
 
 // LocalStorage 将媒体文件保存到本地 .run/uploads 目录，并通过 /static 暴露
 type LocalStorage struct {
-	root string
+	root        string
+	newObjectID func() (string, error)
 }
 
 func NewLocalStorage(root string) *LocalStorage {
-	return &LocalStorage{root: root}
+	return &LocalStorage{
+		root:        root,
+		newObjectID: newStorageObjectID,
+	}
 }
 
-// Save 将文件保存到 {root}/{kind}/{ownerID}/{yyyyMMdd}/{清洗后的文件名}
-// 返回可用于发布的相对 URL（/static/...）与实际存储文件名
-// 文件名按 sanitizeFilename 的 4 步规则清洗；同名文件自动追加序号避免覆盖
+// Save 将文件保存到 {root}/{kind}/{ownerID}/{yyyyMMdd}/{清洗后的文件名_随机对象键}
+// 返回可用于发布的相对 URL（/static/...）与实际存储文件名。
+// 文件名按 sanitizeFilename 的 4 步规则清洗，再追加不可复用的随机对象键；
+// 即使旧对象已经删除，后续同名上传也绝不会复用它的物理路径。
 func (s *LocalStorage) Save(ctx context.Context, ownerID uint, kind MediaKind, filename string, src io.Reader) (SavedFile, error) {
 	if ownerID == 0 {
 		return SavedFile{}, ErrInvalidMedia
@@ -92,14 +104,16 @@ func (s *LocalStorage) Save(ctx context.Context, ownerID uint, kind MediaKind, f
 	}
 
 	stem := strings.TrimSuffix(name, ext)
-	var dst *os.File
-	var savedName string
-	for i := 0; i < 10000; i++ {
-		suffix := ""
-		if i > 0 {
-			suffix = fmt.Sprintf("_%d", i)
+	var (
+		dst       *os.File
+		savedName string
+	)
+	for attempt := 0; attempt < maxObjectNameAttempts; attempt++ {
+		objectID, err := s.newObjectID()
+		if err != nil {
+			return SavedFile{}, err
 		}
-		savedName = filenameWithSuffix(stem, ext, suffix)
+		savedName = filenameWithSuffix(stem, ext, "_"+objectID)
 		if savedName == "" {
 			return SavedFile{}, ErrInvalidMedia
 		}
@@ -113,7 +127,7 @@ func (s *LocalStorage) Save(ctx context.Context, ownerID uint, kind MediaKind, f
 		}
 	}
 	if dst == nil {
-		return SavedFile{}, errors.New("too many files share the same name")
+		return SavedFile{}, errors.New("failed to allocate a unique media object name")
 	}
 	dstPath := filepath.Join(dir, savedName)
 	if _, err := io.Copy(dst, src); err != nil {
@@ -130,6 +144,14 @@ func (s *LocalStorage) Save(ctx context.Context, ownerID uint, kind MediaKind, f
 		PublicURL: fmt.Sprintf("/static/%s/%d/%s/%s", kind, ownerID, date, savedName),
 		FileName:  savedName,
 	}, nil
+}
+
+func newStorageObjectID() (string, error) {
+	value := make([]byte, storageObjectIDBytes)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(value), nil
 }
 
 // Remove 删除由 Save 生成的媒体文件。不存在的文件按成功处理，保证清扫任务可重试。

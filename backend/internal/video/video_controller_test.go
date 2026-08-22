@@ -175,11 +175,12 @@ func TestHandlerUploadDraftVideo(t *testing.T) {
 	if !strings.HasPrefix(body.PlayURL, "/static/videos/1/") {
 		t.Fatalf("play_url 归属错误 got=%q", body.PlayURL)
 	}
-	if body.PlayFileName != "clip.mp4" {
-		t.Fatalf("play_file_name 错误 got=%q want=clip.mp4", body.PlayFileName)
+	if !strings.HasSuffix(body.PlayURL, "/"+body.PlayFileName) {
+		t.Fatalf("play_url 与实际存储名不一致 url=%q file=%q", body.PlayURL, body.PlayFileName)
 	}
-	if body.PlayOriginalName != "clip.mp4" || repo.drafts[1].PlayFileName != "clip.mp4" {
-		t.Fatalf("play_original_name 错误 got=%q want=clip.mp4", body.PlayOriginalName)
+	requireObjectName(t, body.PlayFileName, "clip", ".mp4")
+	if body.PlayOriginalName != "clip.mp4" || repo.drafts[1].PlayFileName != body.PlayFileName {
+		t.Fatalf("播放媒体名称错误 original=%q stored=%q", body.PlayOriginalName, repo.drafts[1].PlayFileName)
 	}
 }
 
@@ -253,11 +254,12 @@ func TestHandlerUploadDraftCover(t *testing.T) {
 	if !strings.HasPrefix(body.CoverURL, "/static/covers/1/") {
 		t.Fatalf("cover_url 归属错误 got=%q", body.CoverURL)
 	}
-	if body.CoverFileName != "cover.png" {
-		t.Fatalf("cover_file_name 错误 got=%q want=cover.png", body.CoverFileName)
+	if !strings.HasSuffix(body.CoverURL, "/"+body.CoverFileName) {
+		t.Fatalf("cover_url 与实际存储名不一致 url=%q file=%q", body.CoverURL, body.CoverFileName)
 	}
-	if body.CoverOriginalName != "cover.PNG" || repo.drafts[1].CoverFileName != "cover.png" {
-		t.Fatalf("cover_original_name 错误 got=%q want=cover.PNG", body.CoverOriginalName)
+	requireObjectName(t, body.CoverFileName, "cover", ".png")
+	if body.CoverOriginalName != "cover.PNG" || repo.drafts[1].CoverFileName != body.CoverFileName {
+		t.Fatalf("封面媒体名称错误 original=%q stored=%q", body.CoverOriginalName, repo.drafts[1].CoverFileName)
 	}
 }
 

@@ -76,11 +76,11 @@
   "id": 100,
   "title": "我的第一条视频",
   "description": "视频介绍",
-  "play_url": "/static/videos/42/20260819/demo.mp4",
-  "play_file_name": "demo.mp4",
+  "play_url": "/static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4",
+  "play_file_name": "demo_0123456789abcdef0123456789abcdef.mp4",
   "play_original_name": "我的视频.mp4",
-  "cover_url": "/static/covers/42/20260819/cover.png",
-  "cover_file_name": "cover.png",
+  "cover_url": "/static/covers/42/20260819/cover_0123456789abcdef0123456789abcdef.png",
+  "cover_file_name": "cover_0123456789abcdef0123456789abcdef.png",
   "cover_original_name": "封面.png",
   "published_at": "2026-08-19T08:00:00Z",
   "likes_count": 0,
@@ -130,7 +130,7 @@
 `GET` 用于访问上传接口返回的媒体 URL，例如：
 
 ```text
-GET /static/videos/42/20260819/demo.mp4
+GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 ```
 
 成功时直接返回文件内容及其 MIME 类型。`HEAD` 使用相同路径，仅返回响应头。该路由只暴露上传目录中的文件；文件不存在时返回 `404 Not Found`。
@@ -399,11 +399,11 @@ GET /static/videos/42/20260819/demo.mp4
     "id": 100,
     "title": "我的第一条视频",
     "description": "视频介绍",
-    "play_url": "/static/videos/42/20260819/demo.mp4",
-    "play_file_name": "demo.mp4",
+    "play_url": "/static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4",
+    "play_file_name": "demo_0123456789abcdef0123456789abcdef.mp4",
     "play_original_name": "我的视频.mp4",
-    "cover_url": "/static/covers/42/20260819/cover.png",
-    "cover_file_name": "cover.png",
+    "cover_url": "/static/covers/42/20260819/cover_0123456789abcdef0123456789abcdef.png",
+    "cover_file_name": "cover_0123456789abcdef0123456789abcdef.png",
     "cover_original_name": "封面.png",
     "published_at": "2026-08-19T08:00:00Z",
     "likes_count": 0,
@@ -472,13 +472,13 @@ GET /static/videos/42/20260819/demo.mp4
 ```json
 {
   "draft_id": 100,
-  "play_url": "/static/videos/42/20260821/demo.mp4",
-  "play_file_name": "demo.mp4",
+  "play_url": "/static/videos/42/20260821/demo_0123456789abcdef0123456789abcdef.mp4",
+  "play_file_name": "demo_0123456789abcdef0123456789abcdef.mp4",
   "play_original_name": "我的视频.mp4"
 }
 ```
 
-`play_file_name` 是服务端清洗并实际保存的文件名；`play_original_name` 是客户端文件名去掉路径后的展示名称。草稿的同一媒体类型不能重复绑定。
+`play_file_name` 是服务端清洗后的实际对象名，末尾附带 32 位随机对象键，因此已删除对象的路径不会被后续同名上传复用；`play_original_name` 是客户端文件名去掉路径后的展示名称。草稿的同一媒体类型不能重复绑定。
 
 常见失败：`400` 缺少文件或类型校验失败，`401` 未认证，`403` 草稿不属于当前用户，`404` 草稿不存在，`409` 草稿不再可写或该媒体已绑定，`413` 文件过大。
 
@@ -499,8 +499,8 @@ GET /static/videos/42/20260819/demo.mp4
 ```json
 {
   "draft_id": 100,
-  "cover_url": "/static/covers/42/20260821/cover.png",
-  "cover_file_name": "cover.png",
+  "cover_url": "/static/covers/42/20260821/cover_0123456789abcdef0123456789abcdef.png",
+  "cover_file_name": "cover_0123456789abcdef0123456789abcdef.png",
   "cover_original_name": "封面.png"
 }
 ```

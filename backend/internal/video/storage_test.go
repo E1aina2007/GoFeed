@@ -10,6 +10,26 @@ import (
 	"testing"
 )
 
+func requireObjectName(t *testing.T, got, stem, ext string) {
+	t.Helper()
+	prefix := stem + "_"
+	if !strings.HasPrefix(got, prefix) || !strings.HasSuffix(got, ext) {
+		t.Fatalf("对象文件名格式错误 got=%q want prefix=%q suffix=%q", got, prefix, ext)
+	}
+	objectID := strings.TrimSuffix(strings.TrimPrefix(got, prefix), ext)
+	if len(objectID) != storageObjectIDBytes*2 {
+		t.Fatalf("对象键长度错误 got=%q", objectID)
+	}
+	for _, r := range objectID {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			t.Fatalf("对象键应为小写十六进制 got=%q", objectID)
+		}
+	}
+	if sanitizeFilename(got) != got {
+		t.Fatalf("对象文件名不再符合清洗规则 got=%q", got)
+	}
+}
+
 // 测试目标：验证本地存储保存视频时创建文件并生成公开地址
 // 预期效果：文件落入当前用户目录，公开地址和读取内容均与上传数据一致
 func TestLocalStorageSaveCreatesFileWithPublicURL(t *testing.T) {
@@ -25,12 +45,10 @@ func TestLocalStorageSaveCreatesFileWithPublicURL(t *testing.T) {
 		t.Fatalf("保存失败 error=%v", err)
 	}
 	publicURL := saved.PublicURL
-	if !strings.HasPrefix(publicURL, "/static/videos/42/") || !strings.HasSuffix(publicURL, "/clip.mp4") {
+	if !strings.HasPrefix(publicURL, "/static/videos/42/") || !strings.HasSuffix(publicURL, "/"+saved.FileName) {
 		t.Fatalf("公开 URL 格式错误 got=%q", publicURL)
 	}
-	if saved.FileName != "clip.mp4" {
-		t.Fatalf("实际存储文件名错误 got=%q want=clip.mp4", saved.FileName)
-	}
+	requireObjectName(t, saved.FileName, "clip", ".mp4")
 
 	rel := strings.TrimPrefix(publicURL, "/static/")
 	savedPath := filepath.Join(root, filepath.FromSlash(rel))
@@ -57,12 +75,10 @@ func TestLocalStorageSavePreservesOriginalFilename(t *testing.T) {
 		t.Fatalf("保存失败 error=%v", err)
 	}
 	publicURL := saved.PublicURL
-	if !strings.HasSuffix(publicURL, "/我的_clip.mp4") {
+	if !strings.HasSuffix(publicURL, "/"+saved.FileName) {
 		t.Fatalf("清洗后的文件名不符合 4 步规则 got=%q", publicURL)
 	}
-	if saved.FileName != "我的_clip.mp4" {
-		t.Fatalf("实际存储文件名错误 got=%q want=我的_clip.mp4", saved.FileName)
-	}
+	requireObjectName(t, saved.FileName, "我的_clip", ".mp4")
 
 	rel := strings.TrimPrefix(publicURL, "/static/")
 	savedPath := filepath.Join(root, filepath.FromSlash(rel))
@@ -89,9 +105,10 @@ func TestLocalStorageSaveSanitizesPathTraversal(t *testing.T) {
 		t.Fatalf("保存失败 error=%v", err)
 	}
 	publicURL := saved.PublicURL
-	if !strings.HasSuffix(publicURL, "/passwd.mp4") {
+	if !strings.HasSuffix(publicURL, "/"+saved.FileName) {
 		t.Fatalf("应只保留最后一段文件名 got=%q", publicURL)
 	}
+	requireObjectName(t, saved.FileName, "passwd", ".mp4")
 
 	rel := strings.TrimPrefix(publicURL, "/static/")
 	savedPath := filepath.Join(root, filepath.FromSlash(rel))
@@ -116,16 +133,18 @@ func TestLocalStorageSaveReplacesUnsafeCharacters(t *testing.T) {
 		t.Fatalf("保存失败 error=%v", err)
 	}
 	publicURL := saved.PublicURL
-	if !strings.HasSuffix(publicURL, "/c_d_.mp4") {
+	if !strings.HasSuffix(publicURL, "/"+saved.FileName) {
 		t.Fatalf("不安全字符未被替换 got=%q", publicURL)
 	}
+	requireObjectName(t, saved.FileName, "c_d_", ".mp4")
 }
 
-// 测试目标：验证同名文件保存时不会互相覆盖
-// 预期效果：首个文件保留原名，后续文件追加序号且两个文件内容均存在
-func TestLocalStorageSaveKeepsNameOnCollision(t *testing.T) {
-	// 1 同一用户同一天上传同名文件
-	// 2 第一个保留原名，第二个自动追加序号，两个文件都必须存在且互不覆盖
+// 测试目标：验证同名文件在旧对象删除后仍不会复用物理路径
+// 预期效果：延迟重试删除旧 URL 不会误删新的同名上传
+func TestLocalStorageSaveUsesNonReusableObjectNames(t *testing.T) {
+	// 1 保存第一份同名文件并模拟清扫已删除它
+	// 2 保存第二份同名文件后再次重试第一份的删除
+	// 3 验证第二份文件仍完整存在，避免清扫任务误删新对象
 	root := t.TempDir()
 	s := NewLocalStorage(root)
 	content := []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
@@ -134,6 +153,9 @@ func TestLocalStorageSaveKeepsNameOnCollision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("第一次保存失败 error=%v", err)
 	}
+	if err := s.Remove(context.Background(), first.PublicURL); err != nil {
+		t.Fatalf("删除第一个对象失败 error=%v", err)
+	}
 	second, err := s.Save(context.Background(), 3, MediaVideo, "clip.mp4", bytes.NewReader(content))
 	if err != nil {
 		t.Fatalf("第二次保存失败 error=%v", err)
@@ -141,42 +163,42 @@ func TestLocalStorageSaveKeepsNameOnCollision(t *testing.T) {
 	if first.PublicURL == second.PublicURL {
 		t.Fatalf("同名文件应分配不同 URL got=%q", first.PublicURL)
 	}
-	if !strings.HasSuffix(first.PublicURL, "/clip.mp4") || !strings.HasSuffix(second.PublicURL, "/clip_1.mp4") {
-		t.Fatalf("同名文件命名错误 first=%q second=%q", first.PublicURL, second.PublicURL)
+	if first.FileName == second.FileName {
+		t.Fatalf("删除后同名上传不应复用对象名 first=%q second=%q", first.FileName, second.FileName)
+	}
+	requireObjectName(t, first.FileName, "clip", ".mp4")
+	requireObjectName(t, second.FileName, "clip", ".mp4")
+	if err := s.Remove(context.Background(), first.PublicURL); err != nil {
+		t.Fatalf("延迟重试删除旧对象失败 error=%v", err)
 	}
 
-	for _, f := range []SavedFile{first, second} {
-		rel := strings.TrimPrefix(f.PublicURL, "/static/")
-		saved := filepath.Join(root, filepath.FromSlash(rel))
-		data, err := os.ReadFile(saved)
-		if err != nil {
-			t.Fatalf("文件未落盘 %s error=%v", saved, err)
-		}
-		if !bytes.Equal(data, content) {
-			t.Fatalf("文件内容不一致 got=%v want=%v", data, content)
-		}
+	rel := strings.TrimPrefix(second.PublicURL, "/static/")
+	saved := filepath.Join(root, filepath.FromSlash(rel))
+	data, err := os.ReadFile(saved)
+	if err != nil {
+		t.Fatalf("延迟删除旧对象后新文件不应丢失 %s error=%v", saved, err)
+	}
+	if !bytes.Equal(data, content) {
+		t.Fatalf("新文件内容不一致 got=%v want=%v", data, content)
 	}
 }
 
-// 测试目标：验证达到长度上限的文件在重名时仍保持可发布的规范名称
-// 预期效果：追加序号后名称不超过上限且再次清洗不会发生变化
-func TestLocalStorageSaveKeepsLongCollisionNameSanitized(t *testing.T) {
+// 测试目标：验证达到长度上限的文件追加对象键后仍保持规范名称
+// 预期效果：对象键会为扩展名和长度上限预留空间，名称仍可安全删除
+func TestLocalStorageSaveKeepsLongObjectNameSanitized(t *testing.T) {
 	s := NewLocalStorage(t.TempDir())
 	content := []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
 	filename := strings.Repeat("a", maxFilenameBytes-len(".mp4")) + ".mp4"
 
-	if _, err := s.Save(context.Background(), 3, MediaVideo, filename, bytes.NewReader(content)); err != nil {
-		t.Fatalf("首次保存失败 error=%v", err)
-	}
-	second, err := s.Save(context.Background(), 3, MediaVideo, filename, bytes.NewReader(content))
+	saved, err := s.Save(context.Background(), 3, MediaVideo, filename, bytes.NewReader(content))
 	if err != nil {
-		t.Fatalf("第二次保存失败 error=%v", err)
+		t.Fatalf("保存失败 error=%v", err)
 	}
-	if len(second.FileName) > maxFilenameBytes || sanitizeFilename(second.FileName) != second.FileName {
-		t.Fatalf("重名后的文件名不再符合存储规则 got=%q", second.FileName)
+	if len(saved.FileName) > maxFilenameBytes || sanitizeFilename(saved.FileName) != saved.FileName {
+		t.Fatalf("对象文件名不再符合存储规则 got=%q", saved.FileName)
 	}
-	if !strings.HasSuffix(second.FileName, "_1.mp4") {
-		t.Fatalf("重名后的文件名未保留序号 got=%q", second.FileName)
+	if !strings.HasSuffix(saved.FileName, ".mp4") {
+		t.Fatalf("对象文件名未保留扩展名 got=%q", saved.FileName)
 	}
 }
 
