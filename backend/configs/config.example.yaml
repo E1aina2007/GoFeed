@@ -26,9 +26,11 @@ database:
 retention:
   user_deleted_days: 7    # 注销账号软删除后的保留天数；可用 RETENTION_USER_DELETED_DAYS 覆盖
   video_deleted_days: 7   # 视频软删除后的保留天数；到期后 sweeper 清除媒体和记录，可用 RETENTION_VIDEO_DELETED_DAYS 覆盖
+  video_draft_hours: 24   # 未完成草稿的保留小时数；可用 RETENTION_VIDEO_DRAFT_HOURS 覆盖
 
 sweeper:
-  interval_minutes: 60    # 注销用户清扫间隔（分钟）；可用 SWEEPER_INTERVAL_MINUTES 覆盖
+  interval_minutes: 60          # 用户、已发布视频和草稿清扫间隔（分钟）；可用 SWEEPER_INTERVAL_MINUTES 覆盖
+  draft_purge_lease_minutes: 15 # 单条草稿清扫租约；可用 SWEEPER_DRAFT_PURGE_LEASE_MINUTES 覆盖
 
 redis:
   host: localhost

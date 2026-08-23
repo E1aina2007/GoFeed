@@ -13,6 +13,8 @@ type Repository struct {
 	db *gorm.DB
 }
 
+var ErrInvalidDraftPurgeLease = errors.New("invalid draft purge lease")
+
 func NewRepository(db *gorm.DB) *Repository {
 	return &Repository{db: db}
 }
@@ -187,12 +189,186 @@ func (r *Repository) ListByAuthor(ctx context.Context, authorID uint, cursor *Cu
 	return videos, nil
 }
 
-// Delete 软删除视频
-func (r *Repository) Delete(ctx context.Context, id uint) error {
-	if id == 0 {
+// ListRecoverableDraftPurges 返回租约已失效的清扫中草稿 ID。
+// purging 是不可逆状态，因此无需再次检查草稿创建时间；它们优先作为重试候选。
+func (r *Repository) ListRecoverableDraftPurges(ctx context.Context, limit int) ([]uint, error) {
+	if limit <= 0 {
+		return []uint{}, nil
+	}
+
+	var ids []uint
+	err := r.db.WithContext(ctx).Model(&Video{}).
+		Where("deleted_at IS NULL").
+		Where("status = ? AND (purge_lease_until IS NULL OR purge_lease_until <= NOW(3))", VideoStatusPurging).
+		Order("purge_lease_until ASC, created_at ASC, id ASC").
+		Limit(limit).
+		Pluck("id", &ids).Error
+	return ids, err
+}
+
+// ListExpiredDraftsForPurge 返回保留期届满、尚未进入清扫状态的草稿 ID。
+func (r *Repository) ListExpiredDraftsForPurge(ctx context.Context, cutoff time.Time, limit int) ([]uint, error) {
+	if limit <= 0 {
+		return []uint{}, nil
+	}
+
+	var ids []uint
+	err := r.db.WithContext(ctx).Model(&Video{}).
+		Where("deleted_at IS NULL").
+		Where("status = ? AND created_at <= ?", VideoStatusDraft, cutoff).
+		Order("created_at ASC, id ASC").
+		Limit(limit).
+		Pluck("id", &ids).Error
+	return ids, err
+}
+
+// ClaimDraftPurge 通过条件更新取得草稿清扫租约，并在同一事务内读取当前媒体快照。
+// 同一时刻只有一个 token 能修改已认领草稿；过期租约可由后续 sweeper 接管。
+func (r *Repository) ClaimDraftPurge(ctx context.Context, id uint, cutoff time.Time, token string, lease time.Duration) (*DraftPurgeClaim, bool, error) {
+	leaseInterval, err := draftPurgeLeaseInterval(lease)
+	if err != nil {
+		return nil, false, err
+	}
+	if id == 0 || token == "" {
+		return nil, false, nil
+	}
+
+	var claim *DraftPurgeClaim
+	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&Video{}).
+			Where("id = ? AND deleted_at IS NULL", id).
+			Where(
+				"(status = ? AND created_at <= ?) OR (status = ? AND (purge_lease_until IS NULL OR purge_lease_until <= NOW(3)))",
+				VideoStatusDraft,
+				cutoff,
+				VideoStatusPurging,
+			).
+			Updates(map[string]any{
+				"status":            VideoStatusPurging,
+				"purge_token":       token,
+				"purge_lease_until": leaseInterval,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return nil
+		}
+
+		var draft Video
+		if err := tx.Where("id = ? AND status = ? AND purge_token = ?", id, VideoStatusPurging, token).First(&draft).Error; err != nil {
+			return err
+		}
+		claim = &DraftPurgeClaim{
+			DraftID:       draft.ID,
+			Token:         token,
+			PlayURL:       draft.PlayURL,
+			PlayPurgedAt:  draft.PlayPurgedAt,
+			CoverURL:      draft.CoverURL,
+			CoverPurgedAt: draft.CoverPurgedAt,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return claim, claim != nil, nil
+}
+
+// RenewDraftPurgeLease 延长当前 token 的租约。false 表示所有权已经丢失。
+func (r *Repository) RenewDraftPurgeLease(ctx context.Context, id uint, token string, lease time.Duration) (bool, error) {
+	leaseInterval, err := draftPurgeLeaseInterval(lease)
+	if err != nil {
+		return false, err
+	}
+	if id == 0 || token == "" {
+		return false, nil
+	}
+
+	result := r.db.WithContext(ctx).Model(&Video{}).
+		Where("id = ? AND status = ? AND purge_token = ? AND purge_lease_until > NOW(3)", id, VideoStatusPurging, token).
+		Update("purge_lease_until", leaseInterval)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
+// MarkDraftMediaPurged 记录一个媒体槽位已被删除，并续租以保护后续槽位和硬删除。
+// false 表示 token 已失效，调用方不得继续操作该草稿。
+func (r *Repository) MarkDraftMediaPurged(ctx context.Context, id uint, token string, kind MediaKind, lease time.Duration) (bool, error) {
+	leaseInterval, err := draftPurgeLeaseInterval(lease)
+	if err != nil {
+		return false, err
+	}
+	if id == 0 || token == "" {
+		return false, nil
+	}
+
+	var (
+		urlColumn    string
+		purgedColumn string
+	)
+	switch kind {
+	case MediaVideo:
+		urlColumn = "play_url"
+		purgedColumn = "play_purged_at"
+	case MediaCover:
+		urlColumn = "cover_url"
+		purgedColumn = "cover_purged_at"
+	default:
+		return false, ErrInvalidMedia
+	}
+
+	result := r.db.WithContext(ctx).Model(&Video{}).
+		Where("id = ? AND status = ? AND purge_token = ? AND purge_lease_until > NOW(3)", id, VideoStatusPurging, token).
+		Where(urlColumn + " <> ''").
+		Updates(map[string]any{
+			purgedColumn:        gorm.Expr("COALESCE(" + purgedColumn + ", NOW(3))"),
+			"purge_lease_until": leaseInterval,
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
+// HardDeletePurgedDraft 只会删除当前 token 仍持有租约且所有非空媒体均已确认删除的草稿。
+func (r *Repository) HardDeletePurgedDraft(ctx context.Context, id uint, token string) (bool, error) {
+	if id == 0 || token == "" {
+		return false, nil
+	}
+	result := r.db.WithContext(ctx).Unscoped().
+		Where("id = ? AND deleted_at IS NULL", id).
+		Where("status = ? AND purge_token = ? AND purge_lease_until > NOW(3)", VideoStatusPurging, token).
+		Where("(play_url = '' OR play_purged_at IS NOT NULL)").
+		Where("(cover_url = '' OR cover_purged_at IS NOT NULL)").
+		Delete(&Video{})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
+func draftPurgeLeaseInterval(lease time.Duration) (clause.Expr, error) {
+	seconds := int64(lease / time.Second)
+	if lease%time.Second != 0 {
+		seconds++
+	}
+	if seconds <= 0 {
+		return clause.Expr{}, ErrInvalidDraftPurgeLease
+	}
+	return gorm.Expr("TIMESTAMPADD(SECOND, ?, NOW(3))", seconds), nil
+}
+
+// SoftDeletePublished 只允许作者软删除已发布视频，避免草稿进入已发布视频的保留期路径。
+func (r *Repository) SoftDeletePublished(ctx context.Context, id, authorID uint) error {
+	if id == 0 || authorID == 0 {
 		return gorm.ErrRecordNotFound
 	}
-	result := r.db.WithContext(ctx).Delete(&Video{}, id)
+	result := r.db.WithContext(ctx).
+		Where("id = ? AND author_id = ? AND status = ?", id, authorID, VideoStatusPublished).
+		Delete(&Video{})
 	if result.Error != nil {
 		return result.Error
 	}
@@ -206,7 +382,7 @@ func (r *Repository) Delete(ctx context.Context, id uint) error {
 func (r *Repository) ListExpiredDeleted(ctx context.Context, cutoff time.Time) ([]Video, error) {
 	var videos []Video
 	if err := r.db.WithContext(ctx).Unscoped().
-		Where("deleted_at IS NOT NULL AND deleted_at <= ?", cutoff).
+		Where("status = ? AND deleted_at IS NOT NULL AND deleted_at <= ?", VideoStatusPublished, cutoff).
 		Find(&videos).Error; err != nil {
 		return nil, err
 	}
@@ -220,7 +396,7 @@ func (r *Repository) HardDeleteExpired(ctx context.Context, id uint, cutoff time
 		return false, nil
 	}
 	result := r.db.WithContext(ctx).Unscoped().
-		Where("id = ? AND deleted_at IS NOT NULL AND deleted_at <= ?", id, cutoff).
+		Where("id = ? AND status = ? AND deleted_at IS NOT NULL AND deleted_at <= ?", id, VideoStatusPublished, cutoff).
 		Delete(&Video{})
 	if result.Error != nil {
 		return false, result.Error

@@ -44,7 +44,7 @@ type VideoRepository interface {
 	Create(ctx context.Context, video *Video) error
 	GetByID(ctx context.Context, id uint) (*Video, error)
 	ListByAuthor(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error)
-	Delete(ctx context.Context, id uint) error
+	SoftDeletePublished(ctx context.Context, id, authorID uint) error
 	AttachDraftMedia(ctx context.Context, draftID, authorID uint, kind MediaKind, saved SavedFile, originalName string) error
 	PublishDraft(ctx context.Context, draftID, authorID uint) (*Video, error)
 }
@@ -200,7 +200,7 @@ func (s *Service) ListMine(ctx context.Context, authorID uint, encodedCursor str
 	return s.buildListResponse(ctx, videos, limit)
 }
 
-// Delete 仅作者本人可软删除自己的视频
+// Delete 仅作者本人可软删除自己的已发布视频
 func (s *Service) Delete(ctx context.Context, id, authorID uint) error {
 	if id == 0 {
 		return ErrInvalidVideoID
@@ -219,7 +219,16 @@ func (s *Service) Delete(ctx context.Context, id, authorID uint) error {
 	if video.AuthorID != authorID {
 		return ErrNotAuthor
 	}
-	return s.repository.Delete(ctx, id)
+	if video.Status != VideoStatusPublished {
+		return ErrVideoNotFound
+	}
+	if err := s.repository.SoftDeletePublished(ctx, id, authorID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrVideoNotFound
+		}
+		return err
+	}
+	return nil
 }
 
 // buildListResponse 构建视频列表响应，包含作者资料与分页游标

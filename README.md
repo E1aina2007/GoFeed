@@ -67,6 +67,17 @@ migrate -path ./db/migrations -database "mysql://root:<URL 编码后的密码>@t
 
 密码中包含 `@`、`:`、`/`、`?`、`#` 或 `%` 等 URL 特殊字符时必须先编码。每次新增迁移文件后重新执行同一条 `up` 命令即可；`schema_migrations` 会记录已执行版本，因此只会应用尚未执行的迁移。不要修改已执行的迁移文件，应新增一对递增版本的 `.up.sql` 和 `.down.sql` 文件。
 
+跨越草稿版本向下回滚属于维护操作。先停止所有 API 与 sweeper 实例并确认 sweeper 已完全退出，再执行只读检查；有结果时不要运行 `migrate steps -1`，应先显式发布，或运行草稿清扫完成回收。回滚完成前不得重新启动 API 或 sweeper，避免检查与 DDL 之间出现新的 `purging` 草稿。`golang-migrate` 在 down SQL 失败时会将版本留为 dirty，不能把这一检查写成故意失败的迁移 SQL。
+
+```sql
+SELECT COUNT(*) AS incompatible_rows
+FROM videos
+WHERE status IN ('draft', 'purging')
+   OR published_at IS NULL
+   OR play_url = ''
+   OR cover_url = '';
+```
+
 ### 3. 直接启动后端与前端
 
 后端必须从 `backend` 目录启动，才能读取 `.env` 与默认的 `configs/config.dev.yaml`：
@@ -128,7 +139,9 @@ pnpm preview        # 本地预览构建产物
 | JWT 密钥 | `JWT_SECRET` | 存放在 `backend/.env`；不设置时每次启动随机生成，重启后所有 token 失效 |
 | 注销保留天数 | `RETENTION_USER_DELETED_DAYS` | 默认 `7`；注销账号软删除后经过该天数由 sweeper 硬删除 |
 | 视频删除保留天数 | `RETENTION_VIDEO_DELETED_DAYS` | 默认 `7`；视频软删除后经过该天数由 sweeper 删除视频/封面文件并硬删除记录 |
-| 清扫间隔 | `SWEEPER_INTERVAL_MINUTES` | 默认 `60`；sweeper 执行用户和视频清扫的间隔分钟数 |
+| 草稿保留时长 | `RETENTION_VIDEO_DRAFT_HOURS` | 默认 `24`；未发布草稿到期后进入不可逆清扫 |
+| 清扫间隔 | `SWEEPER_INTERVAL_MINUTES` | 默认 `60`；sweeper 执行用户、已发布视频和草稿清扫的间隔分钟数 |
+| 草稿清扫租约 | `SWEEPER_DRAFT_PURGE_LEASE_MINUTES` | 默认 `15`；单个草稿的 token 围栏租约，过期后可由其他 sweeper 接管 |
 
 ### 本地开发配置
 
@@ -154,14 +167,16 @@ MYSQL_ROOT_PASSWORD=your-mysql-password
 MYSQL_DATABASE=feedsystem
 RETENTION_USER_DELETED_DAYS=7
 RETENTION_VIDEO_DELETED_DAYS=7
+RETENTION_VIDEO_DRAFT_HOURS=24
 SWEEPER_INTERVAL_MINUTES=60
+SWEEPER_DRAFT_PURGE_LEASE_MINUTES=15
 ```
 
 如需调整 HTTP 端口，修改 `server.port`，并同步 `docker-compose.yml` 中 `8080:8080` 的端口映射。
 
 ## 项目进度
 
-当前主线：基础 Feed MVP。后端已完成视频/封面上传、发布、公开列表与详情、我的视频、作者删除，并接入会话鉴权；用户主页会统计已发布且未软删除的视频数量。存储侧已落地物理文件名清洗、实际存储名与用户指定名分离、DB 只存相对路径（迁移 `000002_video_file_names`）。验收测试已补齐仓储集成测试与 httptest 端到端测试（均跑真实 MySQL），并包含会话模型与 `auth_sessions` 表的映射校验。账号和视频删除均采用软删除 + 7 天宽限期；sweeper 到期时会清除视频/封面文件并硬删除记录。CI 已为后端测试引入 MySQL 8.0 service。
+当前主线：基础 Feed MVP。后端已完成草稿聚合上传、发布、公开列表与详情、我的视频、作者删除，并接入会话鉴权；用户主页会统计已发布且未软删除的视频数量。存储侧将清洗后的物理名与用户指定名分离，并为每次保存附加不可复用对象键；DB 只存相对路径。未发布草稿到期后由 sweeper 用 token 租约认领，逐媒体持久化删除进度，最后硬删除；任何失败都不会把 `purging` 草稿恢复为可写状态。账号和已发布视频删除仍采用软删除 + 7 天宽限期。CI 已为后端测试引入 MySQL 8.0 service。
 
 前端已完成基础页面和请求层：短视频 Feed、登录、注册、发布、视频详情、用户列表、用户主页、我的视频、账户设置；全局操作提示已覆盖登录注册、发布、视频删除和账户资料操作。接口明细以根目录 [`API.md`](./API.md) 和后端注册路由为准。
 

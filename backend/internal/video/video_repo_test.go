@@ -186,6 +186,158 @@ func TestRepositoryDraftMediaAndPublish(t *testing.T) {
 	}
 }
 
+// 测试目标：验证草稿清扫租约独占、过期接管和逐媒体删除检查点
+// 预期效果：旧 token 不能提交进度或硬删除，两个非空媒体确认后才可物理删除
+func TestRepositoryDraftPurgeLeaseAndCheckpoints(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+	cutoff := time.Now().Add(-time.Hour)
+	expired := newVideoFixture(1, "expired", VideoStatusDraft, baseTime)
+	expired.PublishedAt = nil
+	active := newVideoFixture(1, "active", VideoStatusDraft, baseTime)
+	active.PublishedAt = nil
+	published := newVideoFixture(1, "published", VideoStatusPublished, baseTime)
+	for _, item := range []*Video{expired, active, published} {
+		if err := repo.Create(ctx, item); err != nil {
+			t.Fatalf("创建测试视频失败: %v", err)
+		}
+	}
+	if err := db.Exec("UPDATE videos SET created_at = ? WHERE id = ?", cutoff.Add(-time.Minute), expired.ID).Error; err != nil {
+		t.Fatalf("设置过期草稿创建时间失败: %v", err)
+	}
+	if err := db.Exec("UPDATE videos SET created_at = ? WHERE id = ?", time.Now().Add(time.Hour), active.ID).Error; err != nil {
+		t.Fatalf("设置活跃草稿创建时间失败: %v", err)
+	}
+
+	ids, err := repo.ListExpiredDraftsForPurge(ctx, cutoff, 10)
+	if err != nil {
+		t.Fatalf("查询过期草稿失败: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != expired.ID {
+		t.Fatalf("过期草稿筛选错误 got=%+v", ids)
+	}
+
+	tokenA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	claim, ok, err := repo.ClaimDraftPurge(ctx, expired.ID, cutoff, tokenA, time.Hour)
+	if err != nil || !ok || claim == nil || claim.Token != tokenA || claim.PlayURL == "" || claim.CoverURL == "" {
+		t.Fatalf("认领过期草稿错误 claim=%+v ok=%t err=%v", claim, ok, err)
+	}
+	if _, err := repo.PublishDraft(ctx, expired.ID, 1); !errors.Is(err, ErrDraftNotWritable) {
+		t.Fatalf("清扫中的草稿仍可发布 error=%v", err)
+	}
+	if _, ok, err := repo.ClaimDraftPurge(ctx, expired.ID, cutoff, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", time.Hour); err != nil || ok {
+		t.Fatalf("未过期租约不应被接管 ok=%t err=%v", ok, err)
+	}
+	if err := db.Model(&Video{}).Where("id = ?", expired.ID).Update("purge_lease_until", time.Now().Add(-time.Minute)).Error; err != nil {
+		t.Fatalf("设置过期租约失败: %v", err)
+	}
+	ids, err = repo.ListRecoverableDraftPurges(ctx, 10)
+	if err != nil || len(ids) != 1 || ids[0] != expired.ID {
+		t.Fatalf("过期租约应重新成为候选 ids=%v err=%v", ids, err)
+	}
+
+	tokenB := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	claim, ok, err = repo.ClaimDraftPurge(ctx, expired.ID, cutoff, tokenB, time.Hour)
+	if err != nil || !ok || claim == nil || claim.Token != tokenB {
+		t.Fatalf("过期租约接管失败 claim=%+v ok=%t err=%v", claim, ok, err)
+	}
+	if renewed, err := repo.RenewDraftPurgeLease(ctx, expired.ID, tokenA, time.Hour); err != nil || renewed {
+		t.Fatalf("旧 token 不应续租 renewed=%t err=%v", renewed, err)
+	}
+	if marked, err := repo.MarkDraftMediaPurged(ctx, expired.ID, tokenA, MediaVideo, time.Hour); err != nil || marked {
+		t.Fatalf("旧 token 不应写入进度 marked=%t err=%v", marked, err)
+	}
+	if marked, err := repo.MarkDraftMediaPurged(ctx, expired.ID, tokenB, MediaVideo, time.Hour); err != nil || !marked {
+		t.Fatalf("视频删除检查点写入失败 marked=%t err=%v", marked, err)
+	}
+	if deleted, err := repo.HardDeletePurgedDraft(ctx, expired.ID, tokenB); err != nil || deleted {
+		t.Fatalf("封面未确认前不应硬删除 deleted=%t err=%v", deleted, err)
+	}
+	if marked, err := repo.MarkDraftMediaPurged(ctx, expired.ID, tokenB, MediaCover, time.Hour); err != nil || !marked {
+		t.Fatalf("封面删除检查点写入失败 marked=%t err=%v", marked, err)
+	}
+	if deleted, err := repo.HardDeletePurgedDraft(ctx, expired.ID, tokenA); err != nil || deleted {
+		t.Fatalf("旧 token 不应硬删除 deleted=%t err=%v", deleted, err)
+	}
+	deleted, err := repo.HardDeletePurgedDraft(ctx, expired.ID, tokenB)
+	if err != nil || !deleted {
+		t.Fatalf("硬删除已认领草稿失败 deleted=%t err=%v", deleted, err)
+	}
+	var count int64
+	if err := db.Raw("SELECT COUNT(*) FROM videos WHERE id = ?", expired.ID).Scan(&count).Error; err != nil {
+		t.Fatalf("统计已删除草稿失败: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("过期草稿应已硬删除 count=%d", count)
+	}
+}
+
+// 测试目标：验证两个仓储实例并发认领同一过期草稿时租约互斥
+// 预期效果：恰好一个 token 成功取得草稿，另一个实例不能获得清扫所有权
+func TestRepositoryClaimDraftPurgeIsExclusive(t *testing.T) {
+	db := testutil.DB(t)
+	first := NewRepository(db)
+	second := NewRepository(db.Session(&gorm.Session{NewDB: true}))
+	ctx := context.Background()
+	cutoff := time.Now().Add(-time.Hour)
+	draft := newVideoFixture(1, "concurrent claim", VideoStatusDraft, baseTime)
+	draft.PublishedAt = nil
+	if err := first.Create(ctx, draft); err != nil {
+		t.Fatalf("创建并发认领草稿失败: %v", err)
+	}
+	if err := db.Exec("UPDATE videos SET created_at = ? WHERE id = ?", cutoff.Add(-time.Minute), draft.ID).Error; err != nil {
+		t.Fatalf("设置过期草稿创建时间失败: %v", err)
+	}
+
+	type result struct {
+		token string
+		ok    bool
+		err   error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	for _, item := range []struct {
+		repository *Repository
+		token      string
+	}{
+		{repository: first, token: "11111111111111111111111111111111"},
+		{repository: second, token: "22222222222222222222222222222222"},
+	} {
+		item := item
+		go func() {
+			<-start
+			_, ok, err := item.repository.ClaimDraftPurge(ctx, draft.ID, cutoff, item.token, time.Minute)
+			results <- result{token: item.token, ok: ok, err: err}
+		}()
+	}
+	close(start)
+
+	var winner string
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("并发认领失败 token=%s err=%v", result.token, result.err)
+		}
+		if result.ok {
+			if winner != "" {
+				t.Fatalf("不应有两个租约 owner first=%s second=%s", winner, result.token)
+			}
+			winner = result.token
+		}
+	}
+	if winner == "" {
+		t.Fatal("并发认领应有一个 token 成功")
+	}
+	var claimed Video
+	if err := db.First(&claimed, draft.ID).Error; err != nil {
+		t.Fatalf("读取并发认领结果失败: %v", err)
+	}
+	if claimed.Status != VideoStatusPurging || claimed.PurgeToken == nil || *claimed.PurgeToken != winner {
+		t.Fatalf("并发认领持久化结果错误 status=%s token=%v winner=%s", claimed.Status, claimed.PurgeToken, winner)
+	}
+}
+
 // 测试目标：验证公开视频列表的状态过滤、作者过滤和排序
 // 预期效果：仅返回已发布视频并按发布时间倒序排列
 func TestRepositoryListPublishedFilterAndOrder(t *testing.T) {
@@ -342,17 +494,17 @@ func TestRepositoryListByAuthorIncludesPublishedOnly(t *testing.T) {
 	}
 }
 
-// 测试目标：验证视频仓储执行软删除而非物理删除
-// 预期效果：物理行保留删除时间，所有读取列表均排除该视频且重复删除报错
-func TestRepositoryDeleteSoftDeletes(t *testing.T) {
+// 测试目标：验证仓储只软删除作者的已发布视频
+// 预期效果：草稿不会进入已发布视频清扫路径，已发布行仍保持软删除语义
+func TestRepositorySoftDeletePublished(t *testing.T) {
 	db := testutil.DB(t)
 	repo := NewRepository(db)
 	ctx := context.Background()
 
 	v := seedVideo(t, repo, 1, "删除", VideoStatusPublished, baseTime)
 
-	if err := repo.Delete(ctx, v.ID); err != nil {
-		t.Fatalf("Delete: %v", err)
+	if err := repo.SoftDeletePublished(ctx, v.ID, v.AuthorID); err != nil {
+		t.Fatalf("SoftDeletePublished: %v", err)
 	}
 	if _, err := repo.GetByID(ctx, v.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("软删后 GetByID 应 not found, err=%v", err)
@@ -386,8 +538,16 @@ func TestRepositoryDeleteSoftDeletes(t *testing.T) {
 		t.Fatalf("删除后列表应不含该视频, got=%+v", items)
 	}
 
-	if err := repo.Delete(ctx, v.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := repo.SoftDeletePublished(ctx, v.ID, v.AuthorID); !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("重复删除应 not found, err=%v", err)
+	}
+
+	draft := seedVideo(t, repo, 1, "草稿", VideoStatusDraft, baseTime)
+	if err := repo.SoftDeletePublished(ctx, draft.ID, draft.AuthorID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("草稿不应走已发布软删除 err=%v", err)
+	}
+	if _, err := repo.GetByID(ctx, draft.ID); err != nil {
+		t.Fatalf("草稿不应被软删除 err=%v", err)
 	}
 }
 
@@ -403,9 +563,13 @@ func TestRepositoryPurgeExpiredDeleted(t *testing.T) {
 	boundary := seedVideo(t, repo, 1, "boundary", VideoStatusPublished, baseTime)
 	grace := seedVideo(t, repo, 1, "grace", VideoStatusPublished, baseTime)
 	active := seedVideo(t, repo, 1, "active", VideoStatusPublished, baseTime)
+	draftDeleted := seedVideo(t, repo, 1, "draft-deleted", VideoStatusDraft, baseTime)
+	purgingDeleted := seedVideo(t, repo, 1, "purging-deleted", VideoStatusPurging, baseTime)
 	setVideoDeletedAt(t, db, expired.ID, cutoff.Add(-time.Minute))
 	setVideoDeletedAt(t, db, boundary.ID, cutoff)
 	setVideoDeletedAt(t, db, grace.ID, cutoff.Add(time.Minute))
+	setVideoDeletedAt(t, db, draftDeleted.ID, cutoff.Add(-time.Minute))
+	setVideoDeletedAt(t, db, purgingDeleted.ID, cutoff.Add(-time.Minute))
 
 	items, err := repo.ListExpiredDeleted(ctx, cutoff)
 	if err != nil {
@@ -413,6 +577,11 @@ func TestRepositoryPurgeExpiredDeleted(t *testing.T) {
 	}
 	if len(items) != 2 {
 		t.Fatalf("应只返回到期和边界视频, got=%+v", items)
+	}
+	for _, item := range []Video{*draftDeleted, *purgingDeleted} {
+		if deleted, err := repo.HardDeleteExpired(ctx, item.ID, cutoff); err != nil || deleted {
+			t.Fatalf("非 published 记录不应由已发布清扫删除 id=%d deleted=%t err=%v", item.ID, deleted, err)
+		}
 	}
 
 	for _, item := range items {
@@ -479,8 +648,8 @@ func TestRepositoryCountPublishedByAuthor(t *testing.T) {
 	seedVideo(t, repo, 1, "rejected", VideoStatusRejected, baseTime)
 	deleted := seedVideo(t, repo, 1, "deleted", VideoStatusPublished, baseTime)
 	seedVideo(t, repo, 2, "other-author", VideoStatusPublished, baseTime)
-	if err := repo.Delete(ctx, deleted.ID); err != nil {
-		t.Fatalf("Delete: %v", err)
+	if err := repo.SoftDeletePublished(ctx, deleted.ID, deleted.AuthorID); err != nil {
+		t.Fatalf("SoftDeletePublished: %v", err)
 	}
 
 	count, err := repo.CountPublishedByAuthor(ctx, 1)

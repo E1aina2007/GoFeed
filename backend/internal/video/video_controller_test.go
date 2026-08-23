@@ -395,7 +395,7 @@ func TestHandlerDelete(t *testing.T) {
 	// 1 作者本人删除自己的视频
 	// 2 验证返回无内容状态且仓储收到软删除调用
 	ctl, repo, _ := newTestVideoController(t)
-	repo.getAny = &Video{ID: 5, AuthorID: 1}
+	repo.getAny = &Video{ID: 5, AuthorID: 1, Status: VideoStatusPublished}
 
 	r := gin.New()
 	r.Use(withUserID(1))
@@ -416,7 +416,7 @@ func TestHandlerDelete(t *testing.T) {
 func TestHandlerDeleteRejectsNonAuthor(t *testing.T) {
 	// 非作者删除应返回禁止状态，服务层不会调用仓储删除
 	ctl, repo, _ := newTestVideoController(t)
-	repo.getAny = &Video{ID: 5, AuthorID: 1}
+	repo.getAny = &Video{ID: 5, AuthorID: 1, Status: VideoStatusPublished}
 
 	r := gin.New()
 	r.Use(withUserID(2))
@@ -426,6 +426,30 @@ func TestHandlerDeleteRejectsNonAuthor(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("非作者删除未被拒绝 status got=%d want=403", w.Code)
+	}
+}
+
+// 测试目标：验证作者不能通过已发布视频删除接口删除草稿
+// 预期效果：draft 和 purging 均返回不存在且不触发软删除
+func TestHandlerDeleteRejectsNonPublishedVideo(t *testing.T) {
+	for _, status := range []string{VideoStatusDraft, VideoStatusPurging} {
+		t.Run(status, func(t *testing.T) {
+			ctl, repo, _ := newTestVideoController(t)
+			repo.getAny = &Video{ID: 5, AuthorID: 1, Status: status}
+
+			r := gin.New()
+			r.Use(withUserID(1))
+			r.DELETE("/api/video/auth/:id", ctl.Delete)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/video/auth/5", nil))
+
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("非公开视频删除状态错误 got=%d want=404 body=%s", w.Code, w.Body.String())
+			}
+			if repo.deletedID != 0 {
+				t.Fatalf("非公开视频不应触发软删除 id=%d", repo.deletedID)
+			}
+		})
 	}
 }
 

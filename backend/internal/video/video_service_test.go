@@ -12,21 +12,23 @@ import (
 // 测试目标：模拟视频数据读取和写入依赖
 // 预期效果：记录服务层查询参数并返回预设视频数据
 type fakeVideoReader struct {
-	getVideo     *Video
-	getErr       error
-	listVideos   []Video
-	listErr      error
-	listAuthorID uint
-	listCursor   *Cursor
-	listLimit    int
-	getAny       *Video
-	created      *Video
-	createErr    error
-	drafts       map[uint]*Video
-	attachErr    error
-	publishErr   error
-	mineVideos   []Video
-	deletedID    uint
+	getVideo        *Video
+	getErr          error
+	listVideos      []Video
+	listErr         error
+	listAuthorID    uint
+	listCursor      *Cursor
+	listLimit       int
+	getAny          *Video
+	created         *Video
+	createErr       error
+	drafts          map[uint]*Video
+	attachErr       error
+	publishErr      error
+	mineVideos      []Video
+	deletedID       uint
+	deletedAuthorID uint
+	deleteErr       error
 }
 
 // 测试目标：模拟已发布视频详情读取
@@ -133,11 +135,12 @@ func (r *fakeVideoReader) ListByAuthor(_ context.Context, authorID uint, cursor 
 	return r.mineVideos, r.listErr
 }
 
-// 测试目标：模拟视频删除操作
-// 预期效果：记录被删除的视频标识
-func (r *fakeVideoReader) Delete(_ context.Context, id uint) error {
+// 测试目标：模拟已发布视频软删除操作
+// 预期效果：记录被删除的视频与作者标识并返回预设错误
+func (r *fakeVideoReader) SoftDeletePublished(_ context.Context, id, authorID uint) error {
 	r.deletedID = id
-	return nil
+	r.deletedAuthorID = authorID
+	return r.deleteErr
 }
 
 // 测试目标：模拟作者资料读取依赖
@@ -337,7 +340,7 @@ func TestServicePublishDraft(t *testing.T) {
 func TestServiceDeleteChecksAuthor(t *testing.T) {
 	// 1 非作者删除返回权限错误
 	// 2 作者本人删除成功
-	repository := &fakeVideoReader{getAny: &Video{ID: 1, AuthorID: 2}}
+	repository := &fakeVideoReader{getAny: &Video{ID: 1, AuthorID: 2, Status: VideoStatusPublished}}
 	service := NewService(repository, &fakeAuthorReader{})
 
 	if err := service.Delete(context.Background(), 1, 3); !errors.Is(err, ErrNotAuthor) {
@@ -346,8 +349,26 @@ func TestServiceDeleteChecksAuthor(t *testing.T) {
 	if err := service.Delete(context.Background(), 1, 2); err != nil {
 		t.Fatalf("作者删除失败 error=%v", err)
 	}
-	if repository.deletedID != 1 {
-		t.Fatalf("删除 ID 错误 got=%d want=1", repository.deletedID)
+	if repository.deletedID != 1 || repository.deletedAuthorID != 2 {
+		t.Fatalf("删除参数错误 id=%d author=%d", repository.deletedID, repository.deletedAuthorID)
+	}
+}
+
+// 测试目标：验证草稿和清扫中草稿不能进入已发布视频删除路径
+// 预期效果：服务层返回视频不存在且不调用已发布视频软删除
+func TestServiceDeleteRejectsNonPublishedVideo(t *testing.T) {
+	for _, status := range []string{VideoStatusDraft, VideoStatusPurging} {
+		t.Run(status, func(t *testing.T) {
+			repository := &fakeVideoReader{getAny: &Video{ID: 1, AuthorID: 2, Status: status}}
+			service := NewService(repository, &fakeAuthorReader{})
+
+			if err := service.Delete(context.Background(), 1, 2); !errors.Is(err, ErrVideoNotFound) {
+				t.Fatalf("非公开视频删除错误 got=%v", err)
+			}
+			if repository.deletedID != 0 {
+				t.Fatalf("非公开视频不应调用软删除 id=%d", repository.deletedID)
+			}
+		})
 	}
 }
 

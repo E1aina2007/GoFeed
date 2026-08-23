@@ -36,11 +36,15 @@ type RetentionConfig struct {
 	UserDeletedDays int `yaml:"user_deleted_days"`
 	// VideoDeletedDays 视频从软删除到清扫媒体和硬删除记录的保留天数
 	VideoDeletedDays int `yaml:"video_deleted_days"`
+	// VideoDraftHours 未完成草稿从创建到清扫媒体和硬删除记录的保留小时数
+	VideoDraftHours int `yaml:"video_draft_hours"`
 }
 
 type SweeperConfig struct {
 	// IntervalMinutes 注销用户清扫任务执行间隔（分钟）
 	IntervalMinutes int `yaml:"interval_minutes"`
+	// DraftPurgeLeaseMinutes 草稿清扫 worker 持有单条草稿租约的时长（分钟）
+	DraftPurgeLeaseMinutes int `yaml:"draft_purge_lease_minutes"`
 }
 
 func Load(filename string) (Config, error) {
@@ -112,9 +116,19 @@ func OverrideWithEnv(cfg *Config) {
 			cfg.Retention.VideoDeletedDays = days
 		}
 	}
+	if v := os.Getenv("RETENTION_VIDEO_DRAFT_HOURS"); v != "" {
+		if hours, err := strconv.Atoi(v); err == nil {
+			cfg.Retention.VideoDraftHours = hours
+		}
+	}
 	if v := os.Getenv("SWEEPER_INTERVAL_MINUTES"); v != "" {
 		if minutes, err := strconv.Atoi(v); err == nil {
 			cfg.Sweeper.IntervalMinutes = minutes
+		}
+	}
+	if v := os.Getenv("SWEEPER_DRAFT_PURGE_LEASE_MINUTES"); v != "" {
+		if minutes, err := strconv.Atoi(v); err == nil {
+			cfg.Sweeper.DraftPurgeLeaseMinutes = minutes
 		}
 	}
 }

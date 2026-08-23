@@ -54,10 +54,8 @@ func (j *VideoPurgeJob) Run(ctx context.Context) (int64, error) {
 
 	var purged int64
 	for _, item := range videos {
-		for _, publicURL := range []string{item.PlayURL, item.CoverURL} {
-			if err := j.remover.Remove(ctx, publicURL); err != nil {
-				return purged, fmt.Errorf("remove media for video %d: %w", item.ID, err)
-			}
+		if err := removeMedia(ctx, j.remover, item.PlayURL, item.CoverURL); err != nil {
+			return purged, fmt.Errorf("remove media for video %d: %w", item.ID, err)
 		}
 		deleted, err := j.purger.HardDeleteExpired(ctx, item.ID, cutoff)
 		if err != nil {

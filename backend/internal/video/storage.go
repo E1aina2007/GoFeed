@@ -61,7 +61,8 @@ type MediaStorage interface {
 	Save(ctx context.Context, ownerID uint, kind MediaKind, filename string, src io.Reader) (SavedFile, error)
 }
 
-// MediaRemover 抽象已发布媒体的删除能力，供到期视频清扫任务使用。
+// MediaRemover 抽象媒体对象删除能力，供发布视频与草稿清扫任务使用。
+// 实现必须把不存在的对象视为成功，支持“物理删除成功但检查点写入失败”后的重试。
 type MediaRemover interface {
 	Remove(ctx context.Context, publicURL string) error
 }

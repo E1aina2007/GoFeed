@@ -6,11 +6,13 @@ import (
 	"testing"
 )
 
-// 测试目标：验证视频删除保留期可由环境变量覆盖
-// 预期效果：视频与用户保留期分别生效，方便独立调整清扫策略
+// 测试目标：验证视频删除和草稿保留期可由环境变量覆盖
+// 预期效果：视频、草稿和用户保留期分别生效，方便独立调整清扫策略
 func TestOverrideWithEnvVideoRetention(t *testing.T) {
 	t.Setenv("RETENTION_USER_DELETED_DAYS", "14")
 	t.Setenv("RETENTION_VIDEO_DELETED_DAYS", "3")
+	t.Setenv("RETENTION_VIDEO_DRAFT_HOURS", "36")
+	t.Setenv("SWEEPER_DRAFT_PURGE_LEASE_MINUTES", "15")
 
 	cfg := Config{}
 	OverrideWithEnv(&cfg)
@@ -20,6 +22,12 @@ func TestOverrideWithEnvVideoRetention(t *testing.T) {
 	}
 	if cfg.Retention.VideoDeletedDays != 3 {
 		t.Fatalf("视频保留期错误 got=%d want=3", cfg.Retention.VideoDeletedDays)
+	}
+	if cfg.Retention.VideoDraftHours != 36 {
+		t.Fatalf("草稿保留期错误 got=%d want=36", cfg.Retention.VideoDraftHours)
+	}
+	if cfg.Sweeper.DraftPurgeLeaseMinutes != 15 {
+		t.Fatalf("草稿清扫租约错误 got=%d want=15", cfg.Sweeper.DraftPurgeLeaseMinutes)
 	}
 }
 
@@ -37,7 +45,9 @@ func TestLoadEnvironmentOnlyFields(t *testing.T) {
 		"MYSQL_DATABASE",
 		"RETENTION_USER_DELETED_DAYS",
 		"RETENTION_VIDEO_DELETED_DAYS",
+		"RETENTION_VIDEO_DRAFT_HOURS",
 		"SWEEPER_INTERVAL_MINUTES",
+		"SWEEPER_DRAFT_PURGE_LEASE_MINUTES",
 	} {
 		t.Setenv(key, "")
 	}

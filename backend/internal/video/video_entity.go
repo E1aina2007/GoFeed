@@ -8,8 +8,10 @@ import (
 
 // 视频状态
 const (
-	VideoStatusPublished  = "published"
-	VideoStatusDraft      = "draft"
+	VideoStatusPublished = "published"
+	VideoStatusDraft     = "draft"
+	// VideoStatusPurging 表示草稿已进入不可逆清扫，清扫器正在删除其媒体。
+	VideoStatusPurging    = "purging"
 	VideoStatusProcessing = "processing"
 	VideoStatusRejected   = "rejected"
 )
@@ -31,6 +33,14 @@ type Video struct {
 
 	Status string `gorm:"type:varchar(16);not null;index;default:'published'" json:"status"`
 
+	// 清扫字段只服务于草稿回收，不暴露到任何视频 API。
+	// PurgeToken 与 PurgeLeaseUntil 共同组成多 sweeper 间的围栏租约；
+	// 两个时间戳是每个媒体槽位不可逆的删除检查点。
+	PurgeToken      *string    `gorm:"type:char(32)" json:"-"`
+	PurgeLeaseUntil *time.Time `json:"-"`
+	PlayPurgedAt    *time.Time `json:"-"`
+	CoverPurgedAt   *time.Time `json:"-"`
+
 	// PublishedAt is nil until a draft is actually published.
 	PublishedAt   *time.Time `gorm:"index:idx_videos_published_id,priority:1,sort:desc;index:idx_videos_author_published,priority:2,sort:desc" json:"published_at"`
 	LikesCount    int64      `gorm:"not null;default:0" json:"likes_count"`
@@ -39,6 +49,17 @@ type Video struct {
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
+}
+
+// DraftPurgeClaim 是一个 worker 获得草稿清扫租约后的当前媒体快照。
+// Token 仅在清扫内部传递，后续所有写操作都必须携带它。
+type DraftPurgeClaim struct {
+	DraftID       uint
+	Token         string
+	PlayURL       string
+	PlayPurgedAt  *time.Time
+	CoverURL      string
+	CoverPurgedAt *time.Time
 }
 
 // Cursor 记录列表分页位置
