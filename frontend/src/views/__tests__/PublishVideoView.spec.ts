@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
+import type { Router } from 'vue-router'
 
 import {
   createDraft,
@@ -10,17 +11,17 @@ import {
 } from '@/features/video/api'
 import PublishVideoView from '../PublishVideoView.vue'
 
-const routerReplace = vi.hoisted(() => vi.fn())
+const routerReplace = vi.hoisted(() => vi.fn<Router['replace']>())
 
 vi.mock('vue-router', () => ({
   useRouter: () => ({ replace: routerReplace }),
 }))
 
 vi.mock('@/features/video/api', () => ({
-  createDraft: vi.fn(),
-  publishDraft: vi.fn(),
-  uploadCover: vi.fn(),
-  uploadVideo: vi.fn(),
+  createDraft: vi.fn<typeof createDraft>(),
+  publishDraft: vi.fn<typeof publishDraft>(),
+  uploadCover: vi.fn<typeof uploadCover>(),
+  uploadVideo: vi.fn<typeof uploadVideo>(),
 }))
 
 describe('PublishVideoView', () => {
