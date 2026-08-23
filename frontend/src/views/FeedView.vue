@@ -1,23 +1,28 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
-import { listPublishedVideos, type VideoItem } from '@/features/video/api'
-import { ApiError } from '@/lib/api'
+import { usePublishedFeed } from '@/features/video/usePublishedFeed'
 
 const route = useRoute()
 const router = useRouter()
 const feedElement = ref<HTMLElement>()
-const videos = ref<VideoItem[]>([])
-const nextCursor = ref<string>()
-const isInitialLoading = ref(true)
-const isLoadingMore = ref(false)
-const errorMessage = ref('')
 const publishedMessage = ref('')
-
-const hasMore = computed(() => Boolean(nextCursor.value))
+const {
+  videos,
+  nextCursor,
+  isInitialLoading,
+  isLoadingMore,
+  errorMessage,
+  hasMore,
+  loadFirstPage: loadFeedFirstPage,
+  loadMore: loadFeedMore,
+  dispose,
+} = usePublishedFeed()
 const playerElements = new Map<number, HTMLVideoElement>()
+const visiblePlayerRatios = new Map<number, number>()
 let playerObserver: IntersectionObserver | undefined
+let activePlayerID: number | undefined
 
 function registerPlayer(id: number, element: Element | null) {
   if (element instanceof HTMLVideoElement) {
@@ -25,12 +30,36 @@ function registerPlayer(id: number, element: Element | null) {
     return
   }
   playerElements.delete(id)
+  visiblePlayerRatios.delete(id)
+  if (activePlayerID === id) {
+    activePlayerID = undefined
+  }
 }
 
-function syncPlayback(activeID: number) {
+function pausePlayers() {
+  for (const player of playerElements.values()) {
+    player.pause()
+  }
+}
+
+function pageIsVisible() {
+  return document.visibilityState !== 'hidden'
+}
+
+function syncPlayback(activeID?: number) {
+  activePlayerID = activeID
+  if (!activeID || !pageIsVisible()) {
+    pausePlayers()
+    return
+  }
+
   for (const [id, player] of playerElements) {
     if (id === activeID) {
-      void player.play().catch(() => undefined)
+      void player.play().then(() => {
+        if (activePlayerID !== id || !pageIsVisible()) {
+          player.pause()
+        }
+      }).catch(() => undefined)
     } else {
       player.pause()
     }
@@ -43,17 +72,24 @@ function observePlayers() {
   }
 
   playerObserver?.disconnect()
+  visiblePlayerRatios.clear()
   playerObserver = new IntersectionObserver(
     (entries) => {
-      const active = entries
-        .filter((entry) => entry.isIntersecting)
-        .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0]
-      if (active) {
-        const id = Number((active.target as HTMLElement).dataset.videoId)
-        if (Number.isSafeInteger(id)) {
-          syncPlayback(id)
+      for (const entry of entries) {
+        const id = Number((entry.target as HTMLElement).dataset.videoId)
+        if (!Number.isSafeInteger(id)) {
+          continue
+        }
+        if (entry.isIntersecting) {
+          visiblePlayerRatios.set(id, entry.intersectionRatio)
+        } else {
+          visiblePlayerRatios.delete(id)
         }
       }
+
+      const activeID = [...visiblePlayerRatios.entries()]
+        .sort(([, leftRatio], [, rightRatio]) => rightRatio - leftRatio)[0]?.[0]
+      syncPlayback(activeID)
     },
     { root: feedElement.value, threshold: [0.6, 0.75] },
   )
@@ -64,8 +100,12 @@ function observePlayers() {
   }
 }
 
-function requestErrorMessage(error: unknown) {
-  return error instanceof ApiError ? error.message : '视频加载失败，请检查网络后重试'
+function handleVisibilityChange() {
+  if (!pageIsVisible()) {
+    pausePlayers()
+    return
+  }
+  syncPlayback(activePlayerID)
 }
 
 function publishedVideoID() {
@@ -86,51 +126,31 @@ async function clearPublishedQuery() {
 }
 
 async function loadFirstPage() {
-  isInitialLoading.value = true
-  errorMessage.value = ''
   publishedMessage.value = ''
   const publishedID = publishedVideoID()
-
-  try {
-    const response = await listPublishedVideos()
-    videos.value = response.items
-    nextCursor.value = response.next_cursor
-    if (publishedID) {
-      if (response.items.some((video) => video.id === publishedID)) {
-        publishedMessage.value = '视频已发布'
-      }
-      await clearPublishedQuery()
-    }
-    await nextTick()
-    observePlayers()
-  } catch (error) {
-    videos.value = []
-    nextCursor.value = undefined
-    errorMessage.value = requestErrorMessage(error)
-  } finally {
-    isInitialLoading.value = false
-  }
-}
-
-async function loadMore() {
-  if (!nextCursor.value || isLoadingMore.value) {
+  const response = await loadFeedFirstPage()
+  if (!response) {
     return
   }
 
-  isLoadingMore.value = true
-  errorMessage.value = ''
-
-  try {
-    const response = await listPublishedVideos({ cursor: nextCursor.value })
-    videos.value.push(...response.items)
-    nextCursor.value = response.next_cursor
-    await nextTick()
-    observePlayers()
-  } catch (error) {
-    errorMessage.value = requestErrorMessage(error)
-  } finally {
-    isLoadingMore.value = false
+  if (publishedID) {
+    if (response.items.some((video) => video.id === publishedID)) {
+      publishedMessage.value = '视频已发布'
+    }
+    await clearPublishedQuery()
   }
+  await nextTick()
+  observePlayers()
+}
+
+async function loadMore() {
+  const response = await loadFeedMore()
+  if (!response) {
+    return
+  }
+
+  await nextTick()
+  observePlayers()
 }
 
 function handleScroll(event: Event) {
@@ -149,13 +169,18 @@ function retry() {
   void loadFirstPage()
 }
 
-onMounted(loadFirstPage)
+onMounted(() => {
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  void loadFirstPage()
+})
 
 onBeforeUnmount(() => {
+  dispose()
   playerObserver?.disconnect()
-  for (const player of playerElements.values()) {
-    player.pause()
-  }
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  pausePlayers()
+  playerElements.clear()
+  visiblePlayerRatios.clear()
 })
 </script>
 

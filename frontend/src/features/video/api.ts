@@ -36,6 +36,7 @@ export type ListPublishedVideosOptions = {
   cursor?: string
   limit?: number
   authorID?: number
+  signal?: AbortSignal
 }
 
 export type UploadedVideo = Pick<
@@ -75,6 +76,7 @@ export function listPublishedVideos({
   cursor,
   limit = 12,
   authorID,
+  signal,
 }: ListPublishedVideosOptions = {}) {
   const query = new URLSearchParams({ limit: String(limit) })
   if (cursor) {
@@ -83,7 +85,7 @@ export function listPublishedVideos({
   if (authorID) {
     query.set('author_id', String(authorID))
   }
-  return request<VideoListResponse>(`/api/video?${query.toString()}`)
+  return request<VideoListResponse>(`/api/video?${query.toString()}`, { signal })
 }
 
 export function getPublishedVideo(id: number) {

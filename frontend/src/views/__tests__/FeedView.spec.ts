@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
 import FeedView from '../FeedView.vue'
@@ -20,6 +20,46 @@ const videoItem = {
   author: { id: 7, username: 'runfast', avatar_url: '' },
 }
 
+type ObserverEntry = Pick<IntersectionObserverEntry, 'target' | 'isIntersecting' | 'intersectionRatio'>
+
+class MockIntersectionObserver {
+  static instances: MockIntersectionObserver[] = []
+
+  readonly disconnect = vi.fn<() => void>()
+  readonly observe = vi.fn<(target: Element) => void>()
+
+  constructor(private readonly callback: IntersectionObserverCallback) {
+    MockIntersectionObserver.instances.push(this)
+  }
+
+  trigger(entries: ObserverEntry[]) {
+    this.callback(entries as IntersectionObserverEntry[], this as unknown as IntersectionObserver)
+  }
+}
+
+const cleanupCallbacks: Array<() => void> = []
+const originalVisibilityState = Object.getOwnPropertyDescriptor(document, 'visibilityState')
+
+function setVisibilityState(value: DocumentVisibilityState) {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, value })
+}
+
+function restoreVisibilityState() {
+  if (originalVisibilityState) {
+    Object.defineProperty(document, 'visibilityState', originalVisibilityState)
+    return
+  }
+  Reflect.deleteProperty(document, 'visibilityState')
+}
+
+function currentObserver() {
+  const observer = MockIntersectionObserver.instances[MockIntersectionObserver.instances.length - 1]
+  if (!observer) {
+    throw new Error('expected an IntersectionObserver instance')
+  }
+  return observer
+}
+
 async function mountFeed(path = '/') {
   const router = createRouter({
     history: createMemoryHistory(),
@@ -30,14 +70,28 @@ async function mountFeed(path = '/') {
     ],
   })
   await router.push(path)
-  return {
-    router,
-    wrapper: mount(FeedView, { global: { plugins: [router] } }),
-  }
+  const wrapper = mount(FeedView, { global: { plugins: [router] } })
+  cleanupCallbacks.push(() => {
+    if (wrapper.exists()) {
+      wrapper.unmount()
+    }
+  })
+  return { router, wrapper }
 }
 
 describe('FeedView', () => {
+  beforeEach(() => {
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined)
+  })
+
   afterEach(() => {
+    while (cleanupCallbacks.length) {
+      cleanupCallbacks.pop()?.()
+    }
+    MockIntersectionObserver.instances = []
+    restoreVisibilityState()
+    vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
 
@@ -83,5 +137,83 @@ describe('FeedView', () => {
     expect(wrapper.text()).toContain('清晨骑行')
     expect(wrapper.find('[role="status"]').exists()).toBe(false)
     expect(router.currentRoute.value.query.published).toBeUndefined()
+  })
+
+  it('pauses hidden players and resumes only the active visible player', async () => {
+    const otherVideo = { ...videoItem, id: 8, title: '清晨骑行' }
+    const playMock = vi.mocked(HTMLMediaElement.prototype.play)
+    const pauseMock = vi.mocked(HTMLMediaElement.prototype.pause)
+    setVisibilityState('visible')
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      items: [videoItem, otherVideo],
+    }), {
+      headers: { 'content-type': 'application/json' },
+    })))
+
+    const { wrapper } = await mountFeed()
+    await flushPromises()
+    const players = wrapper.findAll('video').map((player) => player.element as HTMLVideoElement)
+    const firstPlayer = players[0]
+    const secondPlayer = players[1]
+    if (!firstPlayer || !secondPlayer) {
+      throw new Error('expected two video players')
+    }
+    const observer = currentObserver()
+    observer.trigger([
+      { target: firstPlayer, isIntersecting: true, intersectionRatio: 0.8 },
+      { target: secondPlayer, isIntersecting: false, intersectionRatio: 0 },
+    ])
+    await flushPromises()
+    playMock.mockClear()
+    pauseMock.mockClear()
+
+    observer.trigger([{ target: secondPlayer, isIntersecting: false, intersectionRatio: 0 }])
+    await flushPromises()
+    expect(playMock).toHaveBeenCalledTimes(1)
+    expect(playMock.mock.contexts[0]).toBe(firstPlayer)
+    expect(pauseMock).toHaveBeenCalledTimes(1)
+    expect(pauseMock.mock.contexts[0]).toBe(secondPlayer)
+    playMock.mockClear()
+    pauseMock.mockClear()
+
+    setVisibilityState('hidden')
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(pauseMock).toHaveBeenCalledTimes(2)
+
+    playMock.mockClear()
+    pauseMock.mockClear()
+    setVisibilityState('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushPromises()
+
+    expect(playMock).toHaveBeenCalledTimes(1)
+    expect(playMock.mock.contexts[0]).toBe(firstPlayer)
+    expect(pauseMock).toHaveBeenCalledTimes(1)
+    expect(pauseMock.mock.contexts[0]).toBe(secondPlayer)
+  })
+
+  it('pauses when no player is visible and releases player resources on unmount', async () => {
+    const pauseMock = vi.mocked(HTMLMediaElement.prototype.pause)
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      items: [videoItem],
+    }), {
+      headers: { 'content-type': 'application/json' },
+    })))
+
+    const { wrapper } = await mountFeed()
+    await flushPromises()
+    const observer = currentObserver()
+    const player = wrapper.get('video').element as HTMLVideoElement
+    pauseMock.mockClear()
+
+    observer.trigger([{ target: player, isIntersecting: false, intersectionRatio: 0 }])
+    expect(pauseMock).toHaveBeenCalledTimes(1)
+
+    pauseMock.mockClear()
+    wrapper.unmount()
+    expect(observer.disconnect).toHaveBeenCalledTimes(1)
+    expect(pauseMock).toHaveBeenCalledTimes(1)
   })
 })

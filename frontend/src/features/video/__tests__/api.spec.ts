@@ -85,6 +85,7 @@ describe('listPublishedVideos', () => {
   })
 
   it('requests the public feed with its cursor', async () => {
+    const controller = new AbortController()
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -98,11 +99,15 @@ describe('listPublishedVideos', () => {
     )
     vi.stubGlobal('fetch', fetchMock)
 
-    const result = await listPublishedVideos({ cursor: 'current-page', limit: 8 })
+    const result = await listPublishedVideos({
+      cursor: 'current-page',
+      limit: 8,
+      signal: controller.signal,
+    })
 
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/video?limit=8&cursor=current-page',
-      expect.any(Object),
+      expect.objectContaining({ signal: controller.signal }),
     )
     expect(result.next_cursor).toBe('next-page')
   })
