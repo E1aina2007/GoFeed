@@ -22,8 +22,9 @@ import (
 type MediaKind string
 
 const (
-	MediaVideo MediaKind = "videos"
-	MediaCover MediaKind = "covers"
+	MediaVideo  MediaKind = "videos"
+	MediaCover  MediaKind = "covers"
+	MediaAvatar MediaKind = "avatars"
 
 	// MaxVideoSize 视频单文件上限 200MB
 	MaxVideoSize = 200 << 20
@@ -56,7 +57,7 @@ type SavedFile struct {
 }
 
 // MediaStorage 抽象媒体文件保存能力；handler 不直接拼接文件路径
-// 将来替换为 S3/OSS 时，只需更换实现，不改变发布接口
+// 将来替换为 S3/OSS 时，只需更换实现，不改变上传接口
 type MediaStorage interface {
 	Save(ctx context.Context, ownerID uint, kind MediaKind, filename string, src io.Reader) (SavedFile, error)
 }
@@ -147,6 +148,20 @@ func (s *LocalStorage) Save(ctx context.Context, ownerID uint, kind MediaKind, f
 	}, nil
 }
 
+// SaveAvatar 将头像保存到独立的 avatars 目录并返回本地静态地址
+func (s *LocalStorage) SaveAvatar(ctx context.Context, ownerID uint, filename string, src io.Reader) (string, error) {
+	saved, err := s.Save(ctx, ownerID, MediaAvatar, filename, src)
+	if err != nil {
+		return "", err
+	}
+	return saved.PublicURL, nil
+}
+
+// RemoveAvatar 删除头像对象，保持与视频媒体相同的安全路径校验
+func (s *LocalStorage) RemoveAvatar(ctx context.Context, publicURL string) error {
+	return s.Remove(ctx, publicURL)
+}
+
 func newStorageObjectID() (string, error) {
 	value := make([]byte, storageObjectIDBytes)
 	if _, err := rand.Read(value); err != nil {
@@ -183,7 +198,7 @@ func (s *LocalStorage) pathForPublicURL(publicURL string) (string, error) {
 		return "", ErrInvalidMediaPath
 	}
 	kind := MediaKind(parts[0])
-	if kind != MediaVideo && kind != MediaCover {
+	if kind != MediaVideo && kind != MediaCover && kind != MediaAvatar {
 		return "", ErrInvalidMediaPath
 	}
 	if _, err := strconv.ParseUint(parts[1], 10, 64); err != nil {
@@ -357,6 +372,9 @@ func allowedExt(kind MediaKind, ext string) bool {
 		}
 		return false
 	}
+	if kind != MediaCover && kind != MediaAvatar {
+		return false
+	}
 	switch ext {
 	case ".jpg", ".jpeg", ".png", ".webp":
 		return true
@@ -381,7 +399,7 @@ func validateMedia(kind MediaKind, filename string, head []byte) bool {
 			// EBML 头 1A 45 DF A3
 			return len(head) >= 4 && bytes.Equal(head[:4], []byte{0x1A, 0x45, 0xDF, 0xA3})
 		}
-	case MediaCover:
+	case MediaCover, MediaAvatar:
 		switch ext {
 		case ".jpg", ".jpeg":
 			return len(head) >= 3 && bytes.Equal(head[:3], []byte{0xFF, 0xD8, 0xFF})

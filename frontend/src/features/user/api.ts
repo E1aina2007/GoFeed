@@ -56,6 +56,17 @@ export function updatePassword(oldPassword: string, newPassword: string) {
   })
 }
 
+export async function uploadAvatar(file: File) {
+  const form = new FormData()
+  form.append('file', file)
+  const response = await authenticatedRequest<{ avatar_url: string }>('/api/user/auth/avatar', {
+    method: 'POST',
+    body: form,
+  })
+  updateCurrentUser({ avatar_url: response.avatar_url })
+  return response
+}
+
 export async function updateProfile(profile: { avatar_url?: string; bio?: string }) {
   const response = await authenticatedRequest<{ message: string }>('/api/user/auth/profile', {
     method: 'PATCH',

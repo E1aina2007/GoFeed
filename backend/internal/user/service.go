@@ -103,19 +103,23 @@ func (s *Service) Authenticate(ctx context.Context, username, password string) (
 }
 
 func (s *Service) UpdateAvatar(ctx context.Context, id uint, url string) error {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return ErrInvalidInput
+	}
 	return s.Repo.UpdateAvatar(ctx, id, url)
 }
 
 func (s *Service) UpdateProfile(ctx context.Context, id uint, req *UpdateProfileRequest) error {
 	updates := map[string]any{}
-	if req.Bio != "" {
-		updates["bio"] = strings.TrimSpace(req.Bio)
+	if bio := strings.TrimSpace(req.Bio); bio != "" {
+		updates["bio"] = bio
 	}
-	if req.AvatarURL != "" {
-		updates["avatar_url"] = strings.TrimSpace(req.AvatarURL)
+	if avatarURL := strings.TrimSpace(req.AvatarURL); avatarURL != "" {
+		updates["avatar_url"] = avatarURL
 	}
 	if len(updates) == 0 {
-		return errors.New("nothing to update")
+		return ErrNothingToUpdate
 	}
 	return s.Repo.UpdateFields(ctx, id, updates)
 }

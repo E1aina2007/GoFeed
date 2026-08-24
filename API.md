@@ -27,6 +27,7 @@
 | POST | `/api/user/auth/logout` | 是 | 退出当前会话 |
 | PATCH | `/api/user/auth/name` | 是 | 修改用户名 |
 | PATCH | `/api/user/auth/password` | 是 | 修改密码并撤销全部会话 |
+| POST | `/api/user/auth/avatar` | 是 | 上传并更新头像 |
 | PATCH | `/api/user/auth/profile` | 是 | 修改个人资料 |
 | DELETE | `/api/user/auth` | 是 | 注销当前账号 |
 | GET | `/api/video` | 否 | 查询公开视频流 |
@@ -46,7 +47,7 @@
 {
   "id": 42,
   "username": "alice",
-  "avatar_url": "/static/covers/42/avatar.png",
+  "avatar_url": "/static/avatars/42/20260824/avatar.png",
   "bio": "视频创作者"
 }
 ```
@@ -88,7 +89,7 @@
   "author": {
     "id": 42,
     "username": "alice",
-    "avatar_url": "/static/covers/42/avatar.png"
+    "avatar_url": "/static/avatars/42/20260824/avatar.png"
   }
 }
 ```
@@ -206,7 +207,7 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
     {
       "id": 42,
       "username": "alice",
-      "avatar_url": "/static/covers/42/avatar.png",
+      "avatar_url": "/static/avatars/42/20260824/avatar.png",
       "bio": "视频创作者"
     }
   ]
@@ -228,7 +229,7 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
   "user": {
     "id": 42,
     "username": "alice",
-    "avatar_url": "/static/covers/42/avatar.png",
+    "avatar_url": "/static/avatars/42/20260824/avatar.png",
     "bio": "视频创作者"
   }
 }
@@ -249,7 +250,7 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
   "account": {
     "id": 42,
     "username": "alice",
-    "avatar_url": "/static/covers/42/avatar.png",
+    "avatar_url": "/static/avatars/42/20260824/avatar.png",
     "bio": "视频创作者"
   },
   "video_count": 3,
@@ -327,6 +328,24 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 
 常见失败：`400` 请求体或新密码不合法，`401` 未认证，`403` 旧密码错误。
 
+### 上传头像
+
+`POST /api/user/auth/avatar`
+
+请求使用 `multipart/form-data`，文件字段名为 `file`。
+
+支持 JPG、JPEG、PNG、WebP，单文件最大 10 MiB。当前默认实现将文件保存到本地 `/static/avatars/{user_id}/{yyyyMMdd}/` 目录，并返回相对地址；存储抽象保留替换为 OSS 等对象存储的能力。
+
+成功响应：`201 Created`
+
+```json
+{
+  "avatar_url": "/static/avatars/42/20260824/avatar.png"
+}
+```
+
+常见失败：`400` 文件格式或表单不合法，`401` 未认证，`413` 文件超过大小限制。
+
 ### 修改个人资料
 
 `PATCH /api/user/auth/profile`
@@ -335,17 +354,16 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 
 ```json
 {
-  "avatar_url": "/static/covers/42/avatar.png",
   "bio": "视频创作者"
 }
 ```
 
 | 字段 | 类型 | 必填 | 约束 |
 | --- | --- | --- | --- |
-| `avatar_url` | string | 否 | 最多 512 个字符 |
+| `avatar_url` | string | 否 | 最多 512 个字符，保留对象存储 URL 兼容能力 |
 | `bio` | string | 否 | 最多 255 个字符 |
 
-空字符串不会更新对应字段，因此该接口当前不能清空头像或简介。
+新前端通过头像上传接口更新头像；`avatar_url` 仍可由对象存储客户端直接提交。空字符串不会更新对应字段，因此该接口当前不能清空头像或简介。
 
 成功响应：`200 OK`
 

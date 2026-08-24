@@ -56,7 +56,8 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	sessionService := auth.NewSessionService(auth.NewSessionRepository(db))
 	userRepo := user.NewRepository(db)
 	videoRepo := video.NewRepository(db)
-	userCtl := user.NewController(user.NewService(userRepo, videoRepo), sessionService)
+	mediaStorage := video.NewLocalStorage(uploadDir)
+	userCtl := user.NewController(user.NewService(userRepo, videoRepo), sessionService, mediaStorage)
 
 	api := r.Group("/api")
 	users := api.Group("/user")
@@ -73,6 +74,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		protectedUsers.POST("/logout", userCtl.Logout)
 		protectedUsers.PATCH("/name", userCtl.UpdateName)
 		protectedUsers.PATCH("/password", userCtl.UpdatePassword)
+		protectedUsers.POST("/avatar", userCtl.UploadAvatar)
 		protectedUsers.PATCH("/profile", userCtl.UpdateProfile)
 		protectedUsers.DELETE("", userCtl.DeleteUser)
 	}
@@ -80,7 +82,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	// 视频路由的公开读取和认证写入操作使用不同分组
 	videoCtl := video.NewController(
 		video.NewService(videoRepo, video.NewUserAuthorReader(userRepo)),
-		video.NewLocalStorage(uploadDir),
+		mediaStorage,
 	)
 	videos := api.Group("/video")
 	videos.GET("", videoCtl.ListVideos)

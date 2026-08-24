@@ -25,6 +25,7 @@ func TestUserRouteGroups(t *testing.T) {
 		"POST /api/user/auth/logout",
 		"PATCH /api/user/auth/name",
 		"PATCH /api/user/auth/password",
+		"POST /api/user/auth/avatar",
 		"PATCH /api/user/auth/profile",
 		"DELETE /api/user/auth",
 		"GET /api/video",

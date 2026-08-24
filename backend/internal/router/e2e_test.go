@@ -217,6 +217,53 @@ func uploadMedia(t *testing.T, client *http.Client, base, token, path, field, fi
 	return out
 }
 
+// 测试目标：构造认证头像上传请求
+// 预期效果：返回服务端生成的本地头像地址
+func uploadAvatar(t *testing.T, client *http.Client, base, token, filename string, content []byte, wantStatus int) string {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatalf("创建头像表单文件失败: %v", err)
+	}
+	if _, err := fw.Write(content); err != nil {
+		t.Fatalf("写入头像表单失败: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("关闭头像表单失败: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, base+"/api/user/auth/avatar", &buf)
+	if err != nil {
+		t.Fatalf("构造头像上传请求失败: %v", err)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("头像上传请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != wantStatus {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("头像上传 status got=%d want=%d body=%s", resp.StatusCode, wantStatus, data)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		return ""
+	}
+	var out struct {
+		AvatarURL string `json:"avatar_url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("解析头像上传响应失败: %v", err)
+	}
+	return out.AvatarURL
+}
+
 // 测试目标：创建视频草稿
 // 预期效果：返回仅包含客户端可编辑元数据的草稿标识
 func createDraft(t *testing.T, client *http.Client, base, token, title, description string, wantStatus int) draftItem {
@@ -411,6 +458,67 @@ func TestUserProfileVideoCount(t *testing.T) {
 
 	doJSON(t, client, http.MethodDelete, base+"/api/user/auth", sess.AccessToken, nil, http.StatusNoContent, nil)
 	doJSON(t, client, http.MethodGet, profileURL, "", nil, http.StatusNotFound, nil)
+}
+
+// 测试目标：验证头像上传、公开读取和旧对象清理的完整流程
+// 预期效果：头像落盘到当前用户目录，替换后旧对象不可读取，外部 URL 更新保持兼容
+func TestUserAvatarUploadFlow(t *testing.T) {
+	srv, client := newTestServer(t)
+	base := srv.URL
+
+	const username = "avatar_upload_author"
+	const password = "avatar-upload-password-123"
+	register(t, client, base, username, password)
+	sess := login(t, client, base, username, password)
+
+	firstURL := uploadAvatar(t, client, base, sess.AccessToken, "第一张头像.png", pngBytes, http.StatusCreated)
+	prefix := fmt.Sprintf("/static/avatars/%d/", sess.UserID)
+	if !strings.HasPrefix(firstURL, prefix) {
+		t.Fatalf("头像地址未归属当前用户 got=%s want prefix=%s", firstURL, prefix)
+	}
+	resp, err := client.Get(base + firstURL)
+	if err != nil {
+		t.Fatalf("读取头像静态文件失败: %v", err)
+	}
+	firstBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !bytes.Equal(firstBody, pngBytes) {
+		t.Fatalf("头像静态文件内容不一致 status=%d body=%v", resp.StatusCode, firstBody)
+	}
+
+	var profile struct {
+		Account struct {
+			AvatarURL string `json:"avatar_url"`
+		} `json:"account"`
+	}
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/user/%d/profile", base, sess.UserID), "", nil, http.StatusOK, &profile)
+	if profile.Account.AvatarURL != firstURL {
+		t.Fatalf("公开资料未返回当前头像 got=%s want=%s", profile.Account.AvatarURL, firstURL)
+	}
+
+	secondURL := uploadAvatar(t, client, base, sess.AccessToken, "第二张头像.png", pngBytes, http.StatusCreated)
+	if secondURL == firstURL {
+		t.Fatalf("替换头像应生成不可复用的新对象地址 got=%s", secondURL)
+	}
+	oldResp, err := client.Get(base + firstURL)
+	if err != nil {
+		t.Fatalf("读取旧头像地址失败: %v", err)
+	}
+	oldResp.Body.Close()
+	if oldResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("替换后旧头像应不可读取 status=%d", oldResp.StatusCode)
+	}
+
+	doJSON(t, client, http.MethodPatch, base+"/api/user/auth/profile", sess.AccessToken, map[string]string{
+		"avatar_url": "https://oss.example.com/avatar.png",
+		"bio":        "兼容对象存储用户",
+	}, http.StatusOK, nil)
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/user/%d/profile", base, sess.UserID), "", nil, http.StatusOK, &profile)
+	if profile.Account.AvatarURL != "https://oss.example.com/avatar.png" {
+		t.Fatalf("对象存储 URL 兼容更新失败 got=%s", profile.Account.AvatarURL)
+	}
+	uploadAvatar(t, client, base, sess.AccessToken, "avatar.txt", pngBytes, http.StatusBadRequest)
+	uploadAvatar(t, client, base, "", "anonymous.png", pngBytes, http.StatusUnauthorized)
 }
 
 // 测试目标：验证所有受保护的视频接口均要求有效认证

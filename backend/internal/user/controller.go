@@ -2,8 +2,10 @@ package user
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	authn "gofeed/internal/auth"
 	"gofeed/internal/middleware/jwt"
@@ -13,12 +15,17 @@ import (
 )
 
 type Controller struct {
-	Srv      *Service
-	Sessions *authn.SessionService
+	Srv           *Service
+	Sessions      *authn.SessionService
+	AvatarStorage AvatarStorage
 }
 
-func NewController(srv *Service, sessions *authn.SessionService) *Controller {
-	return &Controller{Srv: srv, Sessions: sessions}
+func NewController(srv *Service, sessions *authn.SessionService, avatarStorage ...AvatarStorage) *Controller {
+	var storage AvatarStorage
+	if len(avatarStorage) > 0 {
+		storage = avatarStorage[0]
+	}
+	return &Controller{Srv: srv, Sessions: sessions, AvatarStorage: storage}
 }
 
 func getPathID(c *gin.Context) (uint, error) {
@@ -196,6 +203,74 @@ func (ctl *Controller) UpdateProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "profile updated successfully"})
 }
 
+// UploadAvatar 处理 POST /api/user/auth/avatar
+func (ctl *Controller) UploadAvatar(c *gin.Context) {
+	userID, ok := currentUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		return
+	}
+	if ctl.AvatarStorage == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "avatar storage unavailable"})
+		return
+	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxAvatarRequestSize())
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": ErrAvatarTooLarge.Error()})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid avatar upload payload"})
+		return
+	}
+	defer file.Close()
+
+	if header.Size <= 0 || header.Size > MaxAvatarSize {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": ErrAvatarTooLarge.Error()})
+		return
+	}
+
+	head := make([]byte, 512)
+	n, err := io.ReadFull(file, head)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read avatar upload"})
+		return
+	}
+	if !validateAvatar(header.Filename, head[:n]) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": ErrInvalidAvatar.Error()})
+		return
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read avatar upload"})
+		return
+	}
+
+	current, err := ctl.Srv.GetByID(c.Request.Context(), userID)
+	if err != nil {
+		handleUserError(c, err)
+		return
+	}
+	avatarURL, err := ctl.AvatarStorage.SaveAvatar(c.Request.Context(), userID, strings.TrimSpace(header.Filename), file)
+	if err != nil {
+		handleUserError(c, err)
+		return
+	}
+	if err := ctl.Srv.UpdateAvatar(c.Request.Context(), userID, avatarURL); err != nil {
+		_ = ctl.AvatarStorage.RemoveAvatar(c.Request.Context(), avatarURL)
+		handleUserError(c, err)
+		return
+	}
+	if current.AvatarURL != "" && current.AvatarURL != avatarURL {
+		// 旧头像清理失败不影响已提交的新头像，具体存储实现决定是否可回收旧对象
+		_ = ctl.AvatarStorage.RemoveAvatar(c.Request.Context(), current.AvatarURL)
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"avatar_url": avatarURL})
+}
+
 // 处理账号注销请求
 func (ctl *Controller) DeleteUser(c *gin.Context) {
 	userID, ok := currentUserID(c)
@@ -251,8 +326,11 @@ func handleLoginError(c *gin.Context, err error) {
 
 func handleUserError(c *gin.Context, err error) {
 	switch {
-	case errors.Is(err, ErrNewUserNameRequired), errors.Is(err, ErrInvalidInput):
+	case errors.Is(err, ErrNewUserNameRequired), errors.Is(err, ErrInvalidInput),
+		errors.Is(err, ErrNothingToUpdate), errors.Is(err, ErrInvalidAvatar):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	case errors.Is(err, ErrAvatarTooLarge):
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": err.Error()})
 	case errors.Is(err, ErrUsernameTaken):
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 	case errors.Is(err, ErrWrongPassword):

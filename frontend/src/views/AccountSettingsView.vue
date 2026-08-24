@@ -1,16 +1,18 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { clearSession, currentUser } from '@/features/auth/session'
-import { deleteAccount, updateName, updatePassword, updateProfile } from '@/features/user/api'
+import { deleteAccount, updateName, updatePassword, updateProfile, uploadAvatar } from '@/features/user/api'
 import { ApiError } from '@/lib/api'
 import { useToastStore } from '@/stores/toast'
 
 const router = useRouter()
 const toast = useToastStore()
 const name = ref(currentUser.value?.username ?? '')
-const avatarURL = ref(currentUser.value?.avatar_url ?? '')
+const avatarInput = ref<HTMLInputElement>()
+const avatarFile = ref<File>()
+const avatarPreviewURL = ref('')
 const bio = ref(currentUser.value?.bio ?? '')
 const oldPassword = ref('')
 const newPassword = ref('')
@@ -23,6 +25,46 @@ const isSavingName = ref(false)
 const isSavingProfile = ref(false)
 const isSavingPassword = ref(false)
 const isDeleting = ref(false)
+const avatarSource = computed(() => avatarPreviewURL.value || currentUser.value?.avatar_url || '')
+
+const avatarInitial = computed(() => currentUser.value?.username.slice(0, 1).toUpperCase() || '?')
+
+function releaseAvatarPreview() {
+  if (avatarPreviewURL.value) {
+    if (typeof URL.revokeObjectURL === 'function') {
+      URL.revokeObjectURL(avatarPreviewURL.value)
+    }
+    avatarPreviewURL.value = ''
+  }
+}
+
+function selectAvatar(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  errorMessage.value = ''
+  avatarFile.value = undefined
+  releaseAvatarPreview()
+
+  if (!file) {
+    return
+  }
+  const extension = file.name.toLowerCase().split('.').pop()
+  if (!extension || !['jpg', 'jpeg', 'png', 'webp'].includes(extension)) {
+    errorMessage.value = '头像只支持 JPG、PNG 或 WebP 图片'
+    input.value = ''
+    return
+  }
+  if (file.size <= 0 || file.size > 10 * 1024 * 1024) {
+    errorMessage.value = '头像文件不能超过 10 MiB'
+    input.value = ''
+    return
+  }
+
+  avatarFile.value = file
+  if (typeof URL.createObjectURL === 'function') {
+    avatarPreviewURL.value = URL.createObjectURL(file)
+  }
+}
 
 function messageFor(error: unknown, fallback: string) {
   return error instanceof ApiError ? error.message : fallback
@@ -51,20 +93,29 @@ async function saveName() {
 async function saveProfile() {
   profileMessage.value = ''
   errorMessage.value = ''
-  if (!avatarURL.value.trim() && !bio.value.trim()) {
-    errorMessage.value = '请至少填写头像地址或个人简介'
+  if (!avatarFile.value && !bio.value.trim()) {
+    errorMessage.value = '请选择头像文件或填写个人简介'
     return
   }
   isSavingProfile.value = true
+  let avatarUploaded = false
   try {
-    await updateProfile({
-      ...(avatarURL.value.trim() ? { avatar_url: avatarURL.value.trim() } : {}),
-      ...(bio.value.trim() ? { bio: bio.value.trim() } : {}),
-    })
+    if (avatarFile.value) {
+      await uploadAvatar(avatarFile.value)
+      avatarUploaded = true
+      avatarFile.value = undefined
+      releaseAvatarPreview()
+      if (avatarInput.value) {
+        avatarInput.value.value = ''
+      }
+    }
+    if (bio.value.trim()) {
+      await updateProfile({ bio: bio.value.trim() })
+    }
     profileMessage.value = '个人资料已更新'
     toast.success('个人资料已更新')
   } catch (error) {
-    errorMessage.value = messageFor(error, '资料更新失败，请稍后重试')
+    errorMessage.value = messageFor(error, avatarUploaded ? '头像已更新，但简介保存失败，请稍后重试' : '资料更新失败，请稍后重试')
     toast.error(errorMessage.value)
   } finally {
     isSavingProfile.value = false
@@ -110,6 +161,8 @@ async function removeAccount() {
     isDeleting.value = false
   }
 }
+
+onBeforeUnmount(releaseAvatarPreview)
 </script>
 
 <template>
@@ -136,15 +189,28 @@ async function removeAccount() {
     <section class="settings-section">
       <h2>公开资料</h2>
       <form class="settings-form" @submit.prevent="saveProfile">
-        <label class="form-field">
-          <span>头像地址</span>
-          <input v-model="avatarURL" type="url" maxlength="512" placeholder="https://...">
-        </label>
+        <div class="avatar-editor">
+          <div class="avatar-preview">
+            <img v-if="avatarSource" :src="avatarSource" :alt="`${currentUser?.username || '用户'} 的头像预览`">
+            <span v-else>{{ avatarInitial }}</span>
+          </div>
+          <label class="file-field">
+            <span>头像文件</span>
+            <input
+              ref="avatarInput"
+              accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+              type="file"
+              :disabled="isSavingProfile"
+              @change="selectAvatar"
+            >
+            <small>JPG、PNG 或 WebP，最大 10 MiB；当前使用本地媒体存储</small>
+          </label>
+        </div>
         <label class="form-field">
           <span>个人简介</span>
-          <textarea v-model="bio" maxlength="255" rows="4"></textarea>
+          <textarea v-model="bio" maxlength="255" rows="4" :disabled="isSavingProfile"></textarea>
         </label>
-        <p class="form-hint">当前接口只更新非空字段，暂不支持清空已有资料。</p>
+        <p class="form-hint">头像通过文件上传更新；对象存储 URL 仍保留接口兼容能力。</p>
         <button class="primary-action" type="submit" :disabled="isSavingProfile">{{ isSavingProfile ? '保存中' : '保存资料' }}</button>
         <p v-if="profileMessage" class="success-message" role="status">{{ profileMessage }}</p>
       </form>
@@ -235,6 +301,59 @@ async function removeAccount() {
   margin-top: 18px;
 }
 
+.avatar-editor {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+}
+
+.avatar-preview {
+  display: grid;
+  width: 76px;
+  height: 76px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid #b8c0bd;
+  border-radius: 50%;
+  color: #ffffff;
+  background: var(--accent);
+  font-size: 1.5rem;
+  font-weight: 750;
+}
+
+.avatar-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.file-field {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ink-strong);
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.file-field input {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid #b8c0bd;
+  border-radius: 4px;
+  padding: 8px;
+  color: var(--ink-strong);
+  background: #ffffff;
+}
+
+.file-field small {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
 .form-field {
   display: grid;
   gap: 8px;
@@ -307,6 +426,10 @@ async function removeAccount() {
   .settings-page {
     min-height: calc(100dvh - 56px);
     padding: 24px 12px 40px;
+  }
+
+  .avatar-editor {
+    grid-template-columns: 1fr;
   }
 }
 </style>

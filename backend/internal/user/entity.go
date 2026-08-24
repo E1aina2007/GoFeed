@@ -53,6 +53,7 @@ type UpdatePasswordRequest struct {
 }
 
 type UpdateProfileRequest struct {
+	// AvatarURL 保留对象存储等外部存储实现的兼容能力，当前前端优先使用头像上传接口
 	AvatarURL string `json:"avatar_url" binding:"omitempty,max=512"`
 	Bio       string `json:"bio" binding:"omitempty,max=255"`
 }
