@@ -16,6 +16,22 @@
   --media-fallback: #1e2528;
 }
 
+.content-page--dark {
+  --content-bg: #101415;
+  --content-surface: #182020;
+  --content-surface-raised: #202b2a;
+  --content-border: #2b3a38;
+  --content-border-strong: #3a504c;
+  --content-ink: #edf2f0;
+  --content-muted: #a4b5b1;
+  --content-subtle: #7f938e;
+  --content-accent: #55d2b4;
+  --content-accent-strong: #35b795;
+  --content-danger: #f0a096;
+  color: var(--content-ink);
+  background: var(--content-bg);
+}
+
 * {
   box-sizing: border-box;
 }

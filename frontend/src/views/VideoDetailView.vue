@@ -38,7 +38,7 @@ onMounted(load)
 </script>
 
 <template>
-  <main class="content-page detail-page">
+  <main class="content-page content-page--dark detail-page">
     <div class="page-toolbar">
       <RouterLink class="back-link" :to="{ name: 'feed' }">返回 Feed</RouterLink>
     </div>
@@ -67,12 +67,18 @@ onMounted(load)
 .content-page {
   min-height: calc(100dvh - 64px);
   padding: 32px 16px 64px;
-  background: #f3f5f4;
+  background: var(--content-bg);
 }
 
 .detail-page {
+  width: 100%;
+}
+
+.page-toolbar,
+.detail-content {
   width: min(100%, 980px);
-  margin: 0 auto;
+  margin-right: auto;
+  margin-left: auto;
 }
 
 .page-toolbar {
@@ -81,22 +87,31 @@ onMounted(load)
 
 .back-link,
 .author-link {
-  color: var(--accent-strong);
+  color: var(--content-accent);
   font-weight: 700;
+}
+
+.back-link {
+  text-decoration: none;
+}
+
+.back-link:hover,
+.author-link:hover {
+  color: var(--content-ink);
 }
 
 .detail-content {
   overflow: hidden;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--content-border);
   border-radius: 8px;
-  background: var(--surface);
+  background: var(--content-surface);
 }
 
 .detail-player {
   display: block;
   width: 100%;
   max-height: 70dvh;
-  background: #000000;
+  background: #080b0c;
 }
 
 .detail-copy {
@@ -105,32 +120,38 @@ onMounted(load)
 
 .detail-copy h1 {
   margin: 0 0 10px;
-  color: var(--ink-strong);
+  color: var(--content-ink);
   font-size: 1.5rem;
 }
 
 .detail-copy p {
-  color: var(--ink-muted);
+  color: var(--content-muted);
   line-height: 1.6;
 }
 
 .detail-copy small {
-  color: var(--ink-subtle);
+  color: var(--content-subtle);
 }
 
 .state-message {
   padding: 64px 20px;
-  color: var(--ink-muted);
+  color: var(--content-muted);
   text-align: center;
 }
 
 .secondary-action {
-  border: 1px solid var(--accent-strong);
-  border-radius: 4px;
+  min-height: 36px;
+  border: 1px solid var(--content-border-strong);
+  border-radius: 6px;
   padding: 8px 14px;
-  color: var(--accent-strong);
-  background: var(--surface);
+  color: var(--content-accent);
+  background: var(--content-surface);
   cursor: pointer;
+}
+
+.secondary-action:hover {
+  border-color: var(--content-accent-strong);
+  background: var(--content-surface-raised);
 }
 
 @media (max-width: 640px) {

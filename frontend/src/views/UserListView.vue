@@ -25,7 +25,7 @@ onMounted(load)
 </script>
 
 <template>
-  <main class="content-page">
+  <main class="content-page content-page--dark">
     <header class="page-header">
       <div>
         <p class="eyebrow">社区</p>
@@ -57,7 +57,7 @@ onMounted(load)
 .content-page {
   min-height: calc(100dvh - 64px);
   padding: 36px 16px 64px;
-  background: #f3f5f4;
+  background: var(--content-bg);
 }
 
 .page-header,
@@ -72,14 +72,14 @@ onMounted(load)
 
 .eyebrow {
   margin: 0 0 6px;
-  color: var(--accent-strong);
+  color: var(--content-accent);
   font-size: 0.86rem;
   font-weight: 750;
 }
 
 .page-header h1 {
   margin: 0;
-  color: var(--ink-strong);
+  color: var(--content-ink);
   font-size: 1.7rem;
 }
 
@@ -87,10 +87,25 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 14px;
-  border-bottom: 1px solid var(--border-subtle);
-  padding: 16px 0;
+  min-height: 76px;
+  border: 1px solid var(--content-border);
+  border-radius: 8px;
+  margin-top: 10px;
+  padding: 12px 14px;
   color: inherit;
   text-decoration: none;
+  background: var(--content-surface);
+  transition: border-color 160ms ease, background-color 160ms ease, transform 160ms ease;
+}
+
+.user-item:first-child {
+  margin-top: 0;
+}
+
+.user-item:hover {
+  border-color: var(--content-border-strong);
+  background: var(--content-surface-raised);
+  transform: translateY(-1px);
 }
 
 .user-avatar {
@@ -102,7 +117,7 @@ onMounted(load)
   overflow: hidden;
   border-radius: 50%;
   color: #ffffff;
-  background: var(--accent);
+  background: var(--content-accent-strong);
   font-weight: 700;
 }
 
@@ -119,12 +134,12 @@ onMounted(load)
 }
 
 .user-copy strong {
-  color: var(--ink-strong);
+  color: var(--content-ink);
 }
 
 .user-copy small {
   overflow: hidden;
-  color: var(--ink-muted);
+  color: var(--content-muted);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -133,7 +148,7 @@ onMounted(load)
   width: min(100%, 760px);
   margin: 0 auto;
   padding: 52px 20px;
-  color: var(--ink-muted);
+  color: var(--content-muted);
   text-align: center;
 }
 
@@ -142,12 +157,18 @@ onMounted(load)
 }
 
 .secondary-action {
-  border: 1px solid var(--accent-strong);
-  border-radius: 4px;
+  min-height: 36px;
+  border: 1px solid var(--content-border-strong);
+  border-radius: 6px;
   padding: 8px 14px;
-  color: var(--accent-strong);
-  background: var(--surface);
+  color: var(--content-accent);
+  background: var(--content-surface);
   cursor: pointer;
+}
+
+.secondary-action:hover {
+  border-color: var(--content-accent-strong);
+  background: var(--content-surface-raised);
 }
 
 @media (max-width: 640px) {

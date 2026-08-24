@@ -71,7 +71,7 @@ onMounted(load)
 </script>
 
 <template>
-  <main class="content-page">
+  <main class="content-page content-page--dark">
     <div class="page-toolbar">
       <RouterLink class="back-link" :to="{ name: 'user-list' }">返回用户</RouterLink>
     </div>
@@ -113,7 +113,7 @@ onMounted(load)
 .content-page {
   min-height: calc(100dvh - 64px);
   padding: 32px 16px 64px;
-  background: #f3f5f4;
+  background: var(--content-bg);
 }
 
 .page-toolbar,
@@ -129,8 +129,13 @@ onMounted(load)
 }
 
 .back-link {
-  color: var(--accent-strong);
+  color: var(--content-accent);
   font-weight: 700;
+  text-decoration: none;
+}
+
+.back-link:hover {
+  color: var(--content-ink);
 }
 
 .profile-header {
@@ -138,8 +143,10 @@ onMounted(load)
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 22px;
-  border-bottom: 1px solid var(--border-subtle);
-  padding: 10px 0 28px;
+  border: 1px solid var(--content-border);
+  border-radius: 8px;
+  padding: 20px;
+  background: var(--content-surface);
 }
 
 .profile-avatar {
@@ -150,7 +157,7 @@ onMounted(load)
   overflow: hidden;
   border-radius: 50%;
   color: #ffffff;
-  background: var(--accent);
+  background: var(--content-accent-strong);
   font-size: 1.8rem;
   font-weight: 700;
 }
@@ -169,13 +176,13 @@ onMounted(load)
 
 .profile-copy h1 {
   margin-bottom: 8px;
-  color: var(--ink-strong);
+  color: var(--content-ink);
   font-size: 1.45rem;
 }
 
 .profile-copy p {
   margin-bottom: 0;
-  color: var(--ink-muted);
+  color: var(--content-muted);
   line-height: 1.5;
 }
 
@@ -191,13 +198,13 @@ onMounted(load)
 }
 
 .profile-stats dt {
-  color: var(--ink-muted);
+  color: var(--content-subtle);
   font-size: 0.8rem;
 }
 
 .profile-stats dd {
   margin: 5px 0 0;
-  color: var(--ink-strong);
+  color: var(--content-ink);
   font-size: 1.1rem;
   font-weight: 700;
 }
@@ -207,23 +214,29 @@ onMounted(load)
 }
 
 .profile-videos h2 {
-  color: var(--ink-strong);
+  color: var(--content-ink);
   font-size: 1.2rem;
 }
 
 .state-message {
   padding: 52px 20px;
-  color: var(--ink-muted);
+  color: var(--content-muted);
   text-align: center;
 }
 
 .secondary-action {
-  border: 1px solid var(--accent-strong);
-  border-radius: 4px;
+  min-height: 36px;
+  border: 1px solid var(--content-border-strong);
+  border-radius: 6px;
   padding: 8px 14px;
-  color: var(--accent-strong);
-  background: var(--surface);
+  color: var(--content-accent);
+  background: var(--content-surface);
   cursor: pointer;
+}
+
+.secondary-action:hover {
+  border-color: var(--content-accent-strong);
+  background: var(--content-surface-raised);
 }
 
 .secondary-action:disabled {
@@ -237,7 +250,7 @@ onMounted(load)
 }
 
 .inline-error {
-  color: #ae2c20;
+  color: var(--content-danger);
 }
 
 @media (max-width: 640px) {
@@ -249,6 +262,7 @@ onMounted(load)
   .profile-header {
     grid-template-columns: auto minmax(0, 1fr);
     gap: 14px;
+    padding: 16px;
   }
 
   .profile-stats {
