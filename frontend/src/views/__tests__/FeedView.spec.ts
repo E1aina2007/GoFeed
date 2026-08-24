@@ -139,6 +139,33 @@ describe('FeedView', () => {
     expect(router.currentRoute.value.query.published).toBeUndefined()
   })
 
+  it('retries a failed published return before clearing its one-time query parameter', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: '服务暂不可用' }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [videoItem] }), {
+        headers: { 'content-type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { router, wrapper } = await mountFeed('/?published=7')
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('服务暂不可用')
+    expect(router.currentRoute.value.query.published).toBe('7')
+
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('[role="status"]').text()).toBe('视频已发布')
+    expect(wrapper.get('video').attributes('src')).toBe('/static/videos/7/night-run.mp4')
+    expect(router.currentRoute.value.query.published).toBeUndefined()
+  })
+
   it('pauses hidden players and resumes only the active visible player', async () => {
     const otherVideo = { ...videoItem, id: 8, title: '清晨骑行' }
     const playMock = vi.mocked(HTMLMediaElement.prototype.play)

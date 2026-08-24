@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -241,6 +242,16 @@ func publishDraft(t *testing.T, client *http.Client, base, token string, draftID
 	return out.Video
 }
 
+// 测试目标：构造已上传完整媒体的公开视频
+// 预期效果：Feed 回归用例只关注公开读取行为，不重复展开上传细节
+func publishCompleteVideo(t *testing.T, client *http.Client, base, token, title string) videoItem {
+	t.Helper()
+	draft := createDraft(t, client, base, token, title, "", http.StatusCreated)
+	uploadMedia(t, client, base, token, fmt.Sprintf("/api/video/auth/drafts/%d/play", draft.ID), "file", "feed.mp4", mp4Bytes, http.StatusCreated)
+	uploadMedia(t, client, base, token, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draft.ID), "file", "feed.png", pngBytes, http.StatusCreated)
+	return publishDraft(t, client, base, token, draft.ID, http.StatusCreated)
+}
+
 // 测试目标：验证视频从上传、发布、读取到删除的完整流程
 // 预期效果：媒体可访问，多个读取接口返回一致数据，删除后公开详情不可读取
 func TestVideoEndToEndFlow(t *testing.T) {
@@ -319,6 +330,49 @@ func TestVideoEndToEndFlow(t *testing.T) {
 	// 作者删除视频后读取详情，预期返回未找到状态
 	doJSON(t, client, http.MethodDelete, fmt.Sprintf("%s/api/video/auth/%d", base, item.ID), sess.AccessToken, nil, http.StatusNoContent, nil)
 	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, item.ID), "", nil, http.StatusNotFound, nil)
+}
+
+// 测试目标：验证公开 Feed 的游标分页、草稿过滤和软删除可见性
+// 预期效果：最新发布的视频优先返回，下一页不重复，草稿和软删除视频不会公开
+func TestFeedRegressionCursorAndSoftDelete(t *testing.T) {
+	srv, client := newTestServer(t)
+	base := srv.URL
+
+	register(t, client, base, "feed_regression", "feed-regression-password-123")
+	sess := login(t, client, base, "feed_regression", "feed-regression-password-123")
+	older := publishCompleteVideo(t, client, base, sess.AccessToken, "较早发布的视频")
+	newer := publishCompleteVideo(t, client, base, sess.AccessToken, "较新发布的视频")
+	createDraft(t, client, base, sess.AccessToken, "不应公开的草稿", "", http.StatusCreated)
+
+	var firstPage struct {
+		Items      []videoItem `json:"items"`
+		NextCursor string      `json:"next_cursor"`
+	}
+	doJSON(t, client, http.MethodGet, base+"/api/video?limit=1", "", nil, http.StatusOK, &firstPage)
+	if len(firstPage.Items) != 1 || firstPage.Items[0].ID != newer.ID {
+		t.Fatalf("首屏应优先返回最新公开视频 got=%+v", firstPage.Items)
+	}
+	if firstPage.NextCursor == "" {
+		t.Fatal("存在下一页时必须返回游标")
+	}
+
+	var secondPage struct {
+		Items []videoItem `json:"items"`
+	}
+	nextPageURL := base + "/api/video?limit=1&cursor=" + url.QueryEscape(firstPage.NextCursor)
+	doJSON(t, client, http.MethodGet, nextPageURL, "", nil, http.StatusOK, &secondPage)
+	if len(secondPage.Items) != 1 || secondPage.Items[0].ID != older.ID {
+		t.Fatalf("下一页应只返回未重复的较早公开视频 got=%+v", secondPage.Items)
+	}
+
+	doJSON(t, client, http.MethodDelete, fmt.Sprintf("%s/api/video/auth/%d", base, older.ID), sess.AccessToken, nil, http.StatusNoContent, nil)
+	var afterDelete struct {
+		Items []videoItem `json:"items"`
+	}
+	doJSON(t, client, http.MethodGet, base+"/api/video?limit=3", "", nil, http.StatusOK, &afterDelete)
+	if len(afterDelete.Items) != 1 || afterDelete.Items[0].ID != newer.ID {
+		t.Fatalf("公开 Feed 不应保留草稿或软删除视频 got=%+v", afterDelete.Items)
+	}
 }
 
 // 测试目标：验证公开用户资料实时统计当前公开可见的视频数量。
