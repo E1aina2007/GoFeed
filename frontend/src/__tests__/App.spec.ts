@@ -17,5 +17,7 @@ describe('App', () => {
     expect(wrapper.text()).toContain('GoFeed')
     expect(wrapper.text()).toContain('发现')
     expect(wrapper.text()).toContain('注册')
+    expect(wrapper.text()).toContain('视频社区')
+    expect(wrapper.find('.app-sidebar').exists()).toBe(true)
   })
 })

@@ -242,7 +242,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .short-feed {
-  height: calc(100dvh - 64px);
+  height: calc(100dvh - 60px);
   overflow-y: auto;
   background: #0e1012;
   scroll-snap-type: y mandatory;
@@ -271,7 +271,7 @@ onBeforeUnmount(() => {
 
 .short-video {
   position: relative;
-  min-height: calc(100dvh - 64px);
+  min-height: calc(100dvh - 60px);
   overflow: hidden;
   background: #171a1e;
   scroll-snap-align: start;
@@ -281,7 +281,7 @@ onBeforeUnmount(() => {
 .short-video__player {
   display: block;
   width: 100%;
-  height: calc(100dvh - 64px);
+  height: calc(100dvh - 60px);
   background: #000000;
   object-fit: cover;
 }
@@ -396,7 +396,7 @@ onBeforeUnmount(() => {
 
 .feed-message {
   display: grid;
-  min-height: calc(100dvh - 64px);
+  min-height: calc(100dvh - 60px);
   place-content: center;
   gap: 12px;
   padding: 24px;
@@ -418,13 +418,13 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 640px) {
+@media (max-width: 900px) {
   .short-feed,
   .short-video,
   .short-video__player,
   .feed-message {
-    min-height: calc(100dvh - 56px);
-    height: calc(100dvh - 56px);
+    min-height: calc(100dvh - 102px);
+    height: calc(100dvh - 102px);
   }
 
   .short-video__meta {
@@ -434,7 +434,7 @@ onBeforeUnmount(() => {
   }
 
   .feed-notice {
-    top: 68px;
+    top: 114px;
   }
 
   .short-video__meta h2 {
