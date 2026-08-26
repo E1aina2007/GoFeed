@@ -1,14 +1,21 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 
+import CommentSection from '@/features/social/CommentSection.vue'
+import LikeButton from '@/features/social/LikeButton.vue'
+import { getVideoEngagement, type VideoEngagement } from '@/features/social/engagement'
 import { getPublishedVideo, type VideoItem } from '@/features/video/api'
 import { ApiError } from '@/lib/api'
 
 const route = useRoute()
 const video = ref<VideoItem>()
+const engagement = ref<VideoEngagement>()
 const isLoading = ref(true)
 const errorMessage = ref('')
+const commentsCount = computed(
+  () => engagement.value?.commentsCount ?? video.value?.comments_count ?? 0,
+)
 
 function videoID() {
   const id = Number(route.params.id)
@@ -18,6 +25,8 @@ function videoID() {
 async function load() {
   const id = videoID()
   if (!id) {
+    video.value = undefined
+    engagement.value = undefined
     errorMessage.value = '视频地址无效'
     isLoading.value = false
     return
@@ -27,14 +36,27 @@ async function load() {
   errorMessage.value = ''
   try {
     video.value = (await getPublishedVideo(id)).video
+    engagement.value = getVideoEngagement(
+      video.value.id,
+      video.value.likes_count,
+      video.value.comments_count,
+    )
   } catch (error) {
+    video.value = undefined
+    engagement.value = undefined
     errorMessage.value = error instanceof ApiError ? error.message : '视频加载失败，请稍后重试'
   } finally {
     isLoading.value = false
   }
 }
 
-onMounted(load)
+watch(
+  () => route.params.id,
+  () => {
+    void load()
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -48,17 +70,36 @@ onMounted(load)
       <button class="secondary-action" type="button" @click="load">重试</button>
     </section>
     <article v-else-if="video" class="detail-content">
-      <video class="detail-player" :src="video.play_url" :poster="video.cover_url" controls playsinline preload="metadata">
+      <video
+        class="detail-player"
+        :src="video.play_url"
+        :poster="video.cover_url"
+        controls
+        playsinline
+        preload="metadata"
+      >
         抱歉，你的浏览器不支持视频播放。
       </video>
       <div class="detail-copy">
         <h1>{{ video.title }}</h1>
-        <RouterLink class="author-link" :to="{ name: 'user-profile', params: { id: video.author.id } }">
+        <RouterLink
+          class="author-link"
+          :to="{ name: 'user-profile', params: { id: video.author.id } }"
+        >
           @{{ video.author.username }}
         </RouterLink>
         <p v-if="video.description">{{ video.description }}</p>
-        <small>{{ video.published_at }} · {{ video.likes_count }} 个赞 · {{ video.comments_count }} 条评论</small>
+        <div class="detail-actions" aria-label="视频互动">
+          <LikeButton
+            :video-id="video.id"
+            :likes-count="video.likes_count"
+            :comments-count="video.comments_count"
+          />
+          <span class="detail-actions__comments">{{ commentsCount }} 条评论</span>
+        </div>
+        <small class="detail-meta">{{ video.published_at }}</small>
       </div>
+      <CommentSection :video-id="video.id" :comments-count="video.comments_count" />
     </article>
   </main>
 </template>
@@ -129,8 +170,23 @@ onMounted(load)
   line-height: 1.6;
 }
 
-.detail-copy small {
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.detail-actions__comments,
+.detail-meta {
   color: var(--content-subtle);
+  font-size: 0.86rem;
+}
+
+.detail-meta {
+  display: block;
+  margin-top: 14px;
 }
 
 .state-message {

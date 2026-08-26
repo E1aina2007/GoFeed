@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
@@ -20,7 +21,10 @@ const videoItem = {
   author: { id: 7, username: 'runfast', avatar_url: '' },
 }
 
-type ObserverEntry = Pick<IntersectionObserverEntry, 'target' | 'isIntersecting' | 'intersectionRatio'>
+type ObserverEntry = Pick<
+  IntersectionObserverEntry,
+  'target' | 'isIntersecting' | 'intersectionRatio'
+>
 
 class MockIntersectionObserver {
   static instances: MockIntersectionObserver[] = []
@@ -70,7 +74,7 @@ async function mountFeed(path = '/') {
     ],
   })
   await router.push(path)
-  const wrapper = mount(FeedView, { global: { plugins: [router] } })
+  const wrapper = mount(FeedView, { global: { plugins: [createPinia(), router] } })
   cleanupCallbacks.push(() => {
     if (wrapper.exists()) {
       wrapper.unmount()
@@ -96,11 +100,19 @@ describe('FeedView', () => {
   })
 
   it('renders a full-viewport short video from the public feed', async () => {
-    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
-      items: [videoItem],
-    }), {
-      headers: { 'content-type': 'application/json' },
-    })))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            items: [videoItem],
+          }),
+          {
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      ),
+    )
 
     const { wrapper } = await mountFeed()
     await flushPromises()
@@ -112,9 +124,11 @@ describe('FeedView', () => {
   })
 
   it('confirms the newly published video and clears the one-time query parameter', async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ items: [videoItem] }), {
-      headers: { 'content-type': 'application/json' },
-    }))
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ items: [videoItem] }), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
     vi.stubGlobal('fetch', fetchMock)
 
     const { router, wrapper } = await mountFeed('/?published=7')
@@ -127,9 +141,14 @@ describe('FeedView', () => {
 
   it('keeps the feed usable when the published video is absent from the first page', async () => {
     const otherVideo = { ...videoItem, id: 8, title: '清晨骑行' }
-    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ items: [otherVideo] }), {
-      headers: { 'content-type': 'application/json' },
-    })))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ items: [otherVideo] }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    )
 
     const { router, wrapper } = await mountFeed('/?published=7')
     await flushPromises()
@@ -142,13 +161,17 @@ describe('FeedView', () => {
   it('retries a failed published return before clearing its one-time query parameter', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ error: '服务暂不可用' }), {
-        status: 503,
-        headers: { 'content-type': 'application/json' },
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [videoItem] }), {
-        headers: { 'content-type': 'application/json' },
-      }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: '服务暂不可用' }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ items: [videoItem] }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
     vi.stubGlobal('fetch', fetchMock)
 
     const { router, wrapper } = await mountFeed('/?published=7')
@@ -172,11 +195,19 @@ describe('FeedView', () => {
     const pauseMock = vi.mocked(HTMLMediaElement.prototype.pause)
     setVisibilityState('visible')
     vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
-    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
-      items: [videoItem, otherVideo],
-    }), {
-      headers: { 'content-type': 'application/json' },
-    })))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            items: [videoItem, otherVideo],
+          }),
+          {
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      ),
+    )
 
     const { wrapper } = await mountFeed()
     await flushPromises()
@@ -223,11 +254,19 @@ describe('FeedView', () => {
   it('pauses when no player is visible and releases player resources on unmount', async () => {
     const pauseMock = vi.mocked(HTMLMediaElement.prototype.pause)
     vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
-    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
-      items: [videoItem],
-    }), {
-      headers: { 'content-type': 'application/json' },
-    })))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            items: [videoItem],
+          }),
+          {
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      ),
+    )
 
     const { wrapper } = await mountFeed()
     await flushPromises()

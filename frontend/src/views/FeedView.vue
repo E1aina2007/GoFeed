@@ -2,6 +2,7 @@
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
+import LikeButton from '@/features/social/LikeButton.vue'
 import { usePublishedFeed } from '@/features/video/usePublishedFeed'
 
 const route = useRoute()
@@ -55,11 +56,14 @@ function syncPlayback(activeID?: number) {
 
   for (const [id, player] of playerElements) {
     if (id === activeID) {
-      void player.play().then(() => {
-        if (activePlayerID !== id || !pageIsVisible()) {
-          player.pause()
-        }
-      }).catch(() => undefined)
+      void player
+        .play()
+        .then(() => {
+          if (activePlayerID !== id || !pageIsVisible()) {
+            player.pause()
+          }
+        })
+        .catch(() => undefined)
     } else {
       player.pause()
     }
@@ -87,8 +91,9 @@ function observePlayers() {
         }
       }
 
-      const activeID = [...visiblePlayerRatios.entries()]
-        .sort(([, leftRatio], [, rightRatio]) => rightRatio - leftRatio)[0]?.[0]
+      const activeID = [...visiblePlayerRatios.entries()].sort(
+        ([, leftRatio], [, rightRatio]) => rightRatio - leftRatio,
+      )[0]?.[0]
       syncPlayback(activeID)
     },
     { root: feedElement.value, threshold: [0.6, 0.75] },
@@ -191,7 +196,12 @@ onBeforeUnmount(() => {
     <p v-if="publishedMessage" class="feed-notice" role="status">{{ publishedMessage }}</p>
 
     <section v-if="isInitialLoading" class="loading-feed" aria-label="正在加载视频">
-      <article v-for="index in 2" :key="index" class="short-video short-video--skeleton" aria-hidden="true">
+      <article
+        v-for="index in 2"
+        :key="index"
+        class="short-video short-video--skeleton"
+        aria-hidden="true"
+      >
         <div class="skeleton-copy">
           <span></span>
           <span></span>
@@ -217,11 +227,32 @@ onBeforeUnmount(() => {
           抱歉，你的浏览器不支持视频播放。
         </video>
         <div class="short-video__meta">
-          <RouterLink class="short-video__author" :to="{ name: 'user-profile', params: { id: video.author.id } }">
+          <RouterLink
+            class="short-video__author"
+            :to="{ name: 'user-profile', params: { id: video.author.id } }"
+          >
             @{{ video.author.username }}
           </RouterLink>
-          <h2><RouterLink :to="{ name: 'video-detail', params: { id: video.id } }">{{ video.title }}</RouterLink></h2>
+          <h2>
+            <RouterLink :to="{ name: 'video-detail', params: { id: video.id } }">{{
+              video.title
+            }}</RouterLink>
+          </h2>
           <p v-if="video.description" class="short-video__description">{{ video.description }}</p>
+        </div>
+        <div class="short-video__actions" aria-label="视频互动">
+          <LikeButton
+            :video-id="video.id"
+            :likes-count="video.likes_count"
+            :comments-count="video.comments_count"
+            variant="overlay"
+          />
+          <RouterLink
+            class="short-video__comments"
+            :to="{ name: 'video-detail', params: { id: video.id } }"
+          >
+            评论 {{ video.comments_count }}
+          </RouterLink>
         </div>
       </article>
 
@@ -288,13 +319,43 @@ onBeforeUnmount(() => {
 
 .short-video__meta {
   position: absolute;
-  right: max(24px, calc((100vw - 1180px) / 2));
+  right: max(112px, calc((100vw - 1180px) / 2));
   bottom: 100px;
   left: max(24px, calc((100vw - 1180px) / 2));
   max-width: 680px;
   color: #ffffff;
   pointer-events: none;
-  text-shadow: 0 1px 4px #000000, 0 2px 16px #000000;
+  text-shadow:
+    0 1px 4px #000000,
+    0 2px 16px #000000;
+}
+
+.short-video__actions {
+  position: absolute;
+  right: max(24px, calc((100vw - 1180px) / 2));
+  bottom: 96px;
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.short-video__comments {
+  min-height: 34px;
+  padding: 8px 10px;
+  border: 1px solid #ffffff66;
+  border-radius: 6px;
+  color: #ffffff;
+  background: #0b1110a8;
+  box-shadow: 0 4px 16px #00000033;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.short-video__comments:hover {
+  border-color: #72d5c4;
+  color: #c7fff1;
+  background: #144b41e8;
 }
 
 .short-video__author,
@@ -428,9 +489,14 @@ onBeforeUnmount(() => {
   }
 
   .short-video__meta {
-    right: 18px;
+    right: 96px;
     bottom: 92px;
     left: 18px;
+  }
+
+  .short-video__actions {
+    right: 14px;
+    bottom: 88px;
   }
 
   .feed-notice {

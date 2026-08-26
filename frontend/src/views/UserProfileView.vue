@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 
 import VideoListItem from '@/components/VideoListItem.vue'
+import FollowButton from '@/features/social/FollowButton.vue'
+import FollowListDialog from '@/features/social/FollowListDialog.vue'
+import type { FollowState } from '@/features/social/api'
 import { listPublishedVideos, type VideoItem } from '@/features/video/api'
 import { getUserProfile, type UserProfile } from '@/features/user/api'
 import { ApiError } from '@/lib/api'
@@ -15,6 +18,8 @@ const isLoading = ref(true)
 const isLoadingMore = ref(false)
 const errorMessage = ref('')
 const hasMore = computed(() => Boolean(nextCursor.value))
+const isFollowListOpen = ref(false)
+const followListMode = ref<'followers' | 'following'>('followers')
 
 function userID() {
   const id = Number(route.params.id)
@@ -28,6 +33,9 @@ function apiMessage(error: unknown) {
 async function load() {
   const id = userID()
   if (!id) {
+    profile.value = undefined
+    videos.value = []
+    nextCursor.value = undefined
     errorMessage.value = '用户地址无效'
     isLoading.value = false
     return
@@ -35,6 +43,9 @@ async function load() {
 
   isLoading.value = true
   errorMessage.value = ''
+  profile.value = undefined
+  videos.value = []
+  nextCursor.value = undefined
   try {
     const [profileResponse, videoResponse] = await Promise.all([
       getUserProfile(id),
@@ -67,7 +78,25 @@ async function loadMore() {
   }
 }
 
-onMounted(load)
+function updateFollowState(state: FollowState) {
+  if (profile.value) {
+    profile.value.follower_count = state.follower_count
+  }
+}
+
+function openFollowList(mode: 'followers' | 'following') {
+  followListMode.value = mode
+  isFollowListOpen.value = true
+}
+
+watch(
+  () => route.params.id,
+  () => {
+    isFollowListOpen.value = false
+    void load()
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -83,29 +112,67 @@ onMounted(load)
     <template v-else-if="profile">
       <header class="profile-header">
         <div class="profile-avatar">
-          <img v-if="profile.account.avatar_url" :src="profile.account.avatar_url" :alt="`${profile.account.username} 的头像`">
+          <img
+            v-if="profile.account.avatar_url"
+            :src="profile.account.avatar_url"
+            :alt="`${profile.account.username} 的头像`"
+          />
           <span v-else>{{ profile.account.username.slice(0, 1).toUpperCase() }}</span>
         </div>
         <div class="profile-copy">
           <h1>@{{ profile.account.username }}</h1>
           <p>{{ profile.account.bio || '这个用户还没有填写简介' }}</p>
+          <FollowButton
+            :user-id="profile.account.id"
+            :follower-count="profile.follower_count"
+            @state-change="updateFollowState"
+          />
         </div>
-        <dl class="profile-stats">
-          <div><dt>视频</dt><dd>{{ profile.video_count }}</dd></div>
-          <div><dt>获赞</dt><dd>{{ profile.total_likes }}</dd></div>
-          <div><dt>关注者</dt><dd>{{ profile.follower_count }}</dd></div>
-        </dl>
+        <div class="profile-stats" aria-label="用户统计">
+          <div class="profile-stat">
+            <span>视频</span><strong>{{ profile.video_count }}</strong>
+          </div>
+          <div class="profile-stat">
+            <span>获赞</span><strong>{{ profile.total_likes }}</strong>
+          </div>
+          <button
+            class="profile-stat profile-stat--action"
+            type="button"
+            @click="openFollowList('followers')"
+          >
+            <span>粉丝</span><strong>{{ profile.follower_count }}</strong>
+          </button>
+          <button
+            class="profile-stat profile-stat--action"
+            type="button"
+            @click="openFollowList('following')"
+          >
+            <span>关注</span><strong>{{ profile.vlogger_count }}</strong>
+          </button>
+        </div>
       </header>
       <section class="profile-videos">
         <h2>公开视频</h2>
         <p v-if="errorMessage" class="inline-error" role="alert">{{ errorMessage }}</p>
         <VideoListItem v-for="video in videos" :key="video.id" :video="video" />
         <p v-if="!videos.length" class="state-message">暂时没有公开视频</p>
-        <button v-if="hasMore" class="secondary-action load-more" type="button" :disabled="isLoadingMore" @click="loadMore">
+        <button
+          v-if="hasMore"
+          class="secondary-action load-more"
+          type="button"
+          :disabled="isLoadingMore"
+          @click="loadMore"
+        >
           {{ isLoadingMore ? '正在加载' : '加载更多' }}
         </button>
       </section>
     </template>
+    <FollowListDialog
+      v-if="profile"
+      v-model:open="isFollowListOpen"
+      v-model:mode="followListMode"
+      :user-id="profile.account.id"
+    />
   </main>
 </template>
 
@@ -186,27 +253,47 @@ onMounted(load)
   line-height: 1.5;
 }
 
-.profile-stats {
-  display: flex;
-  gap: 20px;
-  margin: 0;
+.profile-copy :deep(.follow-button) {
+  margin-top: 14px;
 }
 
-.profile-stats div {
+.profile-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 20px;
+}
+
+.profile-stat {
+  display: grid;
   min-width: 60px;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
   text-align: center;
 }
 
-.profile-stats dt {
+.profile-stat span {
   color: var(--content-subtle);
   font-size: 0.8rem;
 }
 
-.profile-stats dd {
+.profile-stat strong {
   margin: 5px 0 0;
   color: var(--content-ink);
   font-size: 1.1rem;
   font-weight: 700;
+}
+
+.profile-stat--action {
+  cursor: pointer;
+}
+
+.profile-stat--action:hover span,
+.profile-stat--action:focus-visible span {
+  color: var(--content-accent);
 }
 
 .profile-videos {
@@ -269,6 +356,7 @@ onMounted(load)
     grid-column: 1 / -1;
     justify-content: space-around;
     width: 100%;
+    gap: 12px;
   }
 }
 </style>
