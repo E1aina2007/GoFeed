@@ -80,7 +80,7 @@ func TestRepositoryStoresInteractionsAndAggregatesMetrics(t *testing.T) {
 	if err != nil || metrics.TotalLikes != 1 || metrics.FollowerCount != 1 || metrics.VloggerCount != 0 {
 		t.Fatalf("用户互动统计错误 metrics=%+v err=%v", metrics, err)
 	}
-	deleted, err := repo.RemoveComment(ctx, comment.ID, viewer.ID)
+	deleted, err := repo.DeleteComment(ctx, comment.ID, viewer.ID)
 	if err != nil || !deleted {
 		t.Fatalf("删除评论失败 deleted=%t err=%v", deleted, err)
 	}

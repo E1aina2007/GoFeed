@@ -159,7 +159,7 @@ func (r *Repository) GetComment(ctx context.Context, id uint) (*Comment, error) 
 	return &comment, nil
 }
 
-func (r *Repository) RemoveComment(ctx context.Context, id, authorID uint) (bool, error) {
+func (r *Repository) DeleteComment(ctx context.Context, id, authorID uint) (bool, error) {
 	result := r.db.WithContext(ctx).
 		Where("id = ? AND author_id = ?", id, authorID).
 		Delete(&Comment{})

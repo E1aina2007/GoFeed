@@ -132,7 +132,7 @@ func (f *fakeStore) GetComment(_ context.Context, id uint) (*Comment, error) {
 	return &comment, nil
 }
 
-func (f *fakeStore) RemoveComment(_ context.Context, id, authorID uint) (bool, error) {
+func (f *fakeStore) DeleteComment(_ context.Context, id, authorID uint) (bool, error) {
 	comment, ok := f.comments[id]
 	if !ok || comment.AuthorID != authorID {
 		return false, nil
@@ -219,10 +219,10 @@ func TestServiceCreateFollowAndCommentBoundaries(t *testing.T) {
 	if err != nil || comment.Content != "第一条评论" || comment.Author.ID != 1 {
 		t.Fatalf("创建评论结果错误 comment=%+v err=%v", comment, err)
 	}
-	if err := service.RemoveComment(ctx, 10, comment.ID, 2); !errors.Is(err, ErrCommentNotAuthor) {
+	if err := service.DeleteComment(ctx, 10, comment.ID, 2); !errors.Is(err, ErrCommentNotAuthor) {
 		t.Fatalf("越权删评应被拒绝 err=%v", err)
 	}
-	if err := service.RemoveComment(ctx, 10, comment.ID, 1); err != nil {
+	if err := service.DeleteComment(ctx, 10, comment.ID, 1); err != nil {
 		t.Fatalf("作者删除评论失败 err=%v", err)
 	}
 }

@@ -109,7 +109,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		protectedVideos.PUT("/:id/like", socialCtl.CreateLike)
 		protectedVideos.DELETE("/:id/like", socialCtl.RemoveLike)
 		protectedVideos.POST("/:id/comments", socialCtl.CreateComment)
-		protectedVideos.DELETE("/:id/comments/:commentID", socialCtl.RemoveComment)
+		protectedVideos.DELETE("/:id/comments/:commentID", socialCtl.DeleteComment)
 		protectedVideos.DELETE("/:id", videoCtl.DeleteVideo)
 	}
 

@@ -67,8 +67,8 @@ func (ctl *Controller) CreateComment(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"comment": comment})
 }
 
-// RemoveComment 处理 DELETE /api/video/auth/:id/comments/:commentID
-func (ctl *Controller) RemoveComment(c *gin.Context) {
+// DeleteComment 处理 DELETE /api/video/auth/:id/comments/:commentID
+func (ctl *Controller) DeleteComment(c *gin.Context) {
 	userID, ok := jwt.UserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
@@ -84,7 +84,7 @@ func (ctl *Controller) RemoveComment(c *gin.Context) {
 		handleError(c, err)
 		return
 	}
-	if err := ctl.service.RemoveComment(c.Request.Context(), videoID, commentID, userID); err != nil {
+	if err := ctl.service.DeleteComment(c.Request.Context(), videoID, commentID, userID); err != nil {
 		handleError(c, err)
 		return
 	}

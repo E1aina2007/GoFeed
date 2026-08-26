@@ -42,7 +42,7 @@ type Store interface {
 	GetFollowerCount(ctx context.Context, followeeID uint) (int64, error)
 	CreateComment(ctx context.Context, comment *Comment) error
 	GetComment(ctx context.Context, id uint) (*Comment, error)
-	RemoveComment(ctx context.Context, id, authorID uint) (bool, error)
+	DeleteComment(ctx context.Context, id, authorID uint) (bool, error)
 	GetCommentList(ctx context.Context, videoID uint, cursor *CommentCursor, limit int) ([]CommentItem, error)
 	GetFollowerList(ctx context.Context, followeeID uint, cursor *FollowCursor, limit int) ([]FollowListItem, error)
 	GetFollowingList(ctx context.Context, followerID uint, cursor *FollowCursor, limit int) ([]FollowListItem, error)
@@ -159,7 +159,7 @@ func (s *Service) CreateComment(ctx context.Context, videoID, authorID uint, con
 	}, nil
 }
 
-func (s *Service) RemoveComment(ctx context.Context, videoID, commentID, authorID uint) error {
+func (s *Service) DeleteComment(ctx context.Context, videoID, commentID, authorID uint) error {
 	if s.store == nil {
 		return ErrRepositoryUnavailable
 	}
@@ -188,7 +188,7 @@ func (s *Service) RemoveComment(ctx context.Context, videoID, commentID, authorI
 	if comment.AuthorID != authorID {
 		return ErrCommentNotAuthor
 	}
-	deleted, err := s.store.RemoveComment(ctx, commentID, authorID)
+	deleted, err := s.store.DeleteComment(ctx, commentID, authorID)
 	if err != nil {
 		return err
 	}
