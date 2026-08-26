@@ -17,8 +17,6 @@ docker compose up -d
 
 > 需要 Docker Compose v2.17+（依赖 `service_completed_successfully` 条件）。
 
-启动后访问：前端 http://localhost:5173，后端 API http://localhost:8080。
-
 ## 本地开发（不使用 Compose）
 
 本地开发直接启动后端和前端，数据库依赖本机已运行的 MySQL。应用启动时不会自动建库或迁移，避免服务重启时隐式修改表结构；表结构变更通过版本化迁移显式执行。
@@ -129,9 +127,8 @@ pnpm preview        # 本地预览构建产物
 1. 后端：启动 MySQL 8.0 service，执行 `go vet ./...`、`go build ./...` 和 `go test -race -count=1 ./...`。集成测试会创建临时数据库并应用全部向上迁移。
 2. 部署配置：从 `backend/.env.example` 和 `backend/configs/config.example.yaml` 生成 CI 临时的忽略配置文件，再执行 `docker compose config --quiet`。不使用真实 `.env` 或秘密。
 3. 前端：以冻结锁文件安装依赖，执行只读 `pnpm run lint`、Vitest、类型检查与生产构建。
-4. 浏览器：安装 Chromium，运行 Playwright 的 `chromium` 和 `Mobile Chrome` 项目；失败时上传 HTML 报告、截图、视频和 trace。
 
-当前 Playwright 用例会 mock 公共 Feed API，因此它验证浏览器中的页面行为，不替代本机 MySQL 下的真实发布和鉴权联调。`pnpm run lint:fix` 与 `pnpm run format` 都会写入文件，只应在本地修复后配合 `git diff` 审查，不能作为 CI 门禁。
+当前 Playwright 用例会 mock 公共 Feed API，可在本地按需运行，因此它验证浏览器中的页面行为，不替代本机 MySQL 下的真实发布和鉴权联调。`pnpm run lint:fix` 与 `pnpm run format` 都会写入文件，只应在本地修复后配合 `git diff` 审查，不能作为 CI 门禁。
 
 ## 配置
 
