@@ -24,19 +24,30 @@
 | GET | `/api/user` | 否 | 查询用户列表 |
 | GET | `/api/user/:id` | 否 | 查询用户详情 |
 | GET | `/api/user/:id/profile` | 否 | 查询用户公开主页 |
+| GET | `/api/user/:id/followers` | 否 | 查询用户的粉丝列表 |
+| GET | `/api/user/:id/following` | 否 | 查询用户的关注列表 |
 | POST | `/api/user/auth/logout` | 是 | 退出当前会话 |
 | PATCH | `/api/user/auth/name` | 是 | 修改用户名 |
 | PATCH | `/api/user/auth/password` | 是 | 修改密码并撤销全部会话 |
 | POST | `/api/user/auth/avatar` | 是 | 上传并更新头像 |
 | PATCH | `/api/user/auth/profile` | 是 | 修改个人资料 |
+| GET | `/api/user/auth/:id/follow` | 是 | 查询我是否关注指定用户 |
+| PUT | `/api/user/auth/:id/follow` | 是 | 关注指定用户 |
+| DELETE | `/api/user/auth/:id/follow` | 是 | 取消关注指定用户 |
 | DELETE | `/api/user/auth` | 是 | 注销当前账号 |
 | GET | `/api/video` | 否 | 查询公开视频流 |
 | GET | `/api/video/:id` | 否 | 查询公开视频详情 |
+| GET | `/api/video/:id/comments` | 否 | 查询公开视频评论 |
 | POST | `/api/video/auth/drafts` | 是 | 创建视频草稿 |
 | POST | `/api/video/auth/drafts/:id/play` | 是 | 上传草稿视频文件 |
 | POST | `/api/video/auth/drafts/:id/cover` | 是 | 上传草稿封面图片 |
 | POST | `/api/video/auth/drafts/:id/publish` | 是 | 发布完整草稿 |
 | GET | `/api/video/auth/mine` | 是 | 查询我的视频 |
+| GET | `/api/video/auth/:id/like` | 是 | 查询我是否点赞指定视频 |
+| PUT | `/api/video/auth/:id/like` | 是 | 点赞指定视频 |
+| DELETE | `/api/video/auth/:id/like` | 是 | 取消点赞指定视频 |
+| POST | `/api/video/auth/:id/comments` | 是 | 发表评论 |
+| DELETE | `/api/video/auth/:id/comments/:commentID` | 是 | 删除自己的评论 |
 | DELETE | `/api/video/auth/:id` | 是 | 删除自己的视频 |
 
 ## 公共数据结构
@@ -108,6 +119,49 @@
 ```
 
 当没有下一页时，`next_cursor` 不返回。后续分页将该字段原样作为 `cursor` 查询参数传回；它是服务端生成的不透明值，不应自行构造或修改。
+
+### `CommentListResponse`
+
+```json
+{
+  "items": [
+    {
+      "id": 301,
+      "video_id": 100,
+      "author": {
+        "id": 7,
+        "username": "bob",
+        "avatar_url": "/static/avatars/7/20260826/avatar.png",
+        "bio": "视频爱好者"
+      },
+      "content": "很精彩",
+      "created_at": "2026-08-26T08:00:00Z"
+    }
+  ],
+  "next_cursor": "eyJjcmVhdGVkX2F0IjoiMjAyNi0wOC0yNlQwODowMDowMFoiLCJpZCI6MzAxfQ"
+}
+```
+
+评论按创建时间和 ID 倒序排列。已删除评论不会返回；评论作者已注销时，作者资料会显示为 `已注销用户`。
+
+### `FollowListResponse`
+
+```json
+{
+  "items": [
+    {
+      "user": {
+        "id": 7,
+        "username": "bob"
+      },
+      "followed_at": "2026-08-26T08:00:00Z"
+    }
+  ],
+  "next_cursor": "eyJjcmVhdGVkX2F0IjoiMjAyNi0wOC0yNlQwODowMDowMFoiLCJpZCI6N30"
+}
+```
+
+粉丝和关注列表均按建立关注关系的时间和关系 ID 倒序分页。`user` 为关系另一端的公开资料。
 
 ## 系统接口
 
@@ -260,9 +314,26 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 }
 ```
 
-`video_count` 统计当前已发布、未软删除的视频数量。`total_likes`、`follower_count` 和 `vlogger_count` 为已预留字段，当前固定返回 `0`。
+`video_count` 统计当前已发布、未软删除的视频数量。`total_likes` 统计该用户当前可见视频的点赞关系数，`follower_count` 统计活跃粉丝数，`vlogger_count` 统计仍可见的关注对象数；三项互动统计均由关系表实时计算。
 
 常见失败：`400` `id` 格式不正确，`404` 用户不存在或已注销。
+
+### 查询粉丝和关注列表
+
+`GET /api/user/:id/followers`
+
+`GET /api/user/:id/following`
+
+路径参数 `id` 必须是大于 0 的无符号整数。两个接口都支持以下查询参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `cursor` | string | 否 | 上一页响应中的 `next_cursor` |
+| `limit` | int | 否 | 每页数量，范围 1-50，默认 20 |
+
+成功响应：`200 OK`，响应体为 [`FollowListResponse`](#followlistresponse)。`followers` 返回关注该用户的账号，`following` 返回该用户正在关注的账号。
+
+常见失败：`400` 路径参数、`cursor` 或 `limit` 不合法，`404` 用户不存在或已注销。
 
 ### 退出当前会话
 
@@ -375,6 +446,33 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 
 常见失败：`400` 请求体不合法，`401` 未认证。
 
+### 查询关注状态
+
+`GET /api/user/auth/:id/follow`
+
+路径参数 `id` 是要查询的目标用户。成功响应：`200 OK`
+
+```json
+{
+  "following": true,
+  "follower_count": 12
+}
+```
+
+`following` 表示当前认证用户是否关注目标用户，`follower_count` 是目标用户的实时粉丝数。
+
+常见失败：`400` `id` 不合法或目标是当前用户，`401` 未认证，`404` 当前用户或目标用户不存在或已注销。
+
+### 关注和取消关注
+
+`PUT /api/user/auth/:id/follow`
+
+`DELETE /api/user/auth/:id/follow`
+
+路径参数 `id` 是要操作的目标用户，无需请求体。成功响应均为 `200 OK`，响应体与查询关注状态相同。重复关注保持已关注状态，重复取消保持未关注状态，因此两个写操作均可安全重试。用户不能关注自己。
+
+常见失败：`400` `id` 不合法或尝试关注自己，`401` 未认证，`404` 当前用户或目标用户不存在或已注销。
+
 ### 注销账号
 
 `DELETE /api/user/auth`
@@ -435,6 +533,21 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 ```
 
 常见失败：`400` `id` 不合法，`404` 视频不存在、未发布或已删除。
+
+### 查询视频评论
+
+`GET /api/video/:id/comments`
+
+路径参数 `id` 必须是大于 0 的已发布且未软删除视频标识。查询参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `cursor` | string | 否 | 上一页响应中的 `next_cursor` |
+| `limit` | int | 否 | 每页数量，范围 1-50，默认 20 |
+
+成功响应：`200 OK`，响应体为 [`CommentListResponse`](#commentlistresponse)。
+
+常见失败：`400` 路径参数、`cursor` 或 `limit` 不合法，`404` 视频不存在、未发布或已删除。
 
 ### 创建视频草稿
 
@@ -552,6 +665,59 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 
 常见失败：`400` `cursor` 或 `limit` 不合法，`401` 未认证。
 
+### 查询、点赞和取消点赞
+
+`GET /api/video/auth/:id/like`
+
+`PUT /api/video/auth/:id/like`
+
+`DELETE /api/video/auth/:id/like`
+
+路径参数 `id` 必须是大于 0 的已发布且未软删除视频标识，无需请求体。三个接口成功时均返回 `200 OK`：
+
+```json
+{
+  "liked": true,
+  "likes_count": 18
+}
+```
+
+`liked` 表示当前认证用户的点赞状态，`likes_count` 是视频的实时点赞数。重复点赞保持已点赞状态，重复取消保持未点赞状态，因此两个写操作均可安全重试。
+
+常见失败：`400` `id` 不合法，`401` 未认证，`404` 当前用户不存在或已注销，或视频不存在、未发布或已删除。
+
+### 创建和删除评论
+
+`POST /api/video/auth/:id/comments`
+
+请求体：
+
+```json
+{
+  "content": "很精彩"
+}
+```
+
+`content` 去除首尾空格后不能为空，最多 1000 个 Unicode 字符。成功响应：`201 Created`
+
+```json
+{
+  "comment": {
+    "id": 301,
+    "video_id": 100,
+    "author": { "id": 7, "username": "bob" },
+    "content": "很精彩",
+    "created_at": "2026-08-26T08:00:00Z"
+  }
+}
+```
+
+`DELETE /api/video/auth/:id/comments/:commentID`
+
+只有评论作者可以删除自己的评论。成功响应：`204 No Content`。删除为软删除，会立即从评论列表和视频 `comments_count` 中消失。
+
+常见失败：`400` 路径参数或评论内容不合法，`401` 未认证，`403` 当前用户不是评论作者，`404` 用户、视频或评论不存在，或视频未发布/已删除。
+
 ### 删除自己的视频
 
 `DELETE /api/video/auth/:id`
@@ -570,3 +736,4 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 4. 使用草稿 ID 调用视频和封面上传接口。
 5. 调用 `POST /api/video/auth/drafts/:id/publish`，不提交请求体。
 6. 通过 `GET /api/video` 消费公开视频流；令牌即将过期或已过期时，使用 `POST /api/user/refresh` 更新令牌对。
+7. 登录后可通过点赞、评论和关注接口完成互动；公开页面使用评论、粉丝和关注列表接口读取关系数据。
