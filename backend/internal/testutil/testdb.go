@@ -73,10 +73,29 @@ func DB(t *testing.T) *gorm.DB {
 // 预期效果：为每个用例提供干净数据
 func CleanDB(t *testing.T, db *gorm.DB) {
 	t.Helper()
-	// 表之间没有外键，预期逐表清空后同时重置自增标识以便断言
-	for _, table := range []string{"videos", "auth_sessions", "users"} {
-		if err := db.Exec("TRUNCATE TABLE " + table).Error; err != nil {
-			t.Fatalf("清空表 %s 失败: %v", table, err)
+	// 社交关系表引用用户和视频，使用子表优先的物理删除避免外键下 TRUNCATE 父表失败
+	tables := []struct {
+		name           string
+		resetIncrement bool
+	}{
+		{name: "video_comments", resetIncrement: true},
+		{name: "video_likes", resetIncrement: true},
+		{name: "user_follows", resetIncrement: true},
+		{name: "videos", resetIncrement: true},
+		{name: "auth_sessions"},
+		{name: "users", resetIncrement: true},
+	}
+	for _, table := range tables {
+		if err := db.Exec("DELETE FROM " + table.name).Error; err != nil {
+			t.Fatalf("清空表 %s 失败: %v", table.name, err)
+		}
+	}
+	for _, table := range tables {
+		if !table.resetIncrement {
+			continue
+		}
+		if err := db.Exec("ALTER TABLE " + table.name + " AUTO_INCREMENT = 1").Error; err != nil {
+			t.Fatalf("重置表 %s 自增标识失败: %v", table.name, err)
 		}
 	}
 }

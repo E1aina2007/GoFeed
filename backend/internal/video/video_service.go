@@ -53,13 +53,24 @@ type AuthorReader interface {
 	GetPublicAuthor(ctx context.Context, id uint) (Author, error)
 }
 
-type Service struct {
-	repository   VideoRepository
-	authorReader AuthorReader
+// EngagementReader 是公开视频响应所需的互动统计能力。
+// 接口定义在消费方，避免 video 包依赖 social 包而产生循环依赖。
+type EngagementReader interface {
+	GetEngagementCounts(ctx context.Context, videoIDs []uint) (map[uint]EngagementCounts, error)
 }
 
-func NewService(repository VideoRepository, authorReader AuthorReader) *Service {
-	return &Service{repository: repository, authorReader: authorReader}
+type Service struct {
+	repository       VideoRepository
+	authorReader     AuthorReader
+	engagementReader EngagementReader
+}
+
+func NewService(repository VideoRepository, authorReader AuthorReader, engagementReaders ...EngagementReader) *Service {
+	var engagementReader EngagementReader
+	if len(engagementReaders) > 0 {
+		engagementReader = engagementReaders[0]
+	}
+	return &Service{repository: repository, authorReader: authorReader, engagementReader: engagementReader}
 }
 
 // CreateDraft 创建一个仅当前用户可写的草稿。媒体字段只会由后续上传接口填充。
@@ -238,6 +249,10 @@ func (s *Service) buildListResponse(ctx context.Context, videos []Video, limit i
 		videos = videos[:limit]
 	}
 
+	engagements, err := s.engagements(ctx, videos)
+	if err != nil {
+		return ListResponse{}, err
+	}
 	items := make([]VideoItem, 0, len(videos))
 	authors := make(map[uint]Author)
 	for i := range videos {
@@ -253,7 +268,9 @@ func (s *Service) buildListResponse(ctx context.Context, videos []Video, limit i
 			}
 			authors[videos[i].AuthorID] = author
 		}
-		items = append(items, videoItem(videos[i], author))
+		item := videoItem(videos[i], author)
+		applyEngagement(&item, engagements[videos[i].ID])
+		items = append(items, item)
 	}
 
 	response := ListResponse{Items: items}
@@ -286,7 +303,42 @@ func (s *Service) toVideoItem(ctx context.Context, video *Video) (VideoItem, err
 	if err != nil {
 		return VideoItem{}, err
 	}
-	return videoItem(*video, author), nil
+	engagements, err := s.engagements(ctx, []Video{*video})
+	if err != nil {
+		return VideoItem{}, err
+	}
+	item := videoItem(*video, author)
+	applyEngagement(&item, engagements[video.ID])
+	return item, nil
+}
+
+func (s *Service) engagements(ctx context.Context, videos []Video) (map[uint]EngagementCounts, error) {
+	counts := make(map[uint]EngagementCounts, len(videos))
+	for _, item := range videos {
+		counts[item.ID] = EngagementCounts{LikesCount: item.LikesCount, CommentsCount: item.CommentsCount}
+	}
+	if s.engagementReader == nil || len(videos) == 0 {
+		return counts, nil
+	}
+	ids := make([]uint, 0, len(videos))
+	for _, item := range videos {
+		ids = append(ids, item.ID)
+	}
+	actual, err := s.engagementReader.GetEngagementCounts(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		if value, ok := actual[id]; ok {
+			counts[id] = value
+		}
+	}
+	return counts, nil
+}
+
+func applyEngagement(item *VideoItem, counts EngagementCounts) {
+	item.LikesCount = counts.LikesCount
+	item.CommentsCount = counts.CommentsCount
 }
 
 func videoItem(video Video, author Author) VideoItem {

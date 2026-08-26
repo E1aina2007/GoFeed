@@ -81,8 +81,18 @@ type GetProfileRequest struct {
 // Profile 表示公开资料读取所需的用户数据与聚合指标。
 // HTTP 层负责将其中的用户实体转换为不含敏感字段的响应 DTO。
 type Profile struct {
-	Account    *User
-	VideoCount int64
+	Account       *User
+	VideoCount    int64
+	TotalLikes    int64
+	FollowerCount int64
+	VloggerCount  int64
+}
+
+// ProfileMetrics 表示公开主页由互动关系计算出的实时统计值
+type ProfileMetrics struct {
+	TotalLikes    int64
+	FollowerCount int64
+	VloggerCount  int64
 }
 
 type GetProfileResponse struct {

@@ -298,8 +298,11 @@ func (ctl *Controller) GetProfile(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, GetProfileResponse{
-		Account:    publicUser(profile.Account),
-		VideoCount: profile.VideoCount,
+		Account:       publicUser(profile.Account),
+		VideoCount:    profile.VideoCount,
+		TotalLikes:    profile.TotalLikes,
+		FollowerCount: profile.FollowerCount,
+		VloggerCount:  profile.VloggerCount,
 	})
 }
 

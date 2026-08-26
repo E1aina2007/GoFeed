@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gofeed/internal/auth"
+	"gofeed/internal/social"
 	"gofeed/internal/user"
 	"gofeed/internal/video"
 )
@@ -59,6 +60,27 @@ func TestModelsAlignWithMigrations(t *testing.T) {
 			columns: []string{
 				"id", "user_id", "refresh_token_hash", "expires_at",
 				"revoked_at", "created_at", "updated_at",
+			},
+		},
+		{
+			model: &social.VideoLike{},
+			table: "video_likes",
+			columns: []string{
+				"id", "video_id", "user_id", "created_at",
+			},
+		},
+		{
+			model: &social.Follow{},
+			table: "user_follows",
+			columns: []string{
+				"id", "follower_id", "followee_id", "created_at",
+			},
+		},
+		{
+			model: &social.Comment{},
+			table: "video_comments",
+			columns: []string{
+				"id", "video_id", "author_id", "content", "created_at", "updated_at", "deleted_at",
 			},
 		},
 	}

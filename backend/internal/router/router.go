@@ -6,6 +6,7 @@ import (
 
 	"gofeed/internal/auth"
 	"gofeed/internal/middleware/jwt"
+	"gofeed/internal/social"
 	"gofeed/internal/user"
 	"gofeed/internal/video"
 
@@ -56,8 +57,10 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	sessionService := auth.NewSessionService(auth.NewSessionRepository(db))
 	userRepo := user.NewRepository(db)
 	videoRepo := video.NewRepository(db)
+	socialRepo := social.NewRepository(db)
+	socialCtl := social.NewController(social.NewService(socialRepo))
 	mediaStorage := video.NewLocalStorage(uploadDir)
-	userCtl := user.NewController(user.NewService(userRepo, videoRepo), sessionService, mediaStorage)
+	userCtl := user.NewController(user.NewService(userRepo, videoRepo, socialRepo), sessionService, mediaStorage)
 
 	api := r.Group("/api")
 	users := api.Group("/user")
@@ -67,6 +70,8 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	users.GET("", userCtl.GetUserList)
 	users.GET("/:id", userCtl.GetUser)
 	users.GET("/:id/profile", userCtl.GetProfile)
+	users.GET("/:id/followers", socialCtl.GetFollowerList)
+	users.GET("/:id/following", socialCtl.GetFollowingList)
 
 	protectedUsers := users.Group("/auth")
 	protectedUsers.Use(jwt.Auth(sessionService))
@@ -76,17 +81,21 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		protectedUsers.PATCH("/password", userCtl.UpdatePassword)
 		protectedUsers.POST("/avatar", userCtl.UpdateAvatar)
 		protectedUsers.PATCH("/profile", userCtl.UpdateProfile)
+		protectedUsers.GET("/:id/follow", socialCtl.GetFollowState)
+		protectedUsers.PUT("/:id/follow", socialCtl.CreateFollow)
+		protectedUsers.DELETE("/:id/follow", socialCtl.RemoveFollow)
 		protectedUsers.DELETE("", userCtl.DeleteUser)
 	}
 
 	// 视频路由的公开读取和认证写入操作使用不同分组
 	videoCtl := video.NewController(
-		video.NewService(videoRepo, video.NewUserAuthorReader(userRepo)),
+		video.NewService(videoRepo, video.NewUserAuthorReader(userRepo), socialRepo),
 		mediaStorage,
 	)
 	videos := api.Group("/video")
 	videos.GET("", videoCtl.GetVideoList)
 	videos.GET("/:id", videoCtl.GetVideo)
+	videos.GET("/:id/comments", socialCtl.GetCommentList)
 
 	protectedVideos := videos.Group("/auth")
 	protectedVideos.Use(jwt.Auth(sessionService))
@@ -96,6 +105,11 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		protectedVideos.POST("/drafts/:id/cover", videoCtl.UpdateDraftCover)
 		protectedVideos.POST("/drafts/:id/publish", videoCtl.UpdateDraftPublication)
 		protectedVideos.GET("/mine", videoCtl.GetMyVideoList)
+		protectedVideos.GET("/:id/like", socialCtl.GetLikeState)
+		protectedVideos.PUT("/:id/like", socialCtl.CreateLike)
+		protectedVideos.DELETE("/:id/like", socialCtl.RemoveLike)
+		protectedVideos.POST("/:id/comments", socialCtl.CreateComment)
+		protectedVideos.DELETE("/:id/comments/:commentID", socialCtl.RemoveComment)
 		protectedVideos.DELETE("/:id", videoCtl.DeleteVideo)
 	}
 

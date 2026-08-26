@@ -12,14 +12,21 @@ import (
 )
 
 type Service struct {
-	Repo         *Repository
-	videoCounter PublishedVideoCounter
+	Repo          *Repository
+	videoCounter  PublishedVideoCounter
+	metricsReader ProfileMetricsReader
 }
 
 // PublishedVideoCounter 是用户公开资料所需的视频统计能力。
 // 接口定义在消费方，避免 user 包依赖 video 包而产生循环依赖。
 type PublishedVideoCounter interface {
 	GetPublishedVideoCountByAuthor(ctx context.Context, authorID uint) (int64, error)
+}
+
+// ProfileMetricsReader 是用户公开资料所需的互动统计能力。
+// 接口定义在消费方，避免 user 包依赖 social 包而产生循环依赖。
+type ProfileMetricsReader interface {
+	GetProfileMetrics(ctx context.Context, accountID uint) (ProfileMetrics, error)
 }
 
 var (
@@ -31,8 +38,12 @@ var (
 	ErrVideoCounterUnavailable = errors.New("video counter unavailable")
 )
 
-func NewService(repo *Repository, videoCounter PublishedVideoCounter) *Service {
-	return &Service{Repo: repo, videoCounter: videoCounter}
+func NewService(repo *Repository, videoCounter PublishedVideoCounter, metricsReaders ...ProfileMetricsReader) *Service {
+	var metricsReader ProfileMetricsReader
+	if len(metricsReaders) > 0 {
+		metricsReader = metricsReaders[0]
+	}
+	return &Service{Repo: repo, videoCounter: videoCounter, metricsReader: metricsReader}
 }
 
 func (s *Service) CreateUser(ctx context.Context, user *User) error {
@@ -142,7 +153,18 @@ func (s *Service) GetProfile(ctx context.Context, id uint) (*Profile, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Profile{Account: account, VideoCount: videoCount}, nil
+	profile := &Profile{Account: account, VideoCount: videoCount}
+	if s.metricsReader == nil {
+		return profile, nil
+	}
+	metrics, err := s.metricsReader.GetProfileMetrics(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	profile.TotalLikes = metrics.TotalLikes
+	profile.FollowerCount = metrics.FollowerCount
+	profile.VloggerCount = metrics.VloggerCount
+	return profile, nil
 }
 
 func (s *Service) GetByUsername(ctx context.Context, username string) (*User, error) {

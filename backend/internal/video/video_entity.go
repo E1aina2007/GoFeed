@@ -92,6 +92,12 @@ type VideoItem struct {
 	Author            Author    `json:"author"`
 }
 
+// EngagementCounts 表示从互动关系表读取的当前点赞和评论数量
+type EngagementCounts struct {
+	LikesCount    int64
+	CommentsCount int64
+}
+
 // DraftRequest 表示创建草稿时可由用户编辑的元数据。
 type DraftRequest struct {
 	Title       string `json:"title" binding:"required,max=255"`

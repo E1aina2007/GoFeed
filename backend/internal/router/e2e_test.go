@@ -36,14 +36,17 @@ type authSession struct {
 	Username     string
 }
 
-// 测试目标：描述公开用户资料中的视频数量。
-// 预期效果：端到端测试可断言发布和软删除后的统计变化。
+// 测试目标：描述公开用户资料中的视频和互动统计
+// 预期效果：端到端测试可断言发布、删除与互动后的实时变化
 type profileResponse struct {
 	Account struct {
 		ID       uint   `json:"id"`
 		Username string `json:"username"`
 	} `json:"account"`
-	VideoCount int64 `json:"video_count"`
+	VideoCount    int64 `json:"video_count"`
+	TotalLikes    int64 `json:"total_likes"`
+	FollowerCount int64 `json:"follower_count"`
+	VloggerCount  int64 `json:"vlogger_count"`
 }
 
 // 测试目标：描述视频读取接口返回的关键字段
@@ -57,6 +60,8 @@ type videoItem struct {
 	CoverURL          string `json:"cover_url"`
 	CoverFileName     string `json:"cover_file_name"`
 	CoverOriginalName string `json:"cover_original_name"`
+	LikesCount        int64  `json:"likes_count"`
+	CommentsCount     int64  `json:"comments_count"`
 	Author            struct {
 		ID       uint   `json:"id"`
 		Username string `json:"username"`
@@ -377,6 +382,168 @@ func TestVideoEndToEndFlow(t *testing.T) {
 	// 作者删除视频后读取详情，预期返回未找到状态
 	doJSON(t, client, http.MethodDelete, fmt.Sprintf("%s/api/video/auth/%d", base, item.ID), sess.AccessToken, nil, http.StatusNoContent, nil)
 	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, item.ID), "", nil, http.StatusNotFound, nil)
+}
+
+// 测试目标：验证点赞、评论和关注接口的完整互动流程
+// 预期效果：写入幂等且受认证和归属约束，视频与主页统计始终由关系表实时计算
+func TestSocialEndToEndFlow(t *testing.T) {
+	srv, client := newTestServer(t)
+	base := srv.URL
+
+	register(t, client, base, "social_author", "social-author-password-123")
+	author := login(t, client, base, "social_author", "social-author-password-123")
+	item := publishCompleteVideo(t, client, base, author.AccessToken, "互动测试视频")
+
+	register(t, client, base, "social_viewer", "social-viewer-password-123")
+	viewer := login(t, client, base, "social_viewer", "social-viewer-password-123")
+
+	likeURL := fmt.Sprintf("%s/api/video/auth/%d/like", base, item.ID)
+	commentURL := fmt.Sprintf("%s/api/video/auth/%d/comments", base, item.ID)
+	followURL := fmt.Sprintf("%s/api/user/auth/%d/follow", base, author.UserID)
+
+	// 匿名写入必须被认证中间件拒绝
+	doJSON(t, client, http.MethodPut, likeURL, "", nil, http.StatusUnauthorized, nil)
+	doJSON(t, client, http.MethodPost, commentURL, "", map[string]string{"content": "匿名评论"}, http.StatusUnauthorized, nil)
+	doJSON(t, client, http.MethodPut, followURL, "", nil, http.StatusUnauthorized, nil)
+	doJSON(t, client, http.MethodPut, fmt.Sprintf("%s/api/user/auth/%d/follow", base, viewer.UserID), viewer.AccessToken, nil, http.StatusBadRequest, nil)
+
+	var likeState struct {
+		Liked      bool  `json:"liked"`
+		LikesCount int64 `json:"likes_count"`
+	}
+	doJSON(t, client, http.MethodPut, likeURL, viewer.AccessToken, nil, http.StatusOK, &likeState)
+	if !likeState.Liked || likeState.LikesCount != 1 {
+		t.Fatalf("首次点赞状态错误 got=%+v", likeState)
+	}
+	doJSON(t, client, http.MethodPut, likeURL, viewer.AccessToken, nil, http.StatusOK, &likeState)
+	if !likeState.Liked || likeState.LikesCount != 1 {
+		t.Fatalf("重复点赞不应重复计数 got=%+v", likeState)
+	}
+	doJSON(t, client, http.MethodGet, likeURL, viewer.AccessToken, nil, http.StatusOK, &likeState)
+	if !likeState.Liked || likeState.LikesCount != 1 {
+		t.Fatalf("点赞状态读取错误 got=%+v", likeState)
+	}
+
+	var commentResult struct {
+		Comment struct {
+			ID      uint   `json:"id"`
+			Content string `json:"content"`
+			Author  struct {
+				ID uint `json:"id"`
+			} `json:"author"`
+		} `json:"comment"`
+	}
+	doJSON(t, client, http.MethodPost, commentURL, viewer.AccessToken, map[string]string{"content": "  第一条互动评论  "}, http.StatusCreated, &commentResult)
+	if commentResult.Comment.ID == 0 || commentResult.Comment.Content != "第一条互动评论" || commentResult.Comment.Author.ID != viewer.UserID {
+		t.Fatalf("创建评论响应错误 got=%+v", commentResult.Comment)
+	}
+
+	var comments struct {
+		Items []struct {
+			ID uint `json:"id"`
+		} `json:"items"`
+	}
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d/comments", base, item.ID), "", nil, http.StatusOK, &comments)
+	if len(comments.Items) != 1 || comments.Items[0].ID != commentResult.Comment.ID {
+		t.Fatalf("公开评论列表错误 got=%+v", comments.Items)
+	}
+
+	var followState struct {
+		Following     bool  `json:"following"`
+		FollowerCount int64 `json:"follower_count"`
+	}
+	doJSON(t, client, http.MethodPut, followURL, viewer.AccessToken, nil, http.StatusOK, &followState)
+	if !followState.Following || followState.FollowerCount != 1 {
+		t.Fatalf("首次关注状态错误 got=%+v", followState)
+	}
+	doJSON(t, client, http.MethodPut, followURL, viewer.AccessToken, nil, http.StatusOK, &followState)
+	if !followState.Following || followState.FollowerCount != 1 {
+		t.Fatalf("重复关注不应重复计数 got=%+v", followState)
+	}
+	doJSON(t, client, http.MethodGet, followURL, viewer.AccessToken, nil, http.StatusOK, &followState)
+	if !followState.Following || followState.FollowerCount != 1 {
+		t.Fatalf("关注状态读取错误 got=%+v", followState)
+	}
+
+	var followers struct {
+		Items []struct {
+			User struct {
+				ID uint `json:"id"`
+			} `json:"user"`
+		} `json:"items"`
+	}
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/user/%d/followers", base, author.UserID), "", nil, http.StatusOK, &followers)
+	if len(followers.Items) != 1 || followers.Items[0].User.ID != viewer.UserID {
+		t.Fatalf("粉丝列表错误 got=%+v", followers.Items)
+	}
+
+	var following struct {
+		Items []struct {
+			User struct {
+				ID uint `json:"id"`
+			} `json:"user"`
+		} `json:"items"`
+	}
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/user/%d/following", base, viewer.UserID), "", nil, http.StatusOK, &following)
+	if len(following.Items) != 1 || following.Items[0].User.ID != author.UserID {
+		t.Fatalf("关注列表错误 got=%+v", following.Items)
+	}
+
+	var detail struct {
+		Video videoItem `json:"video"`
+	}
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, item.ID), "", nil, http.StatusOK, &detail)
+	if detail.Video.LikesCount != 1 || detail.Video.CommentsCount != 1 {
+		t.Fatalf("视频详情互动统计错误 got=%+v", detail.Video)
+	}
+
+	var authorProfile profileResponse
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/user/%d/profile", base, author.UserID), "", nil, http.StatusOK, &authorProfile)
+	if authorProfile.TotalLikes != 1 || authorProfile.FollowerCount != 1 || authorProfile.VloggerCount != 0 {
+		t.Fatalf("作者主页互动统计错误 got=%+v", authorProfile)
+	}
+	var viewerProfile profileResponse
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/user/%d/profile", base, viewer.UserID), "", nil, http.StatusOK, &viewerProfile)
+	if viewerProfile.TotalLikes != 0 || viewerProfile.FollowerCount != 0 || viewerProfile.VloggerCount != 1 {
+		t.Fatalf("观看者主页互动统计错误 got=%+v", viewerProfile)
+	}
+
+	doJSON(t, client, http.MethodDelete, likeURL, viewer.AccessToken, nil, http.StatusOK, &likeState)
+	if likeState.Liked || likeState.LikesCount != 0 {
+		t.Fatalf("取消点赞状态错误 got=%+v", likeState)
+	}
+	doJSON(t, client, http.MethodDelete, likeURL, viewer.AccessToken, nil, http.StatusOK, &likeState)
+	if likeState.Liked || likeState.LikesCount != 0 {
+		t.Fatalf("重复取消点赞应保持未点赞状态 got=%+v", likeState)
+	}
+	doJSON(t, client, http.MethodPut, likeURL, viewer.AccessToken, nil, http.StatusOK, &likeState)
+
+	doJSON(t, client, http.MethodDelete, followURL, viewer.AccessToken, nil, http.StatusOK, &followState)
+	if followState.Following || followState.FollowerCount != 0 {
+		t.Fatalf("取消关注状态错误 got=%+v", followState)
+	}
+	doJSON(t, client, http.MethodDelete, followURL, viewer.AccessToken, nil, http.StatusOK, &followState)
+	if followState.Following || followState.FollowerCount != 0 {
+		t.Fatalf("重复取消关注应保持未关注状态 got=%+v", followState)
+	}
+	doJSON(t, client, http.MethodPut, followURL, viewer.AccessToken, nil, http.StatusOK, &followState)
+
+	foreignDeleteURL := fmt.Sprintf("%s/api/video/auth/%d/comments/%d", base, item.ID, commentResult.Comment.ID)
+	doJSON(t, client, http.MethodDelete, foreignDeleteURL, author.AccessToken, nil, http.StatusForbidden, nil)
+	doJSON(t, client, http.MethodDelete, foreignDeleteURL, viewer.AccessToken, nil, http.StatusNoContent, nil)
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d/comments", base, item.ID), "", nil, http.StatusOK, &comments)
+	if len(comments.Items) != 0 {
+		t.Fatalf("删除后评论仍然公开 got=%+v", comments.Items)
+	}
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, item.ID), "", nil, http.StatusOK, &detail)
+	if detail.Video.CommentsCount != 0 {
+		t.Fatalf("删除评论后视频统计未更新 got=%+v", detail.Video)
+	}
+
+	doJSON(t, client, http.MethodDelete, fmt.Sprintf("%s/api/video/auth/%d", base, item.ID), author.AccessToken, nil, http.StatusNoContent, nil)
+	doJSON(t, client, http.MethodPut, likeURL, viewer.AccessToken, nil, http.StatusNotFound, nil)
+	doJSON(t, client, http.MethodPost, commentURL, viewer.AccessToken, map[string]string{"content": "不应写入"}, http.StatusNotFound, nil)
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d/comments", base, item.ID), "", nil, http.StatusNotFound, nil)
 }
 
 // 测试目标：验证公开 Feed 的游标分页、草稿过滤和软删除可见性
