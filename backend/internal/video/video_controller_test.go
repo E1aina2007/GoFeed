@@ -91,7 +91,7 @@ func TestHandlerListVideosInvalidLimit(t *testing.T) {
 	ctl, _, _ := newTestVideoController(t)
 
 	r := gin.New()
-	r.GET("/api/video", ctl.ListVideos)
+	r.GET("/api/video", ctl.GetVideoList)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/video?limit=999", nil))
 
@@ -151,7 +151,7 @@ func TestHandlerUploadDraftVideo(t *testing.T) {
 
 	r := gin.New()
 	r.Use(withUserID(1))
-	r.POST("/drafts/:id/play", ctl.UploadDraftVideo)
+	r.POST("/drafts/:id/play", ctl.UpdateDraftVideo)
 	req := httptest.NewRequest(http.MethodPost, "/drafts/1/play", &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	w := httptest.NewRecorder()
@@ -198,7 +198,7 @@ func TestHandlerUploadRejectsSpoofedFile(t *testing.T) {
 
 	r := gin.New()
 	r.Use(withUserID(1))
-	r.POST("/drafts/:id/play", ctl.UploadDraftVideo)
+	r.POST("/drafts/:id/play", ctl.UpdateDraftVideo)
 	req := httptest.NewRequest(http.MethodPost, "/drafts/1/play", &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	w := httptest.NewRecorder()
@@ -230,7 +230,7 @@ func TestHandlerUploadDraftCover(t *testing.T) {
 
 	r := gin.New()
 	r.Use(withUserID(1))
-	r.POST("/drafts/:id/cover", ctl.UploadDraftCover)
+	r.POST("/drafts/:id/cover", ctl.UpdateDraftCover)
 	req := httptest.NewRequest(http.MethodPost, "/drafts/1/cover", &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	w := httptest.NewRecorder()
@@ -270,7 +270,7 @@ func TestHandlerUploadRequiresAuth(t *testing.T) {
 	ctl, _, _ := newTestVideoController(t)
 
 	r := gin.New()
-	r.POST("/drafts/:id/play", ctl.UploadDraftVideo)
+	r.POST("/drafts/:id/play", ctl.UpdateDraftVideo)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/drafts/1/play", nil))
 
@@ -292,7 +292,7 @@ func TestHandlerPublishDraft(t *testing.T) {
 
 	r := gin.New()
 	r.Use(withUserID(1))
-	r.POST("/drafts/:id/publish", ctl.PublishDraft)
+	r.POST("/drafts/:id/publish", ctl.UpdateDraftPublication)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/drafts/1/publish", nil))
 
@@ -321,7 +321,7 @@ func TestHandlerPublishDraftRejectsForeignDraft(t *testing.T) {
 
 	r := gin.New()
 	r.Use(withUserID(1))
-	r.POST("/drafts/:id/publish", ctl.PublishDraft)
+	r.POST("/drafts/:id/publish", ctl.UpdateDraftPublication)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/drafts/1/publish", nil))
 
@@ -338,7 +338,7 @@ func TestHandlerPublishDraftRejectsIncompleteDraft(t *testing.T) {
 
 	r := gin.New()
 	r.Use(withUserID(1))
-	r.POST("/drafts/:id/publish", ctl.PublishDraft)
+	r.POST("/drafts/:id/publish", ctl.UpdateDraftPublication)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/drafts/1/publish", nil))
 
@@ -359,7 +359,7 @@ func TestHandlerPublishDraftRejectsRequestBody(t *testing.T) {
 
 	r := gin.New()
 	r.Use(withUserID(1))
-	r.POST("/drafts/:id/publish", ctl.PublishDraft)
+	r.POST("/drafts/:id/publish", ctl.UpdateDraftPublication)
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/drafts/1/publish", strings.NewReader(`{"play_url":"/static/videos/1/forged.mp4"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -380,7 +380,7 @@ func TestHandlerPublishRequiresAuth(t *testing.T) {
 	ctl, _, _ := newTestVideoController(t)
 
 	r := gin.New()
-	r.POST("/drafts/:id/publish", ctl.PublishDraft)
+	r.POST("/drafts/:id/publish", ctl.UpdateDraftPublication)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/drafts/1/publish", nil))
 
@@ -399,7 +399,7 @@ func TestHandlerDelete(t *testing.T) {
 
 	r := gin.New()
 	r.Use(withUserID(1))
-	r.DELETE("/api/video/auth/:id", ctl.Delete)
+	r.DELETE("/api/video/auth/:id", ctl.DeleteVideo)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/video/auth/5", nil))
 
@@ -420,7 +420,7 @@ func TestHandlerDeleteRejectsNonAuthor(t *testing.T) {
 
 	r := gin.New()
 	r.Use(withUserID(2))
-	r.DELETE("/api/video/auth/:id", ctl.Delete)
+	r.DELETE("/api/video/auth/:id", ctl.DeleteVideo)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/video/auth/5", nil))
 
@@ -439,7 +439,7 @@ func TestHandlerDeleteRejectsNonPublishedVideo(t *testing.T) {
 
 			r := gin.New()
 			r.Use(withUserID(1))
-			r.DELETE("/api/video/auth/:id", ctl.Delete)
+			r.DELETE("/api/video/auth/:id", ctl.DeleteVideo)
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/video/auth/5", nil))
 
@@ -460,7 +460,7 @@ func TestHandlerMineRequiresAuth(t *testing.T) {
 	ctl, _, _ := newTestVideoController(t)
 
 	r := gin.New()
-	r.GET("/mine", ctl.Mine)
+	r.GET("/mine", ctl.GetMyVideoList)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/mine", nil))
 

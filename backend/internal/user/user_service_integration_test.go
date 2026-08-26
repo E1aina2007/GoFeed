@@ -52,7 +52,7 @@ func TestDeleteRollsBackWhenSessionRevocationFails(t *testing.T) {
 	account := createUserWithSession(t, ctx, db, service, "atomic_delete_user", "delete-password-123")
 
 	forceSessionUpdateFailure(t, db)
-	if err := service.Delete(ctx, account.user.ID); err == nil {
+	if err := service.DeleteUser(ctx, account.user.ID); err == nil {
 		t.Fatal("expected forced session revocation failure")
 	}
 

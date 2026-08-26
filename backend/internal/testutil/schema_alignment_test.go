@@ -203,7 +203,7 @@ func TestDraftPurgeMigrationAdoptsLegacyDeletedDraft(t *testing.T) {
 		t.Fatalf("兼容状态错误 status=%s deleted=%v", got.Status, got.DeletedAt.Valid)
 	}
 
-	ids, err := video.NewRepository(db).ListRecoverableDraftPurges(context.Background(), 10)
+	ids, err := video.NewRepository(db).GetRecoverableDraftPurgeList(context.Background(), 10)
 	if err != nil {
 		t.Fatalf("查询兼容草稿清扫候选失败: %v", err)
 	}

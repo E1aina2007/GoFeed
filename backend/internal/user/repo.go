@@ -105,7 +105,7 @@ func (r *Repository) UpdateFields(ctx context.Context, id uint, updates map[stri
 	return nil
 }
 
-func (r *Repository) GetAll(ctx context.Context) ([]*User, error) {
+func (r *Repository) GetUserList(ctx context.Context) ([]*User, error) {
 	var users []*User
 	if err := r.db.WithContext(ctx).Find(&users).Error; err != nil {
 		return nil, err
@@ -114,7 +114,7 @@ func (r *Repository) GetAll(ctx context.Context) ([]*User, error) {
 }
 
 // 软删除用户
-func (r *Repository) Delete(ctx context.Context, id uint) error {
+func (r *Repository) DeleteUser(ctx context.Context, id uint) error {
 	result := r.db.WithContext(ctx).Delete(&User{}, id)
 	if result.Error != nil {
 		return result.Error
@@ -127,7 +127,7 @@ func (r *Repository) Delete(ctx context.Context, id uint) error {
 
 // 硬删除宽限期已届满的注销用户及其会话数据，并返回删除的用户数
 // 截止时间由调用方计算，便于测试指定任意时间点而不依赖真实时钟
-func (r *Repository) PurgeExpired(ctx context.Context, cutoff time.Time) (int64, error) {
+func (r *Repository) RemoveExpiredUsers(ctx context.Context, cutoff time.Time) (int64, error) {
 	var purged int64
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 先清该批用户的会话，避免留下孤儿数据

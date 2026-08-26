@@ -16,7 +16,7 @@ type fakePublishedVideoCounter struct {
 	authorIDs []uint
 }
 
-func (f *fakePublishedVideoCounter) CountPublishedByAuthor(_ context.Context, authorID uint) (int64, error) {
+func (f *fakePublishedVideoCounter) GetPublishedVideoCountByAuthor(_ context.Context, authorID uint) (int64, error) {
 	f.authorIDs = append(f.authorIDs, authorID)
 	return f.count, f.err
 }

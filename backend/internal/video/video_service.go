@@ -35,7 +35,7 @@ var (
 
 type VideoReader interface {
 	GetPublishedByID(ctx context.Context, id uint) (*Video, error)
-	ListPublished(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error)
+	GetPublishedVideoList(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error)
 }
 
 // VideoRepository 是服务层依赖的完整仓储能力，包含发布/删除等写操作
@@ -43,10 +43,10 @@ type VideoRepository interface {
 	VideoReader
 	Create(ctx context.Context, video *Video) error
 	GetByID(ctx context.Context, id uint) (*Video, error)
-	ListByAuthor(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error)
-	SoftDeletePublished(ctx context.Context, id, authorID uint) error
-	AttachDraftMedia(ctx context.Context, draftID, authorID uint, kind MediaKind, saved SavedFile, originalName string) error
-	PublishDraft(ctx context.Context, draftID, authorID uint) (*Video, error)
+	GetAuthorVideoList(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error)
+	DeletePublishedVideo(ctx context.Context, id, authorID uint) error
+	UpdateDraftMedia(ctx context.Context, draftID, authorID uint, kind MediaKind, saved SavedFile, originalName string) error
+	UpdateDraftPublication(ctx context.Context, draftID, authorID uint) (*Video, error)
 }
 
 type AuthorReader interface {
@@ -92,8 +92,8 @@ func (s *Service) CreateDraft(ctx context.Context, authorID uint, req DraftReque
 	return draftItem(*draft), nil
 }
 
-// AttachDraftMedia 将已经落盘的文件绑定到草稿。客户端不能提交或覆盖任何媒体元数据。
-func (s *Service) AttachDraftMedia(ctx context.Context, draftID, ownerID uint, kind MediaKind, saved SavedFile, originalName string) error {
+// UpdateDraftMedia 将已经落盘的文件绑定到草稿。客户端不能提交或覆盖任何媒体元数据。
+func (s *Service) UpdateDraftMedia(ctx context.Context, draftID, ownerID uint, kind MediaKind, saved SavedFile, originalName string) error {
 	if draftID == 0 || ownerID == 0 || (kind != MediaVideo && kind != MediaCover) ||
 		!isOwnedMediaURL(saved.PublicURL, kind, ownerID) || !isValidStoredFile(saved.PublicURL, saved.FileName) {
 		return ErrInvalidMedia
@@ -104,11 +104,11 @@ func (s *Service) AttachDraftMedia(ctx context.Context, draftID, ownerID uint, k
 	if originalName == "" {
 		originalName = saved.FileName
 	}
-	return s.repository.AttachDraftMedia(ctx, draftID, ownerID, kind, saved, originalName)
+	return s.repository.UpdateDraftMedia(ctx, draftID, ownerID, kind, saved, originalName)
 }
 
-// PublishDraft 只允许将当前用户完整的 draft 状态视频转换为 published。
-func (s *Service) PublishDraft(ctx context.Context, draftID, authorID uint) (VideoItem, error) {
+// UpdateDraftPublication 只允许将当前用户完整的 draft 状态视频转换为 published。
+func (s *Service) UpdateDraftPublication(ctx context.Context, draftID, authorID uint) (VideoItem, error) {
 	if draftID == 0 || authorID == 0 {
 		return VideoItem{}, ErrInvalidVideoID
 	}
@@ -116,7 +116,7 @@ func (s *Service) PublishDraft(ctx context.Context, draftID, authorID uint) (Vid
 		return VideoItem{}, ErrRepositoryUnavailable
 	}
 
-	video, err := s.repository.PublishDraft(ctx, draftID, authorID)
+	video, err := s.repository.UpdateDraftPublication(ctx, draftID, authorID)
 	if err != nil {
 		return VideoItem{}, err
 	}
@@ -152,8 +152,8 @@ func (s *Service) GetPublished(ctx context.Context, id uint) (VideoItem, error) 
 	return s.toVideoItem(ctx, video)
 }
 
-// 查询包含作者资料的视频列表
-func (s *Service) ListPublished(ctx context.Context, authorID uint, encodedCursor string, limit int) (ListResponse, error) {
+// GetPublishedVideoList 查询包含作者资料的视频列表。
+func (s *Service) GetPublishedVideoList(ctx context.Context, authorID uint, encodedCursor string, limit int) (ListResponse, error) {
 	if s.repository == nil {
 		return ListResponse{}, ErrRepositoryUnavailable
 	}
@@ -167,16 +167,16 @@ func (s *Service) ListPublished(ctx context.Context, authorID uint, encodedCurso
 		return ListResponse{}, err
 	}
 
-	videos, err := s.repository.ListPublished(ctx, authorID, cursor, limit+1)
+	videos, err := s.repository.GetPublishedVideoList(ctx, authorID, cursor, limit+1)
 	if err != nil {
 		return ListResponse{}, err
 	}
 	return s.buildListResponse(ctx, videos, limit)
 }
 
-// ListMine 返回当前用户已发布的视频管理列表。
+// GetMyVideoList 返回当前用户已发布的视频管理列表。
 // draft 和 purging 都没有可供 VideoItem 表达的公开媒体，不应混入该接口。
-func (s *Service) ListMine(ctx context.Context, authorID uint, encodedCursor string, limit int) (ListResponse, error) {
+func (s *Service) GetMyVideoList(ctx context.Context, authorID uint, encodedCursor string, limit int) (ListResponse, error) {
 	if authorID == 0 {
 		return ListResponse{}, ErrInvalidVideoID
 	}
@@ -193,15 +193,15 @@ func (s *Service) ListMine(ctx context.Context, authorID uint, encodedCursor str
 		return ListResponse{}, err
 	}
 
-	videos, err := s.repository.ListByAuthor(ctx, authorID, cursor, limit+1)
+	videos, err := s.repository.GetAuthorVideoList(ctx, authorID, cursor, limit+1)
 	if err != nil {
 		return ListResponse{}, err
 	}
 	return s.buildListResponse(ctx, videos, limit)
 }
 
-// Delete 仅作者本人可软删除自己的已发布视频
-func (s *Service) Delete(ctx context.Context, id, authorID uint) error {
+// DeleteVideo 仅作者本人可软删除自己的已发布视频。
+func (s *Service) DeleteVideo(ctx context.Context, id, authorID uint) error {
 	if id == 0 {
 		return ErrInvalidVideoID
 	}
@@ -222,7 +222,7 @@ func (s *Service) Delete(ctx context.Context, id, authorID uint) error {
 	if video.Status != VideoStatusPublished {
 		return ErrVideoNotFound
 	}
-	if err := s.repository.SoftDeletePublished(ctx, id, authorID); err != nil {
+	if err := s.repository.DeletePublishedVideo(ctx, id, authorID); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrVideoNotFound
 		}

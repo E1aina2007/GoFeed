@@ -76,20 +76,20 @@ func (ctl *Controller) Login(c *gin.Context) {
 }
 
 // 处理刷新令牌请求并轮换刷新令牌
-func (ctl *Controller) Refresh(c *gin.Context) {
+func (ctl *Controller) UpdateRefreshToken(c *gin.Context) {
 	var req RefreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid refresh payload"})
 		return
 	}
-	session, nextRefreshToken, err := ctl.Sessions.Refresh(c.Request.Context(), req.RefreshToken)
+	session, nextRefreshToken, err := ctl.Sessions.UpdateRefreshToken(c.Request.Context(), req.RefreshToken)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
 		return
 	}
 	user, err := ctl.Srv.GetByID(c.Request.Context(), session.UserID)
 	if err != nil {
-		_ = ctl.Sessions.Revoke(c.Request.Context(), session.ID, session.UserID)
+		_ = ctl.Sessions.UpdateSessionRevocation(c.Request.Context(), session.ID, session.UserID)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
 		return
 	}
@@ -107,14 +107,14 @@ func (ctl *Controller) Refresh(c *gin.Context) {
 }
 
 // 处理退出登录请求并仅撤销当前会话
-func (ctl *Controller) Logout(c *gin.Context) {
+func (ctl *Controller) UpdateSessionRevocation(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	sessionID, hasSession := jwt.SessionID(c)
 	if !ok || !hasSession {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
 		return
 	}
-	if err := ctl.Sessions.Revoke(c.Request.Context(), sessionID, userID); err != nil {
+	if err := ctl.Sessions.UpdateSessionRevocation(c.Request.Context(), sessionID, userID); err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
 		return
 	}
@@ -137,8 +137,8 @@ func (ctl *Controller) GetUser(c *gin.Context) {
 }
 
 // 处理用户列表读取请求
-func (ctl *Controller) ListUsers(c *gin.Context) {
-	users, err := ctl.Srv.GetAll(c.Request.Context())
+func (ctl *Controller) GetUserList(c *gin.Context) {
+	users, err := ctl.Srv.GetUserList(c.Request.Context())
 	if err != nil {
 		handleUserError(c, err)
 		return
@@ -203,8 +203,8 @@ func (ctl *Controller) UpdateProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "profile updated successfully"})
 }
 
-// UploadAvatar 处理 POST /api/user/auth/avatar
-func (ctl *Controller) UploadAvatar(c *gin.Context) {
+// UpdateAvatar 处理 POST /api/user/auth/avatar
+func (ctl *Controller) UpdateAvatar(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
@@ -278,7 +278,7 @@ func (ctl *Controller) DeleteUser(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
 		return
 	}
-	if err := ctl.Srv.Delete(c.Request.Context(), userID); err != nil {
+	if err := ctl.Srv.DeleteUser(c.Request.Context(), userID); err != nil {
 		handleUserError(c, err)
 		return
 	}

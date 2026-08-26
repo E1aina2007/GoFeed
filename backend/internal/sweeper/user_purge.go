@@ -1,4 +1,3 @@
-
 package sweeper
 
 import (
@@ -11,7 +10,7 @@ var ErrUserPurgerUnavailable = errors.New("user purger unavailable")
 
 // UserPurger 是注销用户清扫任务所需的仓储能力子集
 type UserPurger interface {
-	PurgeExpired(ctx context.Context, cutoff time.Time) (int64, error)
+	RemoveExpiredUsers(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 // UserPurgeJob 周期性地硬删除超过保留期的注销用户
@@ -35,5 +34,5 @@ func (j *UserPurgeJob) Run(ctx context.Context) (int64, error) {
 	if j.purger == nil {
 		return 0, ErrUserPurgerUnavailable
 	}
-	return j.purger.PurgeExpired(ctx, j.now().Add(-j.retention))
+	return j.purger.RemoveExpiredUsers(ctx, j.now().Add(-j.retention))
 }

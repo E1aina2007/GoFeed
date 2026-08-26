@@ -32,17 +32,17 @@ type fakeDraftPurger struct {
 	hardErr     map[uint]error
 }
 
-func (f *fakeDraftPurger) ListRecoverableDraftPurges(_ context.Context, _ int) ([]uint, error) {
+func (f *fakeDraftPurger) GetRecoverableDraftPurgeList(_ context.Context, _ int) ([]uint, error) {
 	f.listCalls = append(f.listCalls, "recoverable")
 	return f.recoverable, f.listErr
 }
 
-func (f *fakeDraftPurger) ListExpiredDraftsForPurge(_ context.Context, _ time.Time, _ int) ([]uint, error) {
+func (f *fakeDraftPurger) GetExpiredDraftPurgeList(_ context.Context, _ time.Time, _ int) ([]uint, error) {
 	f.listCalls = append(f.listCalls, "expired")
 	return f.expired, f.listErr
 }
 
-func (f *fakeDraftPurger) ClaimDraftPurge(_ context.Context, id uint, _ time.Time, token string, _ time.Duration) (*video.DraftPurgeClaim, bool, error) {
+func (f *fakeDraftPurger) UpdateDraftPurgeClaim(_ context.Context, id uint, _ time.Time, token string, _ time.Duration) (*video.DraftPurgeClaim, bool, error) {
 	f.claimCalls = append(f.claimCalls, id)
 	if err := f.claimErr[id]; err != nil {
 		return nil, false, err
@@ -56,7 +56,7 @@ func (f *fakeDraftPurger) ClaimDraftPurge(_ context.Context, id uint, _ time.Tim
 	return &copy, true, nil
 }
 
-func (f *fakeDraftPurger) RenewDraftPurgeLease(_ context.Context, id uint, _ string, _ time.Duration) (bool, error) {
+func (f *fakeDraftPurger) UpdateDraftPurgeLease(_ context.Context, id uint, _ string, _ time.Duration) (bool, error) {
 	if err := f.renewErr[id]; err != nil {
 		return false, err
 	}
@@ -67,7 +67,7 @@ func (f *fakeDraftPurger) RenewDraftPurgeLease(_ context.Context, id uint, _ str
 	return ok, nil
 }
 
-func (f *fakeDraftPurger) MarkDraftMediaPurged(_ context.Context, id uint, _ string, kind video.MediaKind, _ time.Duration) (bool, error) {
+func (f *fakeDraftPurger) UpdateDraftMediaPurge(_ context.Context, id uint, _ string, kind video.MediaKind, _ time.Duration) (bool, error) {
 	call := draftMediaMark{id: id, kind: kind}
 	f.marked = append(f.marked, call)
 	if err := f.markErr[call]; err != nil {
@@ -80,7 +80,7 @@ func (f *fakeDraftPurger) MarkDraftMediaPurged(_ context.Context, id uint, _ str
 	return ok, nil
 }
 
-func (f *fakeDraftPurger) HardDeletePurgedDraft(_ context.Context, id uint, _ string) (bool, error) {
+func (f *fakeDraftPurger) RemovePurgedDraft(_ context.Context, id uint, _ string) (bool, error) {
 	f.hardDeleted = append(f.hardDeleted, id)
 	if err := f.hardErr[id]; err != nil {
 		return false, err

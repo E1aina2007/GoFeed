@@ -38,8 +38,8 @@ func (ctl *Controller) GetVideo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"video": item})
 }
 
-// ListVideos 处理 GET /api/video?author_id=&cursor=&limit=
-func (ctl *Controller) ListVideos(c *gin.Context) {
+// GetVideoList 处理 GET /api/video?author_id=&cursor=&limit=
+func (ctl *Controller) GetVideoList(c *gin.Context) {
 	limit, err := parseLimit(c.Query("limit"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -51,7 +51,7 @@ func (ctl *Controller) ListVideos(c *gin.Context) {
 		return
 	}
 
-	resp, err := ctl.srv.ListPublished(c.Request.Context(), authorID, c.Query("cursor"), limit)
+	resp, err := ctl.srv.GetPublishedVideoList(c.Request.Context(), authorID, c.Query("cursor"), limit)
 	if err != nil {
 		handleVideoError(c, err)
 		return
@@ -80,13 +80,13 @@ func (ctl *Controller) CreateDraft(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"draft": draft})
 }
 
-// UploadDraftVideo 处理 POST /api/video/auth/drafts/:id/play。
-func (ctl *Controller) UploadDraftVideo(c *gin.Context) {
+// UpdateDraftVideo 处理 POST /api/video/auth/drafts/:id/play。
+func (ctl *Controller) UpdateDraftVideo(c *gin.Context) {
 	ctl.uploadDraftMedia(c, MediaVideo, "play_url", "play_file_name", "play_original_name")
 }
 
-// UploadDraftCover 处理 POST /api/video/auth/drafts/:id/cover。
-func (ctl *Controller) UploadDraftCover(c *gin.Context) {
+// UpdateDraftCover 处理 POST /api/video/auth/drafts/:id/cover。
+func (ctl *Controller) UpdateDraftCover(c *gin.Context) {
 	ctl.uploadDraftMedia(c, MediaCover, "cover_url", "cover_file_name", "cover_original_name")
 }
 
@@ -141,7 +141,7 @@ func (ctl *Controller) uploadDraftMedia(c *gin.Context, kind MediaKind, urlKey, 
 		return
 	}
 	originalName := OriginalName(header.Filename)
-	err = ctl.srv.AttachDraftMedia(c.Request.Context(), draftID, userID, kind, saved, originalName)
+	err = ctl.srv.UpdateDraftMedia(c.Request.Context(), draftID, userID, kind, saved, originalName)
 	if err != nil {
 		if remover, ok := ctl.storage.(MediaRemover); ok {
 			_ = remover.Remove(c.Request.Context(), saved.PublicURL)
@@ -157,8 +157,8 @@ func (ctl *Controller) uploadDraftMedia(c *gin.Context, kind MediaKind, urlKey, 
 	})
 }
 
-// PublishDraft 处理 POST /api/video/auth/drafts/:id/publish。
-func (ctl *Controller) PublishDraft(c *gin.Context) {
+// UpdateDraftPublication 处理 POST /api/video/auth/drafts/:id/publish。
+func (ctl *Controller) UpdateDraftPublication(c *gin.Context) {
 	userID, ok := jwt.UserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
@@ -177,7 +177,7 @@ func (ctl *Controller) PublishDraft(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	item, err := ctl.srv.PublishDraft(c.Request.Context(), draftID, userID)
+	item, err := ctl.srv.UpdateDraftPublication(c.Request.Context(), draftID, userID)
 	if err != nil {
 		handleVideoError(c, err)
 		return
@@ -185,8 +185,8 @@ func (ctl *Controller) PublishDraft(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"video": item})
 }
 
-// Mine 处理 GET /api/video/auth/mine?cursor=&limit=
-func (ctl *Controller) Mine(c *gin.Context) {
+// GetMyVideoList 处理 GET /api/video/auth/mine?cursor=&limit=
+func (ctl *Controller) GetMyVideoList(c *gin.Context) {
 	userID, ok := jwt.UserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
@@ -198,7 +198,7 @@ func (ctl *Controller) Mine(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	resp, err := ctl.srv.ListMine(c.Request.Context(), userID, c.Query("cursor"), limit)
+	resp, err := ctl.srv.GetMyVideoList(c.Request.Context(), userID, c.Query("cursor"), limit)
 	if err != nil {
 		handleVideoError(c, err)
 		return
@@ -206,8 +206,8 @@ func (ctl *Controller) Mine(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// Delete 处理 DELETE /api/video/auth/:id
-func (ctl *Controller) Delete(c *gin.Context) {
+// DeleteVideo 处理 DELETE /api/video/auth/:id
+func (ctl *Controller) DeleteVideo(c *gin.Context) {
 	userID, ok := jwt.UserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
@@ -219,7 +219,7 @@ func (ctl *Controller) Delete(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := ctl.srv.Delete(c.Request.Context(), id, userID); err != nil {
+	if err := ctl.srv.DeleteVideo(c.Request.Context(), id, userID); err != nil {
 		handleVideoError(c, err)
 		return
 	}

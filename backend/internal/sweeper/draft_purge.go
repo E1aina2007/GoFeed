@@ -25,12 +25,12 @@ var (
 // DraftPurger 是过期草稿清扫所需的持久化围栏能力。
 // 所有会改变清扫进度或删除记录的操作都必须携带租约 token。
 type DraftPurger interface {
-	ListRecoverableDraftPurges(ctx context.Context, limit int) ([]uint, error)
-	ListExpiredDraftsForPurge(ctx context.Context, cutoff time.Time, limit int) ([]uint, error)
-	ClaimDraftPurge(ctx context.Context, id uint, cutoff time.Time, token string, lease time.Duration) (*video.DraftPurgeClaim, bool, error)
-	RenewDraftPurgeLease(ctx context.Context, id uint, token string, lease time.Duration) (bool, error)
-	MarkDraftMediaPurged(ctx context.Context, id uint, token string, kind video.MediaKind, lease time.Duration) (bool, error)
-	HardDeletePurgedDraft(ctx context.Context, id uint, token string) (bool, error)
+	GetRecoverableDraftPurgeList(ctx context.Context, limit int) ([]uint, error)
+	GetExpiredDraftPurgeList(ctx context.Context, cutoff time.Time, limit int) ([]uint, error)
+	UpdateDraftPurgeClaim(ctx context.Context, id uint, cutoff time.Time, token string, lease time.Duration) (*video.DraftPurgeClaim, bool, error)
+	UpdateDraftPurgeLease(ctx context.Context, id uint, token string, lease time.Duration) (bool, error)
+	UpdateDraftMediaPurge(ctx context.Context, id uint, token string, kind video.MediaKind, lease time.Duration) (bool, error)
+	RemovePurgedDraft(ctx context.Context, id uint, token string) (bool, error)
 }
 
 // DraftPurgeJob 在草稿过期后以 token 租约删除媒体并硬删除记录。
@@ -90,7 +90,7 @@ func (j *DraftPurgeJob) Run(ctx context.Context) (int64, error) {
 			continue
 		}
 
-		claim, claimed, err := j.purger.ClaimDraftPurge(ctx, id, cutoff, token, j.lease)
+		claim, claimed, err := j.purger.UpdateDraftPurgeClaim(ctx, id, cutoff, token, j.lease)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("claim draft %d: %w", id, err))
 			continue
@@ -119,11 +119,11 @@ func (j *DraftPurgeJob) Run(ctx context.Context) (int64, error) {
 // 每种状态都有稳定的批次位置，避免大量新草稿导致失败项永远得不到重试；
 // 任一类不足时，另一类会填满剩余容量。
 func (j *DraftPurgeJob) listCandidates(ctx context.Context, cutoff time.Time) ([]uint, error) {
-	recoverable, err := j.purger.ListRecoverableDraftPurges(ctx, j.batchSize)
+	recoverable, err := j.purger.GetRecoverableDraftPurgeList(ctx, j.batchSize)
 	if err != nil {
 		return nil, fmt.Errorf("list recoverable draft purges: %w", err)
 	}
-	expired, err := j.purger.ListExpiredDraftsForPurge(ctx, cutoff, j.batchSize)
+	expired, err := j.purger.GetExpiredDraftPurgeList(ctx, cutoff, j.batchSize)
 	if err != nil {
 		return nil, fmt.Errorf("list expired drafts: %w", err)
 	}
@@ -173,7 +173,7 @@ func (j *DraftPurgeJob) purgeClaim(ctx context.Context, claim *video.DraftPurgeC
 		}
 	}
 
-	deleted, err := j.purger.HardDeletePurgedDraft(ctx, claim.DraftID, claim.Token)
+	deleted, err := j.purger.RemovePurgedDraft(ctx, claim.DraftID, claim.Token)
 	if err != nil {
 		return false, fmt.Errorf("hard delete draft %d: %w", claim.DraftID, err)
 	}
@@ -181,7 +181,7 @@ func (j *DraftPurgeJob) purgeClaim(ctx context.Context, claim *video.DraftPurgeC
 }
 
 func (j *DraftPurgeJob) purgeMediaSlot(ctx context.Context, claim *video.DraftPurgeClaim, kind video.MediaKind, publicURL string) (bool, error) {
-	owned, err := j.purger.RenewDraftPurgeLease(ctx, claim.DraftID, claim.Token, j.lease)
+	owned, err := j.purger.UpdateDraftPurgeLease(ctx, claim.DraftID, claim.Token, j.lease)
 	if err != nil {
 		return false, fmt.Errorf("renew draft %d purge lease: %w", claim.DraftID, err)
 	}
@@ -191,7 +191,7 @@ func (j *DraftPurgeJob) purgeMediaSlot(ctx context.Context, claim *video.DraftPu
 	if err := j.remover.Remove(ctx, publicURL); err != nil {
 		return false, fmt.Errorf("remove draft %d %s media: %w", claim.DraftID, kind, err)
 	}
-	marked, err := j.purger.MarkDraftMediaPurged(ctx, claim.DraftID, claim.Token, kind, j.lease)
+	marked, err := j.purger.UpdateDraftMediaPurge(ctx, claim.DraftID, claim.Token, kind, j.lease)
 	if err != nil {
 		return false, fmt.Errorf("mark draft %d %s media purged: %w", claim.DraftID, kind, err)
 	}

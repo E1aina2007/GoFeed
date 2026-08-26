@@ -82,9 +82,9 @@ func TestRepositoryPurgeExpired(t *testing.T) {
 	seedSessionRow(t, db, "s-boundary", boundary)
 	seedSessionRow(t, db, "s-grace", grace)
 
-	purged, err := repo.PurgeExpired(ctx, cutoff)
+	purged, err := repo.RemoveExpiredUsers(ctx, cutoff)
 	if err != nil {
-		t.Fatalf("PurgeExpired: %v", err)
+		t.Fatalf("RemoveExpiredUsers: %v", err)
 	}
 	if purged != 2 {
 		t.Fatalf("应硬删除 2 个用户（过期 + 边界）got=%d", purged)
@@ -125,7 +125,7 @@ func TestRepositoryPurgeExpiredIdempotent(t *testing.T) {
 	id := seedUser(t, db, "gone")
 	setDeletedAt(t, db, id, cutoff.Add(-time.Hour))
 
-	purged, err := repo.PurgeExpired(ctx, cutoff)
+	purged, err := repo.RemoveExpiredUsers(ctx, cutoff)
 	if err != nil {
 		t.Fatalf("首次清扫失败: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestRepositoryPurgeExpiredIdempotent(t *testing.T) {
 		t.Fatalf("首次清扫应删除 1 个用户 got=%d", purged)
 	}
 
-	purged, err = repo.PurgeExpired(ctx, cutoff)
+	purged, err = repo.RemoveExpiredUsers(ctx, cutoff)
 	if err != nil {
 		t.Fatalf("重复清扫失败: %v", err)
 	}

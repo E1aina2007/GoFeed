@@ -19,7 +19,7 @@ type Service struct {
 // PublishedVideoCounter 是用户公开资料所需的视频统计能力。
 // 接口定义在消费方，避免 user 包依赖 video 包而产生循环依赖。
 type PublishedVideoCounter interface {
-	CountPublishedByAuthor(ctx context.Context, authorID uint) (int64, error)
+	GetPublishedVideoCountByAuthor(ctx context.Context, authorID uint) (int64, error)
 }
 
 var (
@@ -84,7 +84,7 @@ func (s *Service) UpdatePassword(ctx context.Context, id uint, old, new string) 
 			}
 			return err
 		}
-		return auth.NewSessionRepository(tx).RevokeAllForUser(ctx, id)
+		return auth.NewSessionRepository(tx).UpdateUserSessionRevocations(ctx, id)
 	})
 }
 
@@ -138,7 +138,7 @@ func (s *Service) GetProfile(ctx context.Context, id uint) (*Profile, error) {
 		return nil, ErrVideoCounterUnavailable
 	}
 
-	videoCount, err := s.videoCounter.CountPublishedByAuthor(ctx, id)
+	videoCount, err := s.videoCounter.GetPublishedVideoCountByAuthor(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -150,16 +150,16 @@ func (s *Service) GetByUsername(ctx context.Context, username string) (*User, er
 }
 
 // 在同一事务中软删除用户并撤销其全部会话
-func (s *Service) Delete(ctx context.Context, id uint) error {
+func (s *Service) DeleteUser(ctx context.Context, id uint) error {
 	return s.Repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		users := NewRepository(tx)
-		if err := users.Delete(ctx, id); err != nil {
+		if err := users.DeleteUser(ctx, id); err != nil {
 			return err
 		}
-		return auth.NewSessionRepository(tx).RevokeAllForUser(ctx, id)
+		return auth.NewSessionRepository(tx).UpdateUserSessionRevocations(ctx, id)
 	})
 }
 
-func (s *Service) GetAll(ctx context.Context) ([]*User, error) {
-	return s.Repo.GetAll(ctx)
+func (s *Service) GetUserList(ctx context.Context) ([]*User, error) {
+	return s.Repo.GetUserList(ctx)
 }

@@ -17,7 +17,7 @@ type fakePurger struct {
 
 // 测试目标：模拟执行清理操作
 // 预期效果：保存接收到的截止时间并透传预设结果
-func (f *fakePurger) PurgeExpired(_ context.Context, cutoff time.Time) (int64, error) {
+func (f *fakePurger) RemoveExpiredUsers(_ context.Context, cutoff time.Time) (int64, error) {
 	f.cutoff = cutoff
 	return f.purged, f.err
 }

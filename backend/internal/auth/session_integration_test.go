@@ -47,24 +47,24 @@ func TestSessionRepositoryCreateAndFindActive(t *testing.T) {
 	const token = "refresh-token-1"
 	seedSession(t, repo, "sid-1", 7, token)
 
-	got, err := repo.FindActiveByID(ctx, "sid-1", 7)
+	got, err := repo.GetActiveByID(ctx, "sid-1", 7)
 	if err != nil {
-		t.Fatalf("FindActiveByID: %v", err)
+		t.Fatalf("GetActiveByID: %v", err)
 	}
 	if got.ID != "sid-1" || got.RefreshTokenHash != hashToken(token) {
 		t.Fatalf("会话读回不一致 got=%+v", got)
 	}
 
-	if _, err := repo.FindActiveByID(ctx, "sid-1", 8); !errors.Is(err, ErrSessionInvalid) {
+	if _, err := repo.GetActiveByID(ctx, "sid-1", 8); !errors.Is(err, ErrSessionInvalid) {
 		t.Fatalf("用户不匹配应返回 ErrSessionInvalid err=%v", err)
 	}
-	if _, err := repo.FindActiveByID(ctx, "missing", 7); !errors.Is(err, ErrSessionInvalid) {
+	if _, err := repo.GetActiveByID(ctx, "missing", 7); !errors.Is(err, ErrSessionInvalid) {
 		t.Fatalf("不存在的会话应返回 ErrSessionInvalid err=%v", err)
 	}
 
-	byHash, err := repo.FindActiveByRefreshTokenHash(ctx, hashToken(token))
+	byHash, err := repo.GetActiveByRefreshTokenHash(ctx, hashToken(token))
 	if err != nil {
-		t.Fatalf("FindActiveByRefreshTokenHash: %v", err)
+		t.Fatalf("GetActiveByRefreshTokenHash: %v", err)
 	}
 	if byHash.ID != "sid-1" {
 		t.Fatalf("按 hash 查到的会话错误 got=%+v", byHash)
@@ -98,14 +98,14 @@ func TestSessionRepositoryFindActiveFiltersExpiredAndRevoked(t *testing.T) {
 	}
 
 	for _, id := range []string{"sid-expired", "sid-revoked"} {
-		if _, err := repo.FindActiveByID(ctx, id, 1); !errors.Is(err, ErrSessionInvalid) {
+		if _, err := repo.GetActiveByID(ctx, id, 1); !errors.Is(err, ErrSessionInvalid) {
 			t.Fatalf("%s 不应视为活跃会话 err=%v", id, err)
 		}
 	}
-	if _, err := repo.FindActiveByRefreshTokenHash(ctx, hashToken("e")); !errors.Is(err, ErrSessionInvalid) {
+	if _, err := repo.GetActiveByRefreshTokenHash(ctx, hashToken("e")); !errors.Is(err, ErrSessionInvalid) {
 		t.Fatalf("过期会话的 hash 应失效 err=%v", err)
 	}
-	if _, err := repo.FindActiveByRefreshTokenHash(ctx, hashToken("r")); !errors.Is(err, ErrSessionInvalid) {
+	if _, err := repo.GetActiveByRefreshTokenHash(ctx, hashToken("r")); !errors.Is(err, ErrSessionInvalid) {
 		t.Fatalf("已撤销会话的 hash 应失效 err=%v", err)
 	}
 }
@@ -117,55 +117,55 @@ func TestSessionRepositoryRotateRefresh(t *testing.T) {
 	ctx := context.Background()
 	s := seedSession(t, repo, "sid-rotate", 3, "old-token")
 
-	if err := repo.RotateRefresh(ctx, s, hashToken("old-token"), hashToken("new-token")); err != nil {
+	if err := repo.UpdateRefreshToken(ctx, s, hashToken("old-token"), hashToken("new-token")); err != nil {
 		t.Fatalf("首次轮换应成功: %v", err)
 	}
-	if _, err := repo.FindActiveByRefreshTokenHash(ctx, hashToken("new-token")); err != nil {
+	if _, err := repo.GetActiveByRefreshTokenHash(ctx, hashToken("new-token")); err != nil {
 		t.Fatalf("新 hash 应可查到: %v", err)
 	}
-	if _, err := repo.FindActiveByRefreshTokenHash(ctx, hashToken("old-token")); !errors.Is(err, ErrSessionInvalid) {
+	if _, err := repo.GetActiveByRefreshTokenHash(ctx, hashToken("old-token")); !errors.Is(err, ErrSessionInvalid) {
 		t.Fatalf("旧 hash 应失效 err=%v", err)
 	}
 
 	// 使用旧令牌摘要重放轮换必须失败
-	if err := repo.RotateRefresh(ctx, s, hashToken("old-token"), hashToken("another")); !errors.Is(err, ErrSessionInvalid) {
+	if err := repo.UpdateRefreshToken(ctx, s, hashToken("old-token"), hashToken("another")); !errors.Is(err, ErrSessionInvalid) {
 		t.Fatalf("重放旧 hash 应失败 err=%v", err)
 	}
 	// 不存在的会话轮换同样失败
-	if err := repo.RotateRefresh(ctx, &AuthSession{ID: "missing", UserID: 3}, hashToken("a"), hashToken("b")); !errors.Is(err, ErrSessionInvalid) {
+	if err := repo.UpdateRefreshToken(ctx, &AuthSession{ID: "missing", UserID: 3}, hashToken("a"), hashToken("b")); !errors.Is(err, ErrSessionInvalid) {
 		t.Fatalf("不存在的会话轮换应失败 err=%v", err)
 	}
 }
 
 // 测试目标：验证单个撤销和按用户全量撤销的作用范围
 // 预期效果：单个撤销不影响同用户其他会话，全量撤销不影响其他用户会话
-func TestSessionRepositoryRevoke(t *testing.T) {
+func TestSessionRepositoryUpdateSessionRevocation(t *testing.T) {
 	repo := newSessionRepo(t)
 	ctx := context.Background()
 	seedSession(t, repo, "sid-a", 5, "ta")
 	seedSession(t, repo, "sid-b", 5, "tb")
 	seedSession(t, repo, "sid-c", 6, "tc")
 
-	if err := repo.Revoke(ctx, "sid-a", 5); err != nil {
-		t.Fatalf("Revoke: %v", err)
+	if err := repo.UpdateSessionRevocation(ctx, "sid-a", 5); err != nil {
+		t.Fatalf("UpdateSessionRevocation: %v", err)
 	}
-	if _, err := repo.FindActiveByID(ctx, "sid-a", 5); !errors.Is(err, ErrSessionInvalid) {
+	if _, err := repo.GetActiveByID(ctx, "sid-a", 5); !errors.Is(err, ErrSessionInvalid) {
 		t.Fatalf("撤销后的会话应失效 err=%v", err)
 	}
-	if _, err := repo.FindActiveByID(ctx, "sid-b", 5); err != nil {
+	if _, err := repo.GetActiveByID(ctx, "sid-b", 5); err != nil {
 		t.Fatalf("同用户其他会话不应受影响: %v", err)
 	}
-	if err := repo.Revoke(ctx, "sid-a", 5); !errors.Is(err, ErrSessionInvalid) {
+	if err := repo.UpdateSessionRevocation(ctx, "sid-a", 5); !errors.Is(err, ErrSessionInvalid) {
 		t.Fatalf("重复撤销应失败 err=%v", err)
 	}
 
-	if err := repo.RevokeAllForUser(ctx, 5); err != nil {
-		t.Fatalf("RevokeAllForUser: %v", err)
+	if err := repo.UpdateUserSessionRevocations(ctx, 5); err != nil {
+		t.Fatalf("UpdateUserSessionRevocations: %v", err)
 	}
-	if _, err := repo.FindActiveByID(ctx, "sid-b", 5); !errors.Is(err, ErrSessionInvalid) {
+	if _, err := repo.GetActiveByID(ctx, "sid-b", 5); !errors.Is(err, ErrSessionInvalid) {
 		t.Fatalf("全量撤销后该用户会话应失效 err=%v", err)
 	}
-	if _, err := repo.FindActiveByID(ctx, "sid-c", 6); err != nil {
+	if _, err := repo.GetActiveByID(ctx, "sid-c", 6); err != nil {
 		t.Fatalf("其他用户不应受全量撤销影响: %v", err)
 	}
 }
@@ -199,7 +199,7 @@ func TestSessionServiceCreateHashesRefreshToken(t *testing.T) {
 
 // 测试目标：验证会话服务刷新令牌时轮换令牌且保留会话标识
 // 预期效果：旧刷新令牌失效，新刷新令牌可继续轮换且会话标识不变
-func TestSessionServiceRefreshRotatesAndPreservesSessionID(t *testing.T) {
+func TestSessionServiceUpdateRefreshTokenRotatesAndPreservesSessionID(t *testing.T) {
 	db := testutil.DB(t)
 	svc := NewSessionService(NewSessionRepository(db))
 	ctx := context.Background()
@@ -213,9 +213,9 @@ func TestSessionServiceRefreshRotatesAndPreservesSessionID(t *testing.T) {
 		t.Fatalf("读取会话 ID 失败: %v", err)
 	}
 
-	session, nextToken, err := svc.Refresh(ctx, pair.RefreshToken)
+	session, nextToken, err := svc.UpdateRefreshToken(ctx, pair.RefreshToken)
 	if err != nil {
-		t.Fatalf("Refresh: %v", err)
+		t.Fatalf("UpdateRefreshToken: %v", err)
 	}
 	if session.ID != sid {
 		t.Fatalf("refresh 不应改变会话 ID got=%s want=%s", session.ID, sid)
@@ -224,10 +224,10 @@ func TestSessionServiceRefreshRotatesAndPreservesSessionID(t *testing.T) {
 		t.Fatalf("refresh 应返回新的 refresh token got=%q", nextToken)
 	}
 
-	if _, _, err := svc.Refresh(ctx, pair.RefreshToken); !errors.Is(err, ErrSessionInvalid) {
+	if _, _, err := svc.UpdateRefreshToken(ctx, pair.RefreshToken); !errors.Is(err, ErrSessionInvalid) {
 		t.Fatalf("旧 refresh token 重放应失败 err=%v", err)
 	}
-	if _, _, err := svc.Refresh(ctx, nextToken); err != nil {
+	if _, _, err := svc.UpdateRefreshToken(ctx, nextToken); err != nil {
 		t.Fatalf("新 refresh token 应可继续轮换: %v", err)
 	}
 }
@@ -258,8 +258,8 @@ func TestSessionServiceValidate(t *testing.T) {
 		t.Fatalf("不存在的会话应失败 err=%v", err)
 	}
 
-	if err := svc.Revoke(ctx, sid, 11); err != nil {
-		t.Fatalf("Revoke: %v", err)
+	if err := svc.UpdateSessionRevocation(ctx, sid, 11); err != nil {
+		t.Fatalf("UpdateSessionRevocation: %v", err)
 	}
 	if err := svc.Validate(ctx, sid, 11); !errors.Is(err, ErrSessionInvalid) {
 		t.Fatalf("撤销后的会话应校验失败 err=%v", err)

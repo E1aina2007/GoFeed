@@ -63,18 +63,18 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	users := api.Group("/user")
 	users.POST("/register", userCtl.CreateUser)
 	users.POST("/login", userCtl.Login)
-	users.POST("/refresh", userCtl.Refresh)
-	users.GET("", userCtl.ListUsers)
+	users.POST("/refresh", userCtl.UpdateRefreshToken)
+	users.GET("", userCtl.GetUserList)
 	users.GET("/:id", userCtl.GetUser)
 	users.GET("/:id/profile", userCtl.GetProfile)
 
 	protectedUsers := users.Group("/auth")
 	protectedUsers.Use(jwt.Auth(sessionService))
 	{
-		protectedUsers.POST("/logout", userCtl.Logout)
+		protectedUsers.POST("/logout", userCtl.UpdateSessionRevocation)
 		protectedUsers.PATCH("/name", userCtl.UpdateName)
 		protectedUsers.PATCH("/password", userCtl.UpdatePassword)
-		protectedUsers.POST("/avatar", userCtl.UploadAvatar)
+		protectedUsers.POST("/avatar", userCtl.UpdateAvatar)
 		protectedUsers.PATCH("/profile", userCtl.UpdateProfile)
 		protectedUsers.DELETE("", userCtl.DeleteUser)
 	}
@@ -85,18 +85,18 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		mediaStorage,
 	)
 	videos := api.Group("/video")
-	videos.GET("", videoCtl.ListVideos)
+	videos.GET("", videoCtl.GetVideoList)
 	videos.GET("/:id", videoCtl.GetVideo)
 
 	protectedVideos := videos.Group("/auth")
 	protectedVideos.Use(jwt.Auth(sessionService))
 	{
 		protectedVideos.POST("/drafts", videoCtl.CreateDraft)
-		protectedVideos.POST("/drafts/:id/play", videoCtl.UploadDraftVideo)
-		protectedVideos.POST("/drafts/:id/cover", videoCtl.UploadDraftCover)
-		protectedVideos.POST("/drafts/:id/publish", videoCtl.PublishDraft)
-		protectedVideos.GET("/mine", videoCtl.Mine)
-		protectedVideos.DELETE("/:id", videoCtl.Delete)
+		protectedVideos.POST("/drafts/:id/play", videoCtl.UpdateDraftVideo)
+		protectedVideos.POST("/drafts/:id/cover", videoCtl.UpdateDraftCover)
+		protectedVideos.POST("/drafts/:id/publish", videoCtl.UpdateDraftPublication)
+		protectedVideos.GET("/mine", videoCtl.GetMyVideoList)
+		protectedVideos.DELETE("/:id", videoCtl.DeleteVideo)
 	}
 
 	return r

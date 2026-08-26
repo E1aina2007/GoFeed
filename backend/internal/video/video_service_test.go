@@ -39,7 +39,7 @@ func (r *fakeVideoReader) GetPublishedByID(_ context.Context, _ uint) (*Video, e
 
 // 测试目标：模拟已发布视频列表读取
 // 预期效果：记录查询参数并返回预设的视频列表
-func (r *fakeVideoReader) ListPublished(_ context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error) {
+func (r *fakeVideoReader) GetPublishedVideoList(_ context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error) {
 	r.listAuthorID = authorID
 	r.listCursor = cursor
 	r.listLimit = limit
@@ -64,7 +64,7 @@ func (r *fakeVideoReader) Create(_ context.Context, video *Video) error {
 
 // 测试目标：模拟将服务端保存的媒体绑定到草稿
 // 预期效果：仅作者本人的 draft 可写入对应种类的元数据
-func (r *fakeVideoReader) AttachDraftMedia(_ context.Context, draftID, authorID uint, kind MediaKind, saved SavedFile, originalName string) error {
+func (r *fakeVideoReader) UpdateDraftMedia(_ context.Context, draftID, authorID uint, kind MediaKind, saved SavedFile, originalName string) error {
 	if r.attachErr != nil {
 		return r.attachErr
 	}
@@ -97,7 +97,7 @@ func (r *fakeVideoReader) AttachDraftMedia(_ context.Context, draftID, authorID 
 
 // 测试目标：模拟草稿发布状态转换
 // 预期效果：只有完整的作者草稿可转换为 published
-func (r *fakeVideoReader) PublishDraft(_ context.Context, draftID, authorID uint) (*Video, error) {
+func (r *fakeVideoReader) UpdateDraftPublication(_ context.Context, draftID, authorID uint) (*Video, error) {
 	if r.publishErr != nil {
 		return nil, r.publishErr
 	}
@@ -128,7 +128,7 @@ func (r *fakeVideoReader) GetByID(_ context.Context, _ uint) (*Video, error) {
 
 // 测试目标：模拟作者视频列表读取
 // 预期效果：记录查询参数并返回预设的作者视频列表
-func (r *fakeVideoReader) ListByAuthor(_ context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error) {
+func (r *fakeVideoReader) GetAuthorVideoList(_ context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error) {
 	r.listAuthorID = authorID
 	r.listCursor = cursor
 	r.listLimit = limit
@@ -137,7 +137,7 @@ func (r *fakeVideoReader) ListByAuthor(_ context.Context, authorID uint, cursor 
 
 // 测试目标：模拟已发布视频软删除操作
 // 预期效果：记录被删除的视频与作者标识并返回预设错误
-func (r *fakeVideoReader) SoftDeletePublished(_ context.Context, id, authorID uint) error {
+func (r *fakeVideoReader) DeletePublishedVideo(_ context.Context, id, authorID uint) error {
 	r.deletedID = id
 	r.deletedAuthorID = authorID
 	return r.deleteErr
@@ -213,7 +213,7 @@ func TestServiceListPublishedUsesExtraRecordForCursor(t *testing.T) {
 	}}
 	service := NewService(repository, authors)
 
-	response, err := service.ListPublished(context.Background(), 9, "", 2)
+	response, err := service.GetPublishedVideoList(context.Background(), 9, "", 2)
 	if err != nil {
 		t.Fatalf("查询视频列表失败 服务层应生成下一页游标 error=%v", err)
 	}
@@ -244,7 +244,7 @@ func TestServiceListPublishedPopulatesAuthor(t *testing.T) {
 		&fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}},
 	)
 
-	response, err := service.ListPublished(context.Background(), 0, "", 10)
+	response, err := service.GetPublishedVideoList(context.Background(), 0, "", 10)
 	if err != nil {
 		t.Fatalf("查询视频列表失败 error=%v", err)
 	}
@@ -262,10 +262,10 @@ func TestServiceListPublishedRejectsInvalidInput(t *testing.T) {
 	// 4 验证服务层分别返回对应的输入错误
 	service := NewService(&fakeVideoReader{}, &fakeAuthorReader{})
 
-	if _, err := service.ListPublished(context.Background(), 0, "not-a-cursor", 20); !errors.Is(err, ErrInvalidCursor) {
+	if _, err := service.GetPublishedVideoList(context.Background(), 0, "not-a-cursor", 20); !errors.Is(err, ErrInvalidCursor) {
 		t.Fatalf("非法游标未被拒绝 got error=%v want error=%v", err, ErrInvalidCursor)
 	}
-	if _, err := service.ListPublished(context.Background(), 0, "", MaxListLimit+1); !errors.Is(err, ErrInvalidLimit) {
+	if _, err := service.GetPublishedVideoList(context.Background(), 0, "", MaxListLimit+1); !errors.Is(err, ErrInvalidLimit) {
 		t.Fatalf("非法 limit 未被拒绝 got error=%v want error=%v", err, ErrInvalidLimit)
 	}
 	if _, err := service.GetPublished(context.Background(), 0); !errors.Is(err, ErrInvalidVideoID) {
@@ -299,13 +299,13 @@ func TestServiceAttachDraftMedia(t *testing.T) {
 	service := NewService(repository, &fakeAuthorReader{})
 	saved := SavedFile{PublicURL: "/static/videos/2/20260810/a.mp4", FileName: "a.mp4"}
 
-	if err := service.AttachDraftMedia(context.Background(), 7, 2, MediaVideo, saved, "我的 视频.mp4"); err != nil {
+	if err := service.UpdateDraftMedia(context.Background(), 7, 2, MediaVideo, saved, "我的 视频.mp4"); err != nil {
 		t.Fatalf("绑定视频失败 error=%v", err)
 	}
 	if draft.PlayURL != saved.PublicURL || draft.PlayFileName != saved.FileName || draft.PlayOriginalName != "我的 视频.mp4" {
 		t.Fatalf("视频媒体元数据错误 got=%#v", draft)
 	}
-	if err := service.AttachDraftMedia(context.Background(), 7, 3, MediaVideo, saved, "a.mp4"); !errors.Is(err, ErrInvalidMedia) {
+	if err := service.UpdateDraftMedia(context.Background(), 7, 3, MediaVideo, saved, "a.mp4"); !errors.Is(err, ErrInvalidMedia) {
 		t.Fatalf("伪造当前用户目录的跨用户绑定未被拒绝 error=%v", err)
 	}
 }
@@ -322,14 +322,14 @@ func TestServicePublishDraft(t *testing.T) {
 	authors := &fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}}
 	service := NewService(repository, authors)
 
-	item, err := service.PublishDraft(context.Background(), 7, 2)
+	item, err := service.UpdateDraftPublication(context.Background(), 7, 2)
 	if err != nil {
 		t.Fatalf("发布草稿失败 error=%v", err)
 	}
 	if complete.Status != VideoStatusPublished || complete.PublishedAt == nil || complete.PublishedAt.IsZero() || item.PlayOriginalName != "我的视频.mp4" {
 		t.Fatalf("草稿发布结果错误 draft=%#v item=%#v", complete, item)
 	}
-	_, err = service.PublishDraft(context.Background(), 8, 2)
+	_, err = service.UpdateDraftPublication(context.Background(), 8, 2)
 	if !errors.Is(err, ErrDraftIncomplete) {
 		t.Fatalf("不完整草稿未被拒绝 got error=%v want error=%v", err, ErrDraftIncomplete)
 	}
@@ -343,10 +343,10 @@ func TestServiceDeleteChecksAuthor(t *testing.T) {
 	repository := &fakeVideoReader{getAny: &Video{ID: 1, AuthorID: 2, Status: VideoStatusPublished}}
 	service := NewService(repository, &fakeAuthorReader{})
 
-	if err := service.Delete(context.Background(), 1, 3); !errors.Is(err, ErrNotAuthor) {
+	if err := service.DeleteVideo(context.Background(), 1, 3); !errors.Is(err, ErrNotAuthor) {
 		t.Fatalf("非作者删除未被拒绝 got error=%v want error=%v", err, ErrNotAuthor)
 	}
-	if err := service.Delete(context.Background(), 1, 2); err != nil {
+	if err := service.DeleteVideo(context.Background(), 1, 2); err != nil {
 		t.Fatalf("作者删除失败 error=%v", err)
 	}
 	if repository.deletedID != 1 || repository.deletedAuthorID != 2 {
@@ -362,7 +362,7 @@ func TestServiceDeleteRejectsNonPublishedVideo(t *testing.T) {
 			repository := &fakeVideoReader{getAny: &Video{ID: 1, AuthorID: 2, Status: status}}
 			service := NewService(repository, &fakeAuthorReader{})
 
-			if err := service.Delete(context.Background(), 1, 2); !errors.Is(err, ErrVideoNotFound) {
+			if err := service.DeleteVideo(context.Background(), 1, 2); !errors.Is(err, ErrVideoNotFound) {
 				t.Fatalf("非公开视频删除错误 got=%v", err)
 			}
 			if repository.deletedID != 0 {
@@ -378,7 +378,7 @@ func TestServiceDeleteNotFound(t *testing.T) {
 	// 仓储返回记录不存在时，服务层应转换为统一的视频不存在错误
 	service := NewService(&fakeVideoReader{getErr: gorm.ErrRecordNotFound}, &fakeAuthorReader{})
 
-	if err := service.Delete(context.Background(), 99, 1); !errors.Is(err, ErrVideoNotFound) {
+	if err := service.DeleteVideo(context.Background(), 99, 1); !errors.Is(err, ErrVideoNotFound) {
 		t.Fatalf("删除不存在视频的映射错误 got error=%v want error=%v", err, ErrVideoNotFound)
 	}
 }
@@ -396,7 +396,7 @@ func TestServiceListMinePassesExtraRecordForCursor(t *testing.T) {
 	authors := &fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}}
 	service := NewService(repository, authors)
 
-	response, err := service.ListMine(context.Background(), 2, "", 2)
+	response, err := service.GetMyVideoList(context.Background(), 2, "", 2)
 	if err != nil {
 		t.Fatalf("查询我的视频失败 error=%v", err)
 	}

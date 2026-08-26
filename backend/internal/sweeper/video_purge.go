@@ -16,8 +16,8 @@ var (
 
 // VideoPurger 是视频清扫任务所需的仓储能力子集。
 type VideoPurger interface {
-	ListExpiredDeleted(ctx context.Context, cutoff time.Time) ([]video.Video, error)
-	HardDeleteExpired(ctx context.Context, id uint, cutoff time.Time) (bool, error)
+	GetExpiredDeletedVideoList(ctx context.Context, cutoff time.Time) ([]video.Video, error)
+	RemoveExpiredVideo(ctx context.Context, id uint, cutoff time.Time) (bool, error)
 }
 
 // VideoPurgeJob 在视频软删除宽限期届满后删除媒体文件和数据库记录。
@@ -47,7 +47,7 @@ func (j *VideoPurgeJob) Run(ctx context.Context) (int64, error) {
 	}
 
 	cutoff := j.now().Add(-j.retention)
-	videos, err := j.purger.ListExpiredDeleted(ctx, cutoff)
+	videos, err := j.purger.GetExpiredDeletedVideoList(ctx, cutoff)
 	if err != nil {
 		return 0, err
 	}
@@ -57,7 +57,7 @@ func (j *VideoPurgeJob) Run(ctx context.Context) (int64, error) {
 		if err := removeMedia(ctx, j.remover, item.PlayURL, item.CoverURL); err != nil {
 			return purged, fmt.Errorf("remove media for video %d: %w", item.ID, err)
 		}
-		deleted, err := j.purger.HardDeleteExpired(ctx, item.ID, cutoff)
+		deleted, err := j.purger.RemoveExpiredVideo(ctx, item.ID, cutoff)
 		if err != nil {
 			return purged, err
 		}

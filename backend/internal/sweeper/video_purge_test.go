@@ -18,12 +18,12 @@ type fakeVideoPurger struct {
 	deleteErr    error
 }
 
-func (f *fakeVideoPurger) ListExpiredDeleted(_ context.Context, cutoff time.Time) ([]video.Video, error) {
+func (f *fakeVideoPurger) GetExpiredDeletedVideoList(_ context.Context, cutoff time.Time) ([]video.Video, error) {
 	f.cutoff = cutoff
 	return f.videos, f.listErr
 }
 
-func (f *fakeVideoPurger) HardDeleteExpired(_ context.Context, id uint, cutoff time.Time) (bool, error) {
+func (f *fakeVideoPurger) RemoveExpiredVideo(_ context.Context, id uint, cutoff time.Time) (bool, error) {
 	f.cutoff = cutoff
 	f.hardDelete = append(f.hardDelete, id)
 	return f.deleteResult[id], f.deleteErr

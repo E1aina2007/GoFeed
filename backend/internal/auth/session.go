@@ -39,7 +39,7 @@ func (r *SessionRepository) Create(ctx context.Context, session *AuthSession) er
 	return r.db.WithContext(ctx).Create(session).Error
 }
 
-func (r *SessionRepository) FindActiveByID(ctx context.Context, id string, userID uint) (*AuthSession, error) {
+func (r *SessionRepository) GetActiveByID(ctx context.Context, id string, userID uint) (*AuthSession, error) {
 	var session AuthSession
 	err := r.db.WithContext(ctx).
 		Where("id = ? AND user_id = ? AND revoked_at IS NULL AND expires_at > ?", id, userID, time.Now()).
@@ -53,7 +53,7 @@ func (r *SessionRepository) FindActiveByID(ctx context.Context, id string, userI
 	return &session, nil
 }
 
-func (r *SessionRepository) FindActiveByRefreshTokenHash(ctx context.Context, hash string) (*AuthSession, error) {
+func (r *SessionRepository) GetActiveByRefreshTokenHash(ctx context.Context, hash string) (*AuthSession, error) {
 	var session AuthSession
 	err := r.db.WithContext(ctx).
 		Where("refresh_token_hash = ? AND revoked_at IS NULL AND expires_at > ?", hash, time.Now()).
@@ -69,7 +69,7 @@ func (r *SessionRepository) FindActiveByRefreshTokenHash(ctx context.Context, ha
 
 // 原子替换刷新令牌，重复使用或并发竞争的旧令牌
 // 在首次成功更新后无法再次轮换会话
-func (r *SessionRepository) RotateRefresh(ctx context.Context, session *AuthSession, expectedHash, nextHash string) error {
+func (r *SessionRepository) UpdateRefreshToken(ctx context.Context, session *AuthSession, expectedHash, nextHash string) error {
 	result := r.db.WithContext(ctx).Model(&AuthSession{}).
 		Where("id = ? AND user_id = ? AND refresh_token_hash = ? AND revoked_at IS NULL AND expires_at > ?", session.ID, session.UserID, expectedHash, time.Now()).
 		Updates(map[string]any{"refresh_token_hash": nextHash})
@@ -82,7 +82,7 @@ func (r *SessionRepository) RotateRefresh(ctx context.Context, session *AuthSess
 	return nil
 }
 
-func (r *SessionRepository) Revoke(ctx context.Context, id string, userID uint) error {
+func (r *SessionRepository) UpdateSessionRevocation(ctx context.Context, id string, userID uint) error {
 	now := time.Now()
 	result := r.db.WithContext(ctx).Model(&AuthSession{}).
 		Where("id = ? AND user_id = ? AND revoked_at IS NULL", id, userID).
@@ -96,7 +96,7 @@ func (r *SessionRepository) Revoke(ctx context.Context, id string, userID uint) 
 	return nil
 }
 
-func (r *SessionRepository) RevokeAllForUser(ctx context.Context, userID uint) error {
+func (r *SessionRepository) UpdateUserSessionRevocations(ctx context.Context, userID uint) error {
 	now := time.Now()
 	return r.db.WithContext(ctx).Model(&AuthSession{}).
 		Where("user_id = ? AND revoked_at IS NULL", userID).
@@ -146,12 +146,12 @@ func (s *SessionService) Create(ctx context.Context, userID uint, username strin
 
 // 在保留会话标识的同时替换提交的刷新令牌
 // 调用方加载当前用户资料后生成访问令牌
-func (s *SessionService) Refresh(ctx context.Context, refreshToken string) (*AuthSession, string, error) {
+func (s *SessionService) UpdateRefreshToken(ctx context.Context, refreshToken string) (*AuthSession, string, error) {
 	if refreshToken == "" {
 		return nil, "", ErrSessionInvalid
 	}
 	currentHash := hashToken(refreshToken)
-	session, err := s.repo.FindActiveByRefreshTokenHash(ctx, currentHash)
+	session, err := s.repo.GetActiveByRefreshTokenHash(ctx, currentHash)
 	if err != nil {
 		return nil, "", err
 	}
@@ -159,7 +159,7 @@ func (s *SessionService) Refresh(ctx context.Context, refreshToken string) (*Aut
 	if err != nil {
 		return nil, "", err
 	}
-	if err := s.repo.RotateRefresh(ctx, session, currentHash, hashToken(nextRefreshToken)); err != nil {
+	if err := s.repo.UpdateRefreshToken(ctx, session, currentHash, hashToken(nextRefreshToken)); err != nil {
 		return nil, "", err
 	}
 	return session, nextRefreshToken, nil
@@ -169,16 +169,16 @@ func (s *SessionService) Validate(ctx context.Context, sessionID string, userID 
 	if sessionID == "" || userID == 0 {
 		return ErrSessionInvalid
 	}
-	_, err := s.repo.FindActiveByID(ctx, sessionID, userID)
+	_, err := s.repo.GetActiveByID(ctx, sessionID, userID)
 	return err
 }
 
-func (s *SessionService) Revoke(ctx context.Context, sessionID string, userID uint) error {
-	return s.repo.Revoke(ctx, sessionID, userID)
+func (s *SessionService) UpdateSessionRevocation(ctx context.Context, sessionID string, userID uint) error {
+	return s.repo.UpdateSessionRevocation(ctx, sessionID, userID)
 }
 
-func (s *SessionService) RevokeAllForUser(ctx context.Context, userID uint) error {
-	return s.repo.RevokeAllForUser(ctx, userID)
+func (s *SessionService) UpdateUserSessionRevocations(ctx context.Context, userID uint) error {
+	return s.repo.UpdateUserSessionRevocations(ctx, userID)
 }
 
 func hashToken(token string) string {
