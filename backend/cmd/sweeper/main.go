@@ -129,6 +129,7 @@ func main() {
 	run()
 	sweeper.RunEvery(ctx, interval, run)
 
+	log.Println("Sweeper shutting down")
 	if err := db.Close(dbConn); err != nil {
 		log.Printf("Failed to close database: %v", err)
 	}
