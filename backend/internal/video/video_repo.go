@@ -24,7 +24,7 @@ func (r *Repository) Create(ctx context.Context, video *Video) error {
 	return r.db.WithContext(ctx).Create(video).Error
 }
 
-// UpdateDraftMedia 将已保存的媒体元数据写入当前用户的可写草稿。
+// UpdateDraftMedia 将已保存的媒体元数据写入当前用户的可写草稿
 func (r *Repository) UpdateDraftMedia(ctx context.Context, draftID, authorID uint, kind MediaKind, saved SavedFile, originalName string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var draft Video
@@ -60,7 +60,7 @@ func (r *Repository) UpdateDraftMedia(ctx context.Context, draftID, authorID uin
 	})
 }
 
-// UpdateDraftPublication 原子验证草稿完整性并切换为公开可见状态。
+// UpdateDraftPublication 原子验证草稿完整性并切换为公开可见状态
 func (r *Repository) UpdateDraftPublication(ctx context.Context, draftID, authorID uint) (*Video, error) {
 	if draftID == 0 || authorID == 0 {
 		return nil, ErrInvalidVideoID
@@ -94,6 +94,45 @@ func (r *Repository) UpdateDraftPublication(ctx context.Context, draftID, author
 		return nil, err
 	}
 	return &published, nil
+}
+
+// UpdateDraftDiscard 原子将当前作者的可写草稿转入不可逆清扫状态
+// 已处于 purging 的草稿视为已接受清理，支持客户端因响应丢失而重试
+func (r *Repository) UpdateDraftDiscard(ctx context.Context, draftID, authorID uint) (*Video, error) {
+	if draftID == 0 || authorID == 0 {
+		return nil, ErrInvalidVideoID
+	}
+
+	var draft Video
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&draft, draftID).Error; err != nil {
+			return err
+		}
+		if draft.AuthorID != authorID {
+			return ErrNotAuthor
+		}
+
+		switch draft.Status {
+		case VideoStatusDraft:
+			draft.Status = VideoStatusPurging
+			draft.PurgeToken = nil
+			draft.PurgeLeaseUntil = nil
+			draft.PlayPurgedAt = nil
+			draft.CoverPurgedAt = nil
+			return tx.Save(&draft).Error
+		case VideoStatusPurging:
+			return nil
+		default:
+			return ErrDraftNotWritable
+		}
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrVideoNotFound
+		}
+		return nil, err
+	}
+	return &draft, nil
 }
 
 // GetByID 查询任意状态的视频（GORM 自动过滤已软删除记录）
@@ -151,8 +190,8 @@ func (r *Repository) GetPublishedVideoList(ctx context.Context, authorID uint, c
 	return videos, nil
 }
 
-// GetPublishedVideoCountByAuthor 返回作者当前公开可见的视频数量。
-// GORM 默认过滤软删除记录，视频进入删除冷静期后会立即不再计入。
+// GetPublishedVideoCountByAuthor 返回作者当前公开可见的视频数量
+// GORM 默认过滤软删除记录，视频进入删除冷静期后会立即不再计入
 func (r *Repository) GetPublishedVideoCountByAuthor(ctx context.Context, authorID uint) (int64, error) {
 	if authorID == 0 {
 		return 0, nil
@@ -165,8 +204,8 @@ func (r *Repository) GetPublishedVideoCountByAuthor(ctx context.Context, authorI
 	return count, err
 }
 
-// GetAuthorVideoList 按作者查询已发布视频，用于作者自己的管理列表。
-// 草稿没有完整媒体，也没有单独的管理响应结构，不能混入 VideoItem 列表。
+// GetAuthorVideoList 按作者查询已发布视频，用于作者自己的管理列表
+// 草稿没有完整媒体，也没有单独的管理响应结构，不能混入 VideoItem 列表
 func (r *Repository) GetAuthorVideoList(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error) {
 	if authorID == 0 || limit <= 0 {
 		return []Video{}, nil
@@ -189,8 +228,8 @@ func (r *Repository) GetAuthorVideoList(ctx context.Context, authorID uint, curs
 	return videos, nil
 }
 
-// GetRecoverableDraftPurgeList 返回租约已失效的清扫中草稿 ID。
-// purging 是不可逆状态，因此无需再次检查草稿创建时间；它们优先作为重试候选。
+// GetRecoverableDraftPurgeList 返回租约已失效的清扫中草稿 ID
+// purging 是不可逆状态，因此无需再次检查草稿创建时间；它们优先作为重试候选
 func (r *Repository) GetRecoverableDraftPurgeList(ctx context.Context, limit int) ([]uint, error) {
 	if limit <= 0 {
 		return []uint{}, nil
@@ -206,7 +245,7 @@ func (r *Repository) GetRecoverableDraftPurgeList(ctx context.Context, limit int
 	return ids, err
 }
 
-// GetExpiredDraftPurgeList 返回保留期届满、尚未进入清扫状态的草稿 ID。
+// GetExpiredDraftPurgeList 返回保留期届满、尚未进入清扫状态的草稿 ID
 func (r *Repository) GetExpiredDraftPurgeList(ctx context.Context, cutoff time.Time, limit int) ([]uint, error) {
 	if limit <= 0 {
 		return []uint{}, nil
@@ -222,8 +261,8 @@ func (r *Repository) GetExpiredDraftPurgeList(ctx context.Context, cutoff time.T
 	return ids, err
 }
 
-// UpdateDraftPurgeClaim 通过条件更新取得草稿清扫租约，并在同一事务内读取当前媒体快照。
-// 同一时刻只有一个 token 能修改已认领草稿；过期租约可由后续 sweeper 接管。
+// UpdateDraftPurgeClaim 通过条件更新取得草稿清扫租约，并在同一事务内读取当前媒体快照
+// 同一时刻只有一个 token 能修改已认领草稿；过期租约可由后续 sweeper 接管
 func (r *Repository) UpdateDraftPurgeClaim(ctx context.Context, id uint, cutoff time.Time, token string, lease time.Duration) (*DraftPurgeClaim, bool, error) {
 	leaseInterval, err := draftPurgeLeaseInterval(lease)
 	if err != nil {
@@ -275,7 +314,7 @@ func (r *Repository) UpdateDraftPurgeClaim(ctx context.Context, id uint, cutoff 
 	return claim, claim != nil, nil
 }
 
-// UpdateDraftPurgeLease 延长当前 token 的租约。false 表示所有权已经丢失。
+// UpdateDraftPurgeLease 延长当前 token 的租约，false 表示所有权已经丢失
 func (r *Repository) UpdateDraftPurgeLease(ctx context.Context, id uint, token string, lease time.Duration) (bool, error) {
 	leaseInterval, err := draftPurgeLeaseInterval(lease)
 	if err != nil {
@@ -294,8 +333,8 @@ func (r *Repository) UpdateDraftPurgeLease(ctx context.Context, id uint, token s
 	return result.RowsAffected == 1, nil
 }
 
-// UpdateDraftMediaPurge 记录一个媒体槽位已被删除，并续租以保护后续槽位和硬删除。
-// false 表示 token 已失效，调用方不得继续操作该草稿。
+// UpdateDraftMediaPurge 记录一个媒体槽位已被删除，并续租以保护后续槽位和硬删除
+// false 表示 token 已失效，调用方不得继续操作该草稿
 func (r *Repository) UpdateDraftMediaPurge(ctx context.Context, id uint, token string, kind MediaKind, lease time.Duration) (bool, error) {
 	leaseInterval, err := draftPurgeLeaseInterval(lease)
 	if err != nil {
@@ -333,7 +372,7 @@ func (r *Repository) UpdateDraftMediaPurge(ctx context.Context, id uint, token s
 	return result.RowsAffected == 1, nil
 }
 
-// RemovePurgedDraft 只会删除当前 token 仍持有租约且所有非空媒体均已确认删除的草稿。
+// RemovePurgedDraft 只会删除当前 token 仍持有租约且所有非空媒体均已确认删除的草稿
 func (r *Repository) RemovePurgedDraft(ctx context.Context, id uint, token string) (bool, error) {
 	if id == 0 || token == "" {
 		return false, nil
@@ -361,7 +400,7 @@ func draftPurgeLeaseInterval(lease time.Duration) (clause.Expr, error) {
 	return gorm.Expr("TIMESTAMPADD(SECOND, ?, NOW(3))", seconds), nil
 }
 
-// DeletePublishedVideo 只允许作者软删除已发布视频，避免草稿进入已发布视频的保留期路径。
+// DeletePublishedVideo 只允许作者软删除已发布视频，避免草稿进入已发布视频的保留期路径
 func (r *Repository) DeletePublishedVideo(ctx context.Context, id, authorID uint) error {
 	if id == 0 || authorID == 0 {
 		return gorm.ErrRecordNotFound
@@ -378,7 +417,7 @@ func (r *Repository) DeletePublishedVideo(ctx context.Context, id, authorID uint
 	return nil
 }
 
-// GetExpiredDeletedVideoList 返回已软删除且宽限期届满的视频，供 sweeper 在删除媒体文件前读取。
+// GetExpiredDeletedVideoList 返回已软删除且宽限期届满的视频，供 sweeper 在删除媒体文件前读取
 func (r *Repository) GetExpiredDeletedVideoList(ctx context.Context, cutoff time.Time) ([]Video, error) {
 	var videos []Video
 	if err := r.db.WithContext(ctx).Unscoped().
@@ -389,8 +428,8 @@ func (r *Repository) GetExpiredDeletedVideoList(ctx context.Context, cutoff time
 	return videos, nil
 }
 
-// RemoveExpiredVideo 删除指定的、仍处于到期软删除状态的视频记录。
-// 返回 false 表示该记录已被其他清扫任务处理或不再符合清扫条件。
+// RemoveExpiredVideo 删除指定的、仍处于到期软删除状态的视频记录
+// 返回 false 表示该记录已被其他清扫任务处理或不再符合清扫条件
 func (r *Repository) RemoveExpiredVideo(ctx context.Context, id uint, cutoff time.Time) (bool, error) {
 	if id == 0 {
 		return false, nil

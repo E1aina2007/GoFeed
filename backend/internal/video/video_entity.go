@@ -10,7 +10,7 @@ import (
 const (
 	VideoStatusPublished = "published"
 	VideoStatusDraft     = "draft"
-	// VideoStatusPurging 表示草稿已进入不可逆清扫，清扫器正在删除其媒体。
+	// VideoStatusPurging 表示草稿已进入不可逆清扫，清扫器正在删除其媒体
 	VideoStatusPurging    = "purging"
 	VideoStatusProcessing = "processing"
 	VideoStatusRejected   = "rejected"
@@ -33,9 +33,9 @@ type Video struct {
 
 	Status string `gorm:"type:varchar(16);not null;index;default:'published'" json:"status"`
 
-	// 清扫字段只服务于草稿回收，不暴露到任何视频 API。
+	// 清扫字段只服务于草稿回收，不暴露到任何视频 API
 	// PurgeToken 与 PurgeLeaseUntil 共同组成多 sweeper 间的围栏租约；
-	// 两个时间戳是每个媒体槽位不可逆的删除检查点。
+	// 两个时间戳是每个媒体槽位不可逆的删除检查点
 	PurgeToken      *string    `gorm:"type:char(32)" json:"-"`
 	PurgeLeaseUntil *time.Time `json:"-"`
 	PlayPurgedAt    *time.Time `json:"-"`
@@ -51,8 +51,8 @@ type Video struct {
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
 }
 
-// DraftPurgeClaim 是一个 worker 获得草稿清扫租约后的当前媒体快照。
-// Token 仅在清扫内部传递，后续所有写操作都必须携带它。
+// DraftPurgeClaim 是一个 worker 获得草稿清扫租约后的当前媒体快照
+// Token 仅在清扫内部传递，后续所有写操作都必须携带它
 type DraftPurgeClaim struct {
 	DraftID       uint
 	Token         string
@@ -98,18 +98,20 @@ type EngagementCounts struct {
 	CommentsCount int64
 }
 
-// DraftRequest 表示创建草稿时可由用户编辑的元数据。
+// DraftRequest 表示创建草稿时可由用户编辑的元数据
 type DraftRequest struct {
 	Title       string `json:"title" binding:"required,max=255"`
 	Description string `json:"description" binding:"omitempty,max=1000"`
 }
 
-// DraftItem 表示当前用户可继续上传或发布的草稿。
+// DraftItem 表示当前用户可继续上传或发布的草稿
 type DraftItem struct {
 	ID                uint      `json:"id"`
 	Title             string    `json:"title"`
 	Description       string    `json:"description"`
 	Status            string    `json:"status"`
+	HasVideo          bool      `json:"has_video"`
+	HasCover          bool      `json:"has_cover"`
 	PlayOriginalName  string    `json:"play_original_name,omitempty"`
 	CoverOriginalName string    `json:"cover_original_name,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`

@@ -129,6 +129,78 @@ func TestHandlerCreateDraft(t *testing.T) {
 	}
 }
 
+// 测试目标：验证作者可查询草稿的媒体完成状态
+// 预期效果：响应不暴露媒体地址，且清扫中的草稿仍可用于确认异步状态
+func TestHandlerGetDraft(t *testing.T) {
+	ctl, repo, _ := newTestVideoController(t)
+	repo.drafts = map[uint]*Video{
+		1: {
+			ID: 1, AuthorID: 1, Title: "草稿", Status: VideoStatusDraft,
+			PlayURL: "/static/videos/1/20260810/a.mp4", PlayFileName: "a.mp4", PlayOriginalName: "视频.mp4",
+		},
+		2: {ID: 2, AuthorID: 1, Status: VideoStatusPurging},
+	}
+
+	r := gin.New()
+	r.Use(withUserID(1))
+	r.GET("/drafts/:id", ctl.GetDraft)
+	for _, tt := range []struct {
+		path       string
+		wantStatus int
+		wantState  string
+	}{
+		{path: "/drafts/1", wantStatus: http.StatusOK, wantState: VideoStatusDraft},
+		{path: "/drafts/2", wantStatus: http.StatusOK, wantState: VideoStatusPurging},
+	} {
+		t.Run(tt.wantState, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status got=%d want=%d body=%s", w.Code, tt.wantStatus, w.Body.String())
+			}
+			var body struct {
+				Draft DraftItem `json:"draft"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("响应解析失败 error=%v", err)
+			}
+			if body.Draft.Status != tt.wantState {
+				t.Fatalf("草稿状态错误 got=%#v", body.Draft)
+			}
+			if tt.wantState == VideoStatusDraft && (!body.Draft.HasVideo || body.Draft.HasCover || strings.Contains(w.Body.String(), "play_url")) {
+				t.Fatalf("草稿媒体快照错误 body=%s", w.Body.String())
+			}
+		})
+	}
+}
+
+// 测试目标：验证草稿查询限制为当前作者的 draft 或 purging 记录
+// 预期效果：跨作者返回禁止，已发布记录不通过草稿路径暴露
+func TestHandlerGetDraftRejectsUnavailableState(t *testing.T) {
+	ctl, repo, _ := newTestVideoController(t)
+	repo.drafts = map[uint]*Video{
+		1: {ID: 1, AuthorID: 2, Status: VideoStatusDraft},
+		2: {ID: 2, AuthorID: 1, Status: VideoStatusPublished},
+	}
+
+	r := gin.New()
+	r.Use(withUserID(1))
+	r.GET("/drafts/:id", ctl.GetDraft)
+	for _, tt := range []struct {
+		path       string
+		wantStatus int
+	}{
+		{path: "/drafts/1", wantStatus: http.StatusForbidden},
+		{path: "/drafts/2", wantStatus: http.StatusNotFound},
+	} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, tt.path, nil))
+		if w.Code != tt.wantStatus {
+			t.Fatalf("%s status got=%d want=%d body=%s", tt.path, w.Code, tt.wantStatus, w.Body.String())
+		}
+	}
+}
+
 // 测试目标：验证已认证用户可向本人草稿上传合法视频文件
 // 预期效果：接口返回创建状态，播放地址归属当前用户且媒体写入草稿
 func TestHandlerUploadDraftVideo(t *testing.T) {
@@ -386,6 +458,53 @@ func TestHandlerPublishRequiresAuth(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("未登录发布未被拒绝 status got=%d want=401", w.Code)
+	}
+}
+
+// 测试目标：验证丢弃接口将草稿排入异步清扫并支持重复请求
+// 预期效果：响应为已接受状态，媒体保留至 sweeper 根据 purging 状态清理
+func TestHandlerDiscardDraft(t *testing.T) {
+	ctl, repo, _ := newTestVideoController(t)
+	repo.drafts = map[uint]*Video{1: {
+		ID: 1, AuthorID: 1, Status: VideoStatusDraft,
+		PlayURL: "/static/videos/1/20260810/a.mp4", PlayFileName: "a.mp4", PlayOriginalName: "视频.mp4",
+	}}
+
+	r := gin.New()
+	r.Use(withUserID(1))
+	r.DELETE("/drafts/:id", ctl.DiscardDraft)
+	for attempt := 0; attempt < 2; attempt++ {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/drafts/1", nil))
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("第 %d 次丢弃 status got=%d want=202 body=%s", attempt+1, w.Code, w.Body.String())
+		}
+		var body struct {
+			Draft DraftItem `json:"draft"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("响应解析失败 error=%v", err)
+		}
+		if body.Draft.Status != VideoStatusPurging || !body.Draft.HasVideo || repo.drafts[1].Status != VideoStatusPurging {
+			t.Fatalf("丢弃响应或状态错误 body=%#v draft=%#v", body.Draft, repo.drafts[1])
+		}
+	}
+}
+
+// 测试目标：验证已发布视频不能通过草稿丢弃接口进入清扫
+// 预期效果：状态冲突且已发布记录保持不变
+func TestHandlerDiscardDraftRejectsPublishedVideo(t *testing.T) {
+	ctl, repo, _ := newTestVideoController(t)
+	repo.drafts = map[uint]*Video{1: {ID: 1, AuthorID: 1, Status: VideoStatusPublished}}
+
+	r := gin.New()
+	r.Use(withUserID(1))
+	r.DELETE("/drafts/:id", ctl.DiscardDraft)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/drafts/1", nil))
+
+	if w.Code != http.StatusConflict || repo.drafts[1].Status != VideoStatusPublished {
+		t.Fatalf("已发布视频丢弃状态错误 status=%d draft=%#v body=%s", w.Code, repo.drafts[1], w.Body.String())
 	}
 }
 

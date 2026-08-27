@@ -12,23 +12,26 @@ import (
 // 测试目标：模拟视频数据读取和写入依赖
 // 预期效果：记录服务层查询参数并返回预设视频数据
 type fakeVideoReader struct {
-	getVideo        *Video
-	getErr          error
-	listVideos      []Video
-	listErr         error
-	listAuthorID    uint
-	listCursor      *Cursor
-	listLimit       int
-	getAny          *Video
-	created         *Video
-	createErr       error
-	drafts          map[uint]*Video
-	attachErr       error
-	publishErr      error
-	mineVideos      []Video
-	deletedID       uint
-	deletedAuthorID uint
-	deleteErr       error
+	getVideo          *Video
+	getErr            error
+	listVideos        []Video
+	listErr           error
+	listAuthorID      uint
+	listCursor        *Cursor
+	listLimit         int
+	getAny            *Video
+	created           *Video
+	createErr         error
+	drafts            map[uint]*Video
+	attachErr         error
+	publishErr        error
+	discardErr        error
+	discardedID       uint
+	discardedAuthorID uint
+	mineVideos        []Video
+	deletedID         uint
+	deletedAuthorID   uint
+	deleteErr         error
 }
 
 // 测试目标：模拟已发布视频详情读取
@@ -120,10 +123,48 @@ func (r *fakeVideoReader) UpdateDraftPublication(_ context.Context, draftID, aut
 	return draft, nil
 }
 
+// 测试目标：模拟草稿丢弃状态转换
+// 预期效果：仅作者的 draft 可进入 purging 且重试保持幂等
+func (r *fakeVideoReader) UpdateDraftDiscard(_ context.Context, draftID, authorID uint) (*Video, error) {
+	r.discardedID = draftID
+	r.discardedAuthorID = authorID
+	if r.discardErr != nil {
+		return nil, r.discardErr
+	}
+	draft := r.drafts[draftID]
+	if draft == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	if draft.AuthorID != authorID {
+		return nil, ErrNotAuthor
+	}
+	switch draft.Status {
+	case VideoStatusDraft:
+		draft.Status = VideoStatusPurging
+		draft.PurgeToken = nil
+		draft.PurgeLeaseUntil = nil
+		draft.PlayPurgedAt = nil
+		draft.CoverPurgedAt = nil
+	case VideoStatusPurging:
+	default:
+		return nil, ErrDraftNotWritable
+	}
+	return draft, nil
+}
+
 // 测试目标：模拟任意状态的视频读取
 // 预期效果：返回预设的视频和错误
-func (r *fakeVideoReader) GetByID(_ context.Context, _ uint) (*Video, error) {
-	return r.getAny, r.getErr
+func (r *fakeVideoReader) GetByID(_ context.Context, id uint) (*Video, error) {
+	if r.getErr != nil {
+		return nil, r.getErr
+	}
+	if r.getAny != nil {
+		return r.getAny, nil
+	}
+	if draft := r.drafts[id]; draft != nil {
+		return draft, nil
+	}
+	return nil, gorm.ErrRecordNotFound
 }
 
 // 测试目标：模拟作者视频列表读取
@@ -288,6 +329,69 @@ func TestServiceCreateDraft(t *testing.T) {
 	}
 	if repository.created.Title != "title" || repository.created.Description != "description" || repository.created.PlayURL != "" || repository.created.CoverURL != "" {
 		t.Fatalf("草稿字段错误 got=%#v", repository.created)
+	}
+}
+
+// 测试目标：验证作者可读取草稿媒体完成快照而不取得媒体地址
+// 预期效果：draft 和 purging 均返回完成标识，其他作者和非草稿状态被拒绝
+func TestServiceGetDraft(t *testing.T) {
+	draft := &Video{
+		ID: 7, AuthorID: 2, Title: "草稿", Description: "说明", Status: VideoStatusDraft,
+		PlayURL: "/static/videos/2/20260810/a.mp4", PlayFileName: "a.mp4", PlayOriginalName: "我的视频.mp4",
+	}
+	repository := &fakeVideoReader{drafts: map[uint]*Video{7: draft, 8: {ID: 8, AuthorID: 2, Status: VideoStatusPurging}, 9: {ID: 9, AuthorID: 2, Status: VideoStatusPublished}}}
+	service := NewService(repository, &fakeAuthorReader{})
+
+	item, err := service.GetDraft(context.Background(), 7, 2)
+	if err != nil {
+		t.Fatalf("查询草稿失败 error=%v", err)
+	}
+	if item.ID != 7 || item.Status != VideoStatusDraft || !item.HasVideo || item.HasCover || item.PlayOriginalName != "我的视频.mp4" {
+		t.Fatalf("草稿快照错误 got=%#v", item)
+	}
+	if item, err := service.GetDraft(context.Background(), 8, 2); err != nil || item.Status != VideoStatusPurging {
+		t.Fatalf("清扫中的草稿应可查询 item=%#v error=%v", item, err)
+	}
+	if _, err := service.GetDraft(context.Background(), 7, 3); !errors.Is(err, ErrNotAuthor) {
+		t.Fatalf("跨作者查询未被拒绝 error=%v", err)
+	}
+	if _, err := service.GetDraft(context.Background(), 9, 2); !errors.Is(err, ErrVideoNotFound) {
+		t.Fatalf("已发布视频不应通过草稿查询读取 error=%v", err)
+	}
+}
+
+// 测试目标：验证丢弃草稿会持久化转入 purging 并允许重试
+// 预期效果：媒体仍由清扫器处理，跨作者和已发布状态均不会进入清扫
+func TestServiceDiscardDraft(t *testing.T) {
+	lease := time.Now().Add(time.Hour)
+	token := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	draft := &Video{
+		ID: 7, AuthorID: 2, Status: VideoStatusDraft,
+		PlayURL: "/static/videos/2/20260810/a.mp4", PlayFileName: "a.mp4", PlayOriginalName: "我的视频.mp4",
+		PurgeToken: &token, PurgeLeaseUntil: &lease, PlayPurgedAt: &lease,
+	}
+	published := &Video{ID: 8, AuthorID: 2, Status: VideoStatusPublished}
+	repository := &fakeVideoReader{drafts: map[uint]*Video{7: draft, 8: published}}
+	service := NewService(repository, &fakeAuthorReader{})
+
+	item, err := service.DiscardDraft(context.Background(), 7, 2)
+	if err != nil {
+		t.Fatalf("丢弃草稿失败 error=%v", err)
+	}
+	if item.Status != VideoStatusPurging || !item.HasVideo || item.HasCover || draft.PurgeToken != nil || draft.PurgeLeaseUntil != nil || draft.PlayPurgedAt != nil {
+		t.Fatalf("草稿丢弃状态错误 item=%#v draft=%#v", item, draft)
+	}
+	if repository.discardedID != 7 || repository.discardedAuthorID != 2 {
+		t.Fatalf("草稿丢弃参数错误 id=%d author=%d", repository.discardedID, repository.discardedAuthorID)
+	}
+	if item, err := service.DiscardDraft(context.Background(), 7, 2); err != nil || item.Status != VideoStatusPurging {
+		t.Fatalf("重复丢弃应保持成功 item=%#v error=%v", item, err)
+	}
+	if _, err := service.DiscardDraft(context.Background(), 7, 3); !errors.Is(err, ErrNotAuthor) {
+		t.Fatalf("跨作者丢弃未被拒绝 error=%v", err)
+	}
+	if _, err := service.DiscardDraft(context.Background(), 8, 2); !errors.Is(err, ErrDraftNotWritable) {
+		t.Fatalf("已发布视频不应进入草稿清扫 error=%v", err)
 	}
 }
 

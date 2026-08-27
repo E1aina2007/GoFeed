@@ -59,7 +59,7 @@ func (ctl *Controller) GetVideoList(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// CreateDraft 处理 POST /api/video/auth/drafts。
+// CreateDraft 处理 POST /api/video/auth/drafts
 func (ctl *Controller) CreateDraft(c *gin.Context) {
 	userID, ok := jwt.UserID(c)
 	if !ok {
@@ -80,12 +80,33 @@ func (ctl *Controller) CreateDraft(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"draft": draft})
 }
 
-// UpdateDraftVideo 处理 POST /api/video/auth/drafts/:id/play。
+// GetDraft 处理 GET /api/video/auth/drafts/:id
+func (ctl *Controller) GetDraft(c *gin.Context) {
+	userID, ok := jwt.UserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		return
+	}
+	draftID, err := parsePathID(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	draft, err := ctl.srv.GetDraft(c.Request.Context(), draftID, userID)
+	if err != nil {
+		handleVideoError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"draft": draft})
+}
+
+// UpdateDraftVideo 处理 POST /api/video/auth/drafts/:id/play
 func (ctl *Controller) UpdateDraftVideo(c *gin.Context) {
 	ctl.uploadDraftMedia(c, MediaVideo, "play_url", "play_file_name", "play_original_name")
 }
 
-// UpdateDraftCover 处理 POST /api/video/auth/drafts/:id/cover。
+// UpdateDraftCover 处理 POST /api/video/auth/drafts/:id/cover
 func (ctl *Controller) UpdateDraftCover(c *gin.Context) {
 	ctl.uploadDraftMedia(c, MediaCover, "cover_url", "cover_file_name", "cover_original_name")
 }
@@ -157,7 +178,7 @@ func (ctl *Controller) uploadDraftMedia(c *gin.Context, kind MediaKind, urlKey, 
 	})
 }
 
-// UpdateDraftPublication 处理 POST /api/video/auth/drafts/:id/publish。
+// UpdateDraftPublication 处理 POST /api/video/auth/drafts/:id/publish
 func (ctl *Controller) UpdateDraftPublication(c *gin.Context) {
 	userID, ok := jwt.UserID(c)
 	if !ok {
@@ -183,6 +204,27 @@ func (ctl *Controller) UpdateDraftPublication(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"video": item})
+}
+
+// DiscardDraft 处理 DELETE /api/video/auth/drafts/:id
+func (ctl *Controller) DiscardDraft(c *gin.Context) {
+	userID, ok := jwt.UserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		return
+	}
+	draftID, err := parsePathID(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	draft, err := ctl.srv.DiscardDraft(c.Request.Context(), draftID, userID)
+	if err != nil {
+		handleVideoError(c, err)
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"draft": draft})
 }
 
 // GetMyVideoList 处理 GET /api/video/auth/mine?cursor=&limit=

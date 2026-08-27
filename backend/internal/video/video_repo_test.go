@@ -56,8 +56,8 @@ func seedVideo(t *testing.T, repo *Repository, authorID uint, title, status stri
 	return v
 }
 
-// 测试目标：设置视频软删除时间以构造宽限期边界。
-// 预期效果：测试可准确覆盖到期、边界和未到期三种记录。
+// 测试目标：设置视频软删除时间以构造宽限期边界
+// 预期效果：测试可准确覆盖到期、边界和未到期三种记录
 func setVideoDeletedAt(t *testing.T, db *gorm.DB, id uint, at time.Time) {
 	t.Helper()
 	if err := db.Exec("UPDATE videos SET deleted_at = ? WHERE id = ?", at, id).Error; err != nil {
@@ -183,6 +183,44 @@ func TestRepositoryDraftMediaAndPublish(t *testing.T) {
 	}
 	if err := repo.UpdateDraftMedia(ctx, draft.ID, 1, MediaCover, coverFile, "封面.png"); !errors.Is(err, ErrDraftNotWritable) {
 		t.Fatalf("发布后写入媒体未被拒绝 error=%v", err)
+	}
+}
+
+// 测试目标：验证仓储原子将草稿转入可由 sweeper 接管的 purging 状态
+// 预期效果：重试保持幂等，清扫前不删除媒体，其他作者和已发布视频不能触发转换
+func TestRepositoryDiscardDraft(t *testing.T) {
+	repo := NewRepository(testutil.DB(t))
+	ctx := context.Background()
+	draft := newVideoFixture(1, "待丢弃草稿", VideoStatusDraft, baseTime)
+	draft.PublishedAt = nil
+	if err := repo.Create(ctx, draft); err != nil {
+		t.Fatalf("创建草稿失败 error=%v", err)
+	}
+
+	discarded, err := repo.UpdateDraftDiscard(ctx, draft.ID, 1)
+	if err != nil {
+		t.Fatalf("丢弃草稿失败 error=%v", err)
+	}
+	if discarded.Status != VideoStatusPurging || discarded.PurgeToken != nil || discarded.PurgeLeaseUntil != nil || discarded.PlayPurgedAt != nil || discarded.CoverPurgedAt != nil {
+		t.Fatalf("丢弃后的清扫状态错误 got=%#v", discarded)
+	}
+	if err := repo.UpdateDraftMedia(ctx, draft.ID, 1, MediaVideo, SavedFile{PublicURL: "/static/videos/1/20260810/retry.mp4", FileName: "retry.mp4"}, "retry.mp4"); !errors.Is(err, ErrDraftNotWritable) {
+		t.Fatalf("清扫中的草稿仍可写入媒体 error=%v", err)
+	}
+	ids, err := repo.GetRecoverableDraftPurgeList(ctx, 10)
+	if err != nil || len(ids) != 1 || ids[0] != draft.ID {
+		t.Fatalf("丢弃草稿未成为清扫候选 ids=%v error=%v", ids, err)
+	}
+	if repeated, err := repo.UpdateDraftDiscard(ctx, draft.ID, 1); err != nil || repeated.Status != VideoStatusPurging {
+		t.Fatalf("重复丢弃应保持成功 draft=%#v error=%v", repeated, err)
+	}
+	if _, err := repo.UpdateDraftDiscard(ctx, draft.ID, 2); !errors.Is(err, ErrNotAuthor) {
+		t.Fatalf("跨作者丢弃未被拒绝 error=%v", err)
+	}
+
+	published := seedVideo(t, repo, 1, "已发布", VideoStatusPublished, baseTime)
+	if _, err := repo.UpdateDraftDiscard(ctx, published.ID, 1); !errors.Is(err, ErrDraftNotWritable) {
+		t.Fatalf("已发布视频不应进入草稿清扫 error=%v", err)
 	}
 }
 
@@ -551,8 +589,8 @@ func TestRepositorySoftDeletePublished(t *testing.T) {
 	}
 }
 
-// 测试目标：验证到期软删除视频可被查询并硬删除。
-// 预期效果：早于或等于截止时间的软删记录被删除，宽限期内及活跃记录保持不变。
+// 测试目标：验证到期软删除视频可被查询并硬删除
+// 预期效果：早于或等于截止时间的软删记录被删除，宽限期内及活跃记录保持不变
 func TestRepositoryPurgeExpiredDeleted(t *testing.T) {
 	db := testutil.DB(t)
 	repo := NewRepository(db)
@@ -634,8 +672,8 @@ func TestRepositoryListPublishedNonPositiveLimit(t *testing.T) {
 	}
 }
 
-// 测试目标：验证用户主页的视频数量只统计当前公开可见的视频。
-// 预期效果：其他作者、非发布状态和软删除视频均不计入。
+// 测试目标：验证用户主页的视频数量只统计当前公开可见的视频
+// 预期效果：其他作者、非发布状态和软删除视频均不计入
 func TestRepositoryCountPublishedByAuthor(t *testing.T) {
 	db := testutil.DB(t)
 	repo := NewRepository(db)

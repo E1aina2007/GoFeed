@@ -39,9 +39,11 @@
 | GET | `/api/video/:id` | 否 | 查询公开视频详情 |
 | GET | `/api/video/:id/comments` | 否 | 查询公开视频评论 |
 | POST | `/api/video/auth/drafts` | 是 | 创建视频草稿 |
+| GET | `/api/video/auth/drafts/:id` | 是 | 查询当前草稿状态 |
 | POST | `/api/video/auth/drafts/:id/play` | 是 | 上传草稿视频文件 |
 | POST | `/api/video/auth/drafts/:id/cover` | 是 | 上传草稿封面图片 |
 | POST | `/api/video/auth/drafts/:id/publish` | 是 | 发布完整草稿 |
+| DELETE | `/api/video/auth/drafts/:id` | 是 | 丢弃草稿并排入异步清扫 |
 | GET | `/api/video/auth/mine` | 是 | 查询我的视频 |
 | GET | `/api/video/auth/:id/like` | 是 | 查询我是否点赞指定视频 |
 | PUT | `/api/video/auth/:id/like` | 是 | 点赞指定视频 |
@@ -576,17 +578,76 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
     "title": "我的第一条视频",
     "description": "视频介绍",
     "status": "draft",
+    "has_video": false,
+    "has_cover": false,
     "created_at": "2026-08-21T08:00:00Z",
     "updated_at": "2026-08-21T08:00:00Z"
   }
 }
 ```
 
-草稿没有 `published_at`，也没有客户端可填写的媒体字段。
+草稿没有 `published_at`，也没有客户端可填写的媒体字段。`has_video` 和 `has_cover` 分别表示对应媒体是否已由服务端成功绑定到草稿，客户端可用它们在上传响应丢失后恢复后续流程。
 
 草稿保留期由 `RETENTION_VIDEO_DRAFT_HOURS` 控制。保留期届满后，后台 sweeper 会在下一轮将未发布草稿转入不可逆的 `purging` 状态；进入该状态后不能继续上传或发布。
 
 常见失败：`400` 请求体或标题、简介不合法，`401` 未认证。
+
+### 查询草稿状态
+
+`GET /api/video/auth/drafts/:id`
+
+路径参数 `id` 必须是当前用户的草稿标识。接口只返回仍可写的 `draft` 或已排入清扫的 `purging` 草稿；已发布视频不通过此路径返回。
+
+成功响应：`200 OK`
+
+```json
+{
+  "draft": {
+    "id": 100,
+    "title": "我的第一条视频",
+    "description": "视频介绍",
+    "status": "draft",
+    "has_video": true,
+    "has_cover": false,
+    "play_original_name": "我的视频.mp4",
+    "created_at": "2026-08-21T08:00:00Z",
+    "updated_at": "2026-08-21T08:03:00Z"
+  }
+}
+```
+
+响应不包含媒体 URL 或物理存储名。`purging` 表示草稿已不可恢复，媒体会由后台 sweeper 异步删除；此时完成标识仅表示该媒体曾被成功绑定，不能用于判断对象是否仍可访问。
+
+常见失败：`400` 路径参数不合法，`401` 未认证，`403` 草稿不属于当前用户，`404` 草稿不存在、已被清扫或不再处于草稿流程。
+
+### 丢弃视频草稿
+
+`DELETE /api/video/auth/drafts/:id`
+
+路径参数 `id` 必须是当前用户处于 `draft` 状态的草稿标识。服务端在单个事务中将草稿转换为 `purging`，不会在 HTTP 请求内直接删除媒体文件；后台 sweeper 会使用既有租约和检查点完成可重试清扫。
+
+成功响应：`202 Accepted`
+
+```json
+{
+  "draft": {
+    "id": 100,
+    "title": "我的第一条视频",
+    "description": "视频介绍",
+    "status": "purging",
+    "has_video": true,
+    "has_cover": true,
+    "play_original_name": "我的视频.mp4",
+    "cover_original_name": "封面.png",
+    "created_at": "2026-08-21T08:00:00Z",
+    "updated_at": "2026-08-21T08:05:00Z"
+  }
+}
+```
+
+`202` 只表示服务端已持久化接受清扫，不代表媒体已物理删除。若客户端在收到响应前断开，可对仍处于 `purging` 的同一草稿重复调用该接口，响应仍为 `202`；草稿被 sweeper 最终硬删除后再次请求会返回 `404`。
+
+常见失败：`400` 路径参数不合法，`401` 未认证，`403` 草稿不属于当前用户，`404` 草稿不存在或已被清扫，`409` 视频已发布或草稿不再可进入清扫。
 
 ### 上传草稿视频文件
 

@@ -47,14 +47,15 @@ type VideoRepository interface {
 	DeletePublishedVideo(ctx context.Context, id, authorID uint) error
 	UpdateDraftMedia(ctx context.Context, draftID, authorID uint, kind MediaKind, saved SavedFile, originalName string) error
 	UpdateDraftPublication(ctx context.Context, draftID, authorID uint) (*Video, error)
+	UpdateDraftDiscard(ctx context.Context, draftID, authorID uint) (*Video, error)
 }
 
 type AuthorReader interface {
 	GetPublicAuthor(ctx context.Context, id uint) (Author, error)
 }
 
-// EngagementReader 是公开视频响应所需的互动统计能力。
-// 接口定义在消费方，避免 video 包依赖 social 包而产生循环依赖。
+// EngagementReader 是公开视频响应所需的互动统计能力
+// 接口定义在消费方，避免 video 包依赖 social 包而产生循环依赖
 type EngagementReader interface {
 	GetEngagementCounts(ctx context.Context, videoIDs []uint) (map[uint]EngagementCounts, error)
 }
@@ -73,7 +74,7 @@ func NewService(repository VideoRepository, authorReader AuthorReader, engagemen
 	return &Service{repository: repository, authorReader: authorReader, engagementReader: engagementReader}
 }
 
-// CreateDraft 创建一个仅当前用户可写的草稿。媒体字段只会由后续上传接口填充。
+// CreateDraft 创建一个仅当前用户可写的草稿，媒体字段只会由后续上传接口填充
 func (s *Service) CreateDraft(ctx context.Context, authorID uint, req DraftRequest) (DraftItem, error) {
 	if authorID == 0 {
 		return DraftItem{}, ErrInvalidVideoID
@@ -103,7 +104,33 @@ func (s *Service) CreateDraft(ctx context.Context, authorID uint, req DraftReque
 	return draftItem(*draft), nil
 }
 
-// UpdateDraftMedia 将已经落盘的文件绑定到草稿。客户端不能提交或覆盖任何媒体元数据。
+// GetDraft 返回当前作者可继续处理或已进入清扫的草稿快照
+// 媒体地址和物理存储名不暴露给客户端，完成状态由 has_video 和 has_cover 表示
+func (s *Service) GetDraft(ctx context.Context, draftID, authorID uint) (DraftItem, error) {
+	if draftID == 0 || authorID == 0 {
+		return DraftItem{}, ErrInvalidVideoID
+	}
+	if s.repository == nil {
+		return DraftItem{}, ErrRepositoryUnavailable
+	}
+
+	draft, err := s.repository.GetByID(ctx, draftID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return DraftItem{}, ErrVideoNotFound
+		}
+		return DraftItem{}, err
+	}
+	if draft.AuthorID != authorID {
+		return DraftItem{}, ErrNotAuthor
+	}
+	if draft.Status != VideoStatusDraft && draft.Status != VideoStatusPurging {
+		return DraftItem{}, ErrVideoNotFound
+	}
+	return draftItem(*draft), nil
+}
+
+// UpdateDraftMedia 将已经落盘的文件绑定到草稿，客户端不能提交或覆盖任何媒体元数据
 func (s *Service) UpdateDraftMedia(ctx context.Context, draftID, ownerID uint, kind MediaKind, saved SavedFile, originalName string) error {
 	if draftID == 0 || ownerID == 0 || (kind != MediaVideo && kind != MediaCover) ||
 		!isOwnedMediaURL(saved.PublicURL, kind, ownerID) || !isValidStoredFile(saved.PublicURL, saved.FileName) {
@@ -118,7 +145,7 @@ func (s *Service) UpdateDraftMedia(ctx context.Context, draftID, ownerID uint, k
 	return s.repository.UpdateDraftMedia(ctx, draftID, ownerID, kind, saved, originalName)
 }
 
-// UpdateDraftPublication 只允许将当前用户完整的 draft 状态视频转换为 published。
+// UpdateDraftPublication 只允许将当前用户完整的 draft 状态视频转换为 published
 func (s *Service) UpdateDraftPublication(ctx context.Context, draftID, authorID uint) (VideoItem, error) {
 	if draftID == 0 || authorID == 0 {
 		return VideoItem{}, ErrInvalidVideoID
@@ -134,12 +161,34 @@ func (s *Service) UpdateDraftPublication(ctx context.Context, draftID, authorID 
 	return s.toVideoItem(ctx, video)
 }
 
+// DiscardDraft 将当前作者的草稿排入异步清扫
+// 返回 purging 状态不代表媒体已删除；实际删除由带围栏租约的 sweeper 完成
+func (s *Service) DiscardDraft(ctx context.Context, draftID, authorID uint) (DraftItem, error) {
+	if draftID == 0 || authorID == 0 {
+		return DraftItem{}, ErrInvalidVideoID
+	}
+	if s.repository == nil {
+		return DraftItem{}, ErrRepositoryUnavailable
+	}
+
+	draft, err := s.repository.UpdateDraftDiscard(ctx, draftID, authorID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return DraftItem{}, ErrVideoNotFound
+		}
+		return DraftItem{}, err
+	}
+	return draftItem(*draft), nil
+}
+
 func draftItem(video Video) DraftItem {
 	return DraftItem{
 		ID:                video.ID,
 		Title:             video.Title,
 		Description:       video.Description,
 		Status:            video.Status,
+		HasVideo:          video.PlayURL != "" && video.PlayFileName != "" && video.PlayOriginalName != "",
+		HasCover:          video.CoverURL != "" && video.CoverFileName != "" && video.CoverOriginalName != "",
 		PlayOriginalName:  video.PlayOriginalName,
 		CoverOriginalName: video.CoverOriginalName,
 		CreatedAt:         video.CreatedAt,
@@ -147,7 +196,7 @@ func draftItem(video Video) DraftItem {
 	}
 }
 
-// GetPublished 获取包含作者资料的视频详情。
+// GetPublished 获取包含作者资料的视频详情
 func (s *Service) GetPublished(ctx context.Context, id uint) (VideoItem, error) {
 	if id == 0 {
 		return VideoItem{}, ErrInvalidVideoID
@@ -163,7 +212,7 @@ func (s *Service) GetPublished(ctx context.Context, id uint) (VideoItem, error) 
 	return s.toVideoItem(ctx, video)
 }
 
-// GetPublishedVideoList 查询包含作者资料的视频列表。
+// GetPublishedVideoList 查询包含作者资料的视频列表
 func (s *Service) GetPublishedVideoList(ctx context.Context, authorID uint, encodedCursor string, limit int) (ListResponse, error) {
 	if s.repository == nil {
 		return ListResponse{}, ErrRepositoryUnavailable
@@ -185,8 +234,8 @@ func (s *Service) GetPublishedVideoList(ctx context.Context, authorID uint, enco
 	return s.buildListResponse(ctx, videos, limit)
 }
 
-// GetMyVideoList 返回当前用户已发布的视频管理列表。
-// draft 和 purging 都没有可供 VideoItem 表达的公开媒体，不应混入该接口。
+// GetMyVideoList 返回当前用户已发布的视频管理列表
+// draft 和 purging 都没有可供 VideoItem 表达的公开媒体，不应混入该接口
 func (s *Service) GetMyVideoList(ctx context.Context, authorID uint, encodedCursor string, limit int) (ListResponse, error) {
 	if authorID == 0 {
 		return ListResponse{}, ErrInvalidVideoID
@@ -211,7 +260,7 @@ func (s *Service) GetMyVideoList(ctx context.Context, authorID uint, encodedCurs
 	return s.buildListResponse(ctx, videos, limit)
 }
 
-// DeleteVideo 仅作者本人可软删除自己的已发布视频。
+// DeleteVideo 仅作者本人可软删除自己的已发布视频
 func (s *Service) DeleteVideo(ctx context.Context, id, authorID uint) error {
 	if id == 0 {
 		return ErrInvalidVideoID

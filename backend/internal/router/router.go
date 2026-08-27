@@ -101,9 +101,11 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	protectedVideos.Use(jwt.Auth(sessionService))
 	{
 		protectedVideos.POST("/drafts", videoCtl.CreateDraft)
+		protectedVideos.GET("/drafts/:id", videoCtl.GetDraft)
 		protectedVideos.POST("/drafts/:id/play", videoCtl.UpdateDraftVideo)
 		protectedVideos.POST("/drafts/:id/cover", videoCtl.UpdateDraftCover)
 		protectedVideos.POST("/drafts/:id/publish", videoCtl.UpdateDraftPublication)
+		protectedVideos.DELETE("/drafts/:id", videoCtl.DiscardDraft)
 		protectedVideos.GET("/mine", videoCtl.GetMyVideoList)
 		protectedVideos.GET("/:id/like", socialCtl.GetLikeState)
 		protectedVideos.PUT("/:id/like", socialCtl.CreateLike)
