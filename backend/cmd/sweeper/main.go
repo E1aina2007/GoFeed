@@ -104,25 +104,13 @@ func main() {
 	)
 	run := func() {
 		purged, err := userPurgeJob.Run(ctx)
-		if err != nil {
-			log.Printf("User purge sweep failed: %v", err)
-		} else if purged > 0 {
-			log.Printf("User purge swept %d expired accounts", purged)
-		}
+		logPurgeResult("User", "accounts", purged, err)
 
 		purged, err = videoPurgeJob.Run(ctx)
-		if err != nil {
-			log.Printf("Video purge sweep failed: %v", err)
-		} else if purged > 0 {
-			log.Printf("Video purge swept %d expired videos", purged)
-		}
+		logPurgeResult("Video", "videos", purged, err)
 
 		purged, err = draftPurgeJob.Run(ctx)
-		if err != nil {
-			log.Printf("Draft purge sweep failed: %v", err)
-		} else if purged > 0 {
-			log.Printf("Draft purge swept %d expired drafts", purged)
-		}
+		logPurgeResult("Draft", "drafts", purged, err)
 	}
 
 	log.Printf("Sweeper started: user retention=%dd video retention=%dd draft retention=%dh draft lease=%dm interval=%dm", userRetentionDays, videoRetentionDays, draftRetentionHours, draftPurgeLeaseMinutes, intervalMinutes)
@@ -134,6 +122,18 @@ func main() {
 		log.Printf("Failed to close database: %v", err)
 	}
 	log.Println("Sweeper stopped")
+}
+
+func logPurgeResult(kind, object string, purged int64, err error) {
+	if err != nil {
+		log.Printf("%s purge sweep failed: %v", kind, err)
+		return
+	}
+	if purged > 0 {
+		log.Printf("%s purge swept %d expired %s", kind, purged, object)
+		return
+	}
+	log.Printf("%s purge sweep completed: no expired %s", kind, object)
 }
 
 func positiveDuration(value int, unit time.Duration) (time.Duration, error) {
