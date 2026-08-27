@@ -14,13 +14,13 @@ var (
 	ErrMediaRemoverUnavailable = errors.New("media remover unavailable")
 )
 
-// VideoPurger 是视频清扫任务所需的仓储能力子集。
+// VideoPurger 是视频清扫任务所需的仓储能力子集
 type VideoPurger interface {
 	GetExpiredDeletedVideoList(ctx context.Context, cutoff time.Time) ([]video.Video, error)
 	RemoveExpiredVideo(ctx context.Context, id uint, cutoff time.Time) (bool, error)
 }
 
-// VideoPurgeJob 在视频软删除宽限期届满后删除媒体文件和数据库记录。
+// VideoPurgeJob 在视频软删除宽限期届满后删除媒体文件和数据库记录
 type VideoPurgeJob struct {
 	purger    VideoPurger
 	remover   video.MediaRemover
@@ -37,7 +37,7 @@ func NewVideoPurgeJob(purger VideoPurger, remover video.MediaRemover, retention 
 	}
 }
 
-// Run 执行一次视频清扫。文件删除失败时保留软删除记录，以便后续重试。
+// Run 执行一次视频清扫，文件删除失败时保留软删除记录，以便后续重试
 func (j *VideoPurgeJob) Run(ctx context.Context) (int64, error) {
 	if j.purger == nil {
 		return 0, ErrVideoPurgerUnavailable

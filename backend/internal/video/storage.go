@@ -32,14 +32,14 @@ const (
 	MaxCoverSize = 10 << 20
 	// maxFilenameBytes 单个文件名最大字节数（含扩展名），避免超出文件系统限制
 	maxFilenameBytes = 200
-	// maxMultipartOverhead 为 multipart 边界、字段和文件名预留的请求体开销。
+	// maxMultipartOverhead 为 multipart 边界、字段和文件名预留的请求体开销
 	maxMultipartOverhead = 1 << 20
 	// defaultStemName 清洗后主名为空时的兜底主名
 	defaultStemName = "file"
-	// storageObjectIDBytes 决定物理对象后缀的随机字节数。
-	// 128 bit 随机值足以让一次 Save 得到不可复用的对象键。
+	// storageObjectIDBytes 决定物理对象后缀的随机字节数
+	// 128 bit 随机值足以让一次 Save 得到不可复用的对象键
 	storageObjectIDBytes = 16
-	// maxObjectNameAttempts 为随机键意外碰撞保留有限重试次数。
+	// maxObjectNameAttempts 为随机键意外碰撞保留有限重试次数
 	maxObjectNameAttempts = 16
 )
 
@@ -62,8 +62,8 @@ type MediaStorage interface {
 	Save(ctx context.Context, ownerID uint, kind MediaKind, filename string, src io.Reader) (SavedFile, error)
 }
 
-// MediaRemover 抽象媒体对象删除能力，供发布视频与草稿清扫任务使用。
-// 实现必须把不存在的对象视为成功，支持“物理删除成功但检查点写入失败”后的重试。
+// MediaRemover 抽象媒体对象删除能力，供发布视频与草稿清扫任务使用
+// 实现必须把不存在的对象视为成功，支持“物理删除成功但检查点写入失败”后的重试
 type MediaRemover interface {
 	Remove(ctx context.Context, publicURL string) error
 }
@@ -82,9 +82,9 @@ func NewLocalStorage(root string) *LocalStorage {
 }
 
 // Save 将文件保存到 {root}/{kind}/{ownerID}/{yyyyMMdd}/{清洗后的文件名_随机对象键}
-// 返回可用于发布的相对 URL（/static/...）与实际存储文件名。
+// 返回可用于发布的相对 URL（/static/...）与实际存储文件名
 // 文件名按 sanitizeFilename 的 4 步规则清洗，再追加不可复用的随机对象键；
-// 即使旧对象已经删除，后续同名上传也绝不会复用它的物理路径。
+// 即使旧对象已经删除，后续同名上传也绝不会复用它的物理路径
 func (s *LocalStorage) Save(ctx context.Context, ownerID uint, kind MediaKind, filename string, src io.Reader) (SavedFile, error) {
 	if ownerID == 0 {
 		return SavedFile{}, ErrInvalidMedia
@@ -170,8 +170,8 @@ func newStorageObjectID() (string, error) {
 	return hex.EncodeToString(value), nil
 }
 
-// Remove 删除由 Save 生成的媒体文件。不存在的文件按成功处理，保证清扫任务可重试。
-// 仅接受严格受控的 /static/{kind}/{ownerID}/{yyyyMMdd}/{filename} 路径，避免越界删除。
+// Remove 删除由 Save 生成的媒体文件，不存在的文件按成功处理，保证清扫任务可重试
+// 仅接受严格受控的 /static/{kind}/{ownerID}/{yyyyMMdd}/{filename} 路径，避免越界删除
 func (s *LocalStorage) Remove(_ context.Context, publicURL string) error {
 	path, err := s.pathForPublicURL(publicURL)
 	if err != nil {
@@ -238,7 +238,7 @@ func OriginalName(filename string) string {
 	return truncateOriginalFilename(name, 255)
 }
 
-// truncateOriginalFilename 在截断展示用原始名时尽可能保留用户看到的扩展名。
+// truncateOriginalFilename 在截断展示用原始名时尽可能保留用户看到的扩展名
 func truncateOriginalFilename(name string, max int) string {
 	if len(name) <= max {
 		return name
@@ -287,7 +287,7 @@ func sanitizeFilename(filename string) string {
 	return name
 }
 
-// filenameWithSuffix 在拼接重名序号前为后缀预留空间，保证结果仍满足文件名长度上限。
+// filenameWithSuffix 在拼接重名序号前为后缀预留空间，保证结果仍满足文件名长度上限
 func filenameWithSuffix(stem, ext, suffix string) string {
 	availableStemBytes := maxFilenameBytes - len(ext) - len(suffix)
 	if availableStemBytes <= 0 {

@@ -17,14 +17,14 @@ type Service struct {
 	metricsReader ProfileMetricsReader
 }
 
-// PublishedVideoCounter 是用户公开资料所需的视频统计能力。
-// 接口定义在消费方，避免 user 包依赖 video 包而产生循环依赖。
+// PublishedVideoCounter 是用户公开资料所需的视频统计能力
+// 接口定义在消费方，避免 user 包依赖 video 包而产生循环依赖
 type PublishedVideoCounter interface {
 	GetPublishedVideoCountByAuthor(ctx context.Context, authorID uint) (int64, error)
 }
 
-// ProfileMetricsReader 是用户公开资料所需的互动统计能力。
-// 接口定义在消费方，避免 user 包依赖 social 包而产生循环依赖。
+// ProfileMetricsReader 是用户公开资料所需的互动统计能力
+// 接口定义在消费方，避免 user 包依赖 social 包而产生循环依赖
 type ProfileMetricsReader interface {
 	GetProfileMetrics(ctx context.Context, accountID uint) (ProfileMetrics, error)
 }
@@ -139,7 +139,7 @@ func (s *Service) GetByID(ctx context.Context, id uint) (*User, error) {
 	return s.Repo.GetByID(ctx, id)
 }
 
-// GetProfile 返回活跃用户的公开资料及其当前公开可见的视频数量。
+// GetProfile 返回活跃用户的公开资料及其当前公开可见的视频数量
 func (s *Service) GetProfile(ctx context.Context, id uint) (*Profile, error) {
 	account, err := s.Repo.GetByID(ctx, id)
 	if err != nil {

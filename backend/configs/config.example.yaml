@@ -6,7 +6,7 @@
 #
 # Docker 部署：
 #   复制为 configs/config.yaml 并修改 database.host 为 mysql；
-#   数据库密码由 backend/.env 中的 MYSQL_ROOT_PASSWORD 注入。
+#   数据库密码由 backend/.env 中的 MYSQL_ROOT_PASSWORD 注入
 #   compose 会把宿主机 backend/configs 目录挂载到容器 /app/configs，
 #   并设置 CONFIG_PATH=/app/configs/config.yaml，因此容器实际读取的是这份副本；
 #   Compose 会注入 MODE / MYSQL_HOST / CONFIG_PATH；仅 MODE=prod 启用生产模式，

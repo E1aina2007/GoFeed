@@ -39,8 +39,8 @@ func (f *fakeMediaRemover) Remove(_ context.Context, publicURL string) error {
 	return f.errFor[publicURL]
 }
 
-// 测试目标：验证到期视频先清理两类媒体，再硬删除记录。
-// 预期效果：任务传递正确截止时间并统计实际删除的记录数。
+// 测试目标：验证到期视频先清理两类媒体，再硬删除记录
+// 预期效果：任务传递正确截止时间并统计实际删除的记录数
 func TestVideoPurgeJobRunRemovesMediaThenHardDeletes(t *testing.T) {
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	purger := &fakeVideoPurger{
@@ -75,8 +75,8 @@ func TestVideoPurgeJobRunRemovesMediaThenHardDeletes(t *testing.T) {
 	}
 }
 
-// 测试目标：验证媒体删除失败时视频记录会保留以便下次重试。
-// 预期效果：任务返回错误且不调用对应视频的硬删除。
+// 测试目标：验证媒体删除失败时视频记录会保留以便下次重试
+// 预期效果：任务返回错误且不调用对应视频的硬删除
 func TestVideoPurgeJobRunRetainsRecordWhenMediaRemovalFails(t *testing.T) {
 	coverURL := "/static/covers/1/20260810/a.png"
 	purger := &fakeVideoPurger{
@@ -95,8 +95,8 @@ func TestVideoPurgeJobRunRetainsRecordWhenMediaRemovalFails(t *testing.T) {
 	}
 }
 
-// 测试目标：验证视频清扫任务要求完整依赖。
-// 预期效果：缺失仓储或媒体删除器返回明确错误。
+// 测试目标：验证视频清扫任务要求完整依赖
+// 预期效果：缺失仓储或媒体删除器返回明确错误
 func TestVideoPurgeJobRunRequiresDependencies(t *testing.T) {
 	if _, err := NewVideoPurgeJob(nil, &fakeMediaRemover{}, time.Hour).Run(context.Background()); !errors.Is(err, ErrVideoPurgerUnavailable) {
 		t.Fatalf("nil 视频仓储错误不正确: %v", err)

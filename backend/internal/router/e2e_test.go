@@ -589,8 +589,8 @@ func TestFeedRegressionCursorAndSoftDelete(t *testing.T) {
 	}
 }
 
-// 测试目标：验证公开用户资料实时统计当前公开可见的视频数量。
-// 预期效果：发布后增加，软删除后立即减少，注销用户资料不可再读取。
+// 测试目标：验证公开用户资料实时统计当前公开可见的视频数量
+// 预期效果：发布后增加，软删除后立即减少，注销用户资料不可再读取
 func TestUserProfileVideoCount(t *testing.T) {
 	srv, client := newTestServer(t)
 	base := srv.URL

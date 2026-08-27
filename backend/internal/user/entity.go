@@ -78,8 +78,8 @@ type GetProfileRequest struct {
 	AccountID uint `json:"account_id"`
 }
 
-// Profile 表示公开资料读取所需的用户数据与聚合指标。
-// HTTP 层负责将其中的用户实体转换为不含敏感字段的响应 DTO。
+// Profile 表示公开资料读取所需的用户数据与聚合指标
+// HTTP 层负责将其中的用户实体转换为不含敏感字段的响应 DTO
 type Profile struct {
 	Account       *User
 	VideoCount    int64

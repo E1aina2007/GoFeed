@@ -21,8 +21,8 @@ func (f *fakePublishedVideoCounter) GetPublishedVideoCountByAuthor(_ context.Con
 	return f.count, f.err
 }
 
-// 测试目标：验证用户资料聚合当前公开可见的视频数量。
-// 预期效果：服务返回账户与计数，并以目标用户 ID 查询视频统计。
+// 测试目标：验证用户资料聚合当前公开可见的视频数量
+// 预期效果：服务返回账户与计数，并以目标用户 ID 查询视频统计
 func TestServiceGetProfile(t *testing.T) {
 	db := testutil.DB(t)
 	accountID := seedUser(t, db, "profile-owner")
@@ -41,8 +41,8 @@ func TestServiceGetProfile(t *testing.T) {
 	}
 }
 
-// 测试目标：验证视频统计失败不会伪造零值资料响应。
-// 预期效果：服务原样返回计数错误。
+// 测试目标：验证视频统计失败不会伪造零值资料响应
+// 预期效果：服务原样返回计数错误
 func TestServiceGetProfilePropagatesVideoCounterError(t *testing.T) {
 	db := testutil.DB(t)
 	accountID := seedUser(t, db, "profile-counter-error")
@@ -54,8 +54,8 @@ func TestServiceGetProfilePropagatesVideoCounterError(t *testing.T) {
 	}
 }
 
-// 测试目标：验证不存在或已删除的用户不会触发视频统计。
-// 预期效果：先返回用户不存在，再避免不必要的跨模块读取。
+// 测试目标：验证不存在或已删除的用户不会触发视频统计
+// 预期效果：先返回用户不存在，再避免不必要的跨模块读取
 func TestServiceGetProfileSkipsCounterForMissingUser(t *testing.T) {
 	db := testutil.DB(t)
 	counter := &fakePublishedVideoCounter{}
@@ -69,8 +69,8 @@ func TestServiceGetProfileSkipsCounterForMissingUser(t *testing.T) {
 	}
 }
 
-// 测试目标：验证资料读取在依赖缺失时返回明确错误而非发生空指针异常。
-// 预期效果：装配错误以内部错误形式上浮给 HTTP 层。
+// 测试目标：验证资料读取在依赖缺失时返回明确错误而非发生空指针异常
+// 预期效果：装配错误以内部错误形式上浮给 HTTP 层
 func TestServiceGetProfileRequiresVideoCounter(t *testing.T) {
 	db := testutil.DB(t)
 	accountID := seedUser(t, db, "profile-no-counter")

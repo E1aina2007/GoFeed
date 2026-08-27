@@ -22,8 +22,8 @@ var (
 	ErrInvalidDraftPurgeLease     = errors.New("invalid draft purge lease")
 )
 
-// DraftPurger 是过期草稿清扫所需的持久化围栏能力。
-// 所有会改变清扫进度或删除记录的操作都必须携带租约 token。
+// DraftPurger 是过期草稿清扫所需的持久化围栏能力
+// 所有会改变清扫进度或删除记录的操作都必须携带租约 token
 type DraftPurger interface {
 	GetRecoverableDraftPurgeList(ctx context.Context, limit int) ([]uint, error)
 	GetExpiredDraftPurgeList(ctx context.Context, cutoff time.Time, limit int) ([]uint, error)
@@ -33,8 +33,8 @@ type DraftPurger interface {
 	RemovePurgedDraft(ctx context.Context, id uint, token string) (bool, error)
 }
 
-// DraftPurgeJob 在草稿过期后以 token 租约删除媒体并硬删除记录。
-// 文件删除成功会立即持久化到对应媒体槽位，失败后不会把 purging 恢复为 draft。
+// DraftPurgeJob 在草稿过期后以 token 租约删除媒体并硬删除记录
+// 文件删除成功会立即持久化到对应媒体槽位，失败后不会把 purging 恢复为 draft
 type DraftPurgeJob struct {
 	purger    DraftPurger
 	remover   video.MediaRemover
@@ -57,8 +57,8 @@ func NewDraftPurgeJob(purger DraftPurger, remover video.MediaRemover, retention,
 	}
 }
 
-// Run 处理一个有界批次。单条草稿失败不会阻塞同批其他候选项，
-// 所有失败会在本轮结束时汇总返回，已完成的媒体检查点可在下轮继续使用。
+// Run 处理一个有界批次，单条草稿失败不会阻塞同批其他候选项，
+// 所有失败会在本轮结束时汇总返回，已完成的媒体检查点可在下轮继续使用
 func (j *DraftPurgeJob) Run(ctx context.Context) (int64, error) {
 	if j.purger == nil {
 		return 0, ErrDraftPurgerUnavailable
@@ -115,9 +115,9 @@ func (j *DraftPurgeJob) Run(ctx context.Context) (int64, error) {
 	return purged, errors.Join(failures...)
 }
 
-// listCandidates 分别读取新到期草稿和可接管的清扫任务，再交错合并。
+// listCandidates 分别读取新到期草稿和可接管的清扫任务，再交错合并
 // 每种状态都有稳定的批次位置，避免大量新草稿导致失败项永远得不到重试；
-// 任一类不足时，另一类会填满剩余容量。
+// 任一类不足时，另一类会填满剩余容量
 func (j *DraftPurgeJob) listCandidates(ctx context.Context, cutoff time.Time) ([]uint, error) {
 	recoverable, err := j.purger.GetRecoverableDraftPurgeList(ctx, j.batchSize)
 	if err != nil {

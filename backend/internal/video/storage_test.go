@@ -284,8 +284,8 @@ func TestOriginalName(t *testing.T) {
 	}
 }
 
-// 测试目标：验证到期视频的本地媒体可被安全删除且重复清扫保持幂等。
-// 预期效果：只删除上传根目录内由 Save 生成的文件，不存在的文件视为已清理。
+// 测试目标：验证到期视频的本地媒体可被安全删除且重复清扫保持幂等
+// 预期效果：只删除上传根目录内由 Save 生成的文件，不存在的文件视为已清理
 func TestLocalStorageRemove(t *testing.T) {
 	root := t.TempDir()
 	s := NewLocalStorage(root)
@@ -306,8 +306,8 @@ func TestLocalStorageRemove(t *testing.T) {
 	}
 }
 
-// 测试目标：验证清扫任务不能借由异常 URL 删除上传目录外的文件。
-// 预期效果：非规范媒体路径被拒绝，根目录外文件保持不变。
+// 测试目标：验证清扫任务不能借由异常 URL 删除上传目录外的文件
+// 预期效果：非规范媒体路径被拒绝，根目录外文件保持不变
 func TestLocalStorageRemoveRejectsUnsafePath(t *testing.T) {
 	root := t.TempDir()
 	s := NewLocalStorage(root)
