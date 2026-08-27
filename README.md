@@ -38,7 +38,7 @@ JWT_SECRET=replace-with-a-stable-local-secret
 
 启动本机 MySQL 后，首次创建业务库。`-p` 会交互式询问密码，不会将密码写入命令历史：
 
-```powershell
+```bash
 mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS feedsystem CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"
 ```
 
@@ -46,20 +46,20 @@ mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS feedsystem CHARACTER SET utf8
 
 首次安装 [`golang-migrate`](https://github.com/golang-migrate/migrate) CLI：
 
-```powershell
+```bash
 go install -tags 'mysql' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.19.1
 ```
 
-确保 `$(go env GOPATH)\bin` 已加入 `PATH`。若仅需在当前 PowerShell 会话中使用：
+确保 `$(go env GOPATH)/bin` 已加入 `PATH`。若仅需在当前 Bash 会话中使用：
 
-```powershell
-$env:Path += ";$(go env GOPATH)\bin"
+```bash
+export PATH="$(go env GOPATH)/bin:$PATH"
 ```
 
 从项目根目录切换到 `backend` 目录后，执行全部未应用的迁移：
 
-```powershell
-Set-Location backend
+```bash
+cd backend
 migrate -path ./db/migrations -database "mysql://root:<URL 编码后的密码>@tcp(127.0.0.1:3306)/feedsystem?multiStatements=true" up
 ```
 
@@ -80,18 +80,18 @@ WHERE status IN ('draft', 'purging')
 
 后端必须从 `backend` 目录启动，才能读取 `.env` 与默认的 `configs/config.dev.yaml`：
 
-```powershell
-Set-Location backend
+```bash
+cd backend
 go run ./cmd            # API
 # go run ./cmd/sweeper  # 按需启动注销用户和到期视频清扫任务
 ```
 
 另开一个终端启动前端开发服务器：
 
-```powershell
-Set-Location frontend
-pnpm.cmd install        # 首次安装依赖
-pnpm.cmd dev
+```bash
+cd frontend
+pnpm install        # 首次安装依赖
+pnpm dev
 ```
 
 前端开发服务器会代理 `/api` 和 `/static` 到本机后端 `http://localhost:8080`。日常修改 Go 或 Vue 源码不涉及 Docker 镜像；仅新增数据库迁移时运行一次 `migrate ... up`。
@@ -232,4 +232,4 @@ SWEEPER_DRAFT_PURGE_LEASE_MINUTES=15
 6. 在账户设置修改用户名、资料、密码和注销账号，错误和成功反馈清晰。
 7. 在桌面和移动视口各走一遍，检查导航、视频原生控制、提示和文字没有重叠或溢出。
 
-后端回归从 `backend` 执行 `go test ./...`；前端回归使用 `pnpm.cmd run lint`、`pnpm.cmd run test:unit -- --run`、`pnpm.cmd run build`，并在涉及页面交互时执行 `pnpm.cmd run test:e2e -- --project=chromium --project="Mobile Chrome"`。部署配置改动还必须执行 `docker compose config --quiet`；真实发布、鉴权和媒体流仍按上述本地 MySQL 验收清单联调。
+后端回归从 `backend` 执行 `go test ./...`；前端回归使用 `pnpm run lint`、`pnpm run test:unit -- --run`、`pnpm run build`，并在涉及页面交互时执行 `pnpm run test:e2e -- --project=chromium --project="Mobile Chrome"`。部署配置改动还必须执行 `docker compose config --quiet`；真实发布、鉴权和媒体流仍按上述本地 MySQL 验收清单联调。
