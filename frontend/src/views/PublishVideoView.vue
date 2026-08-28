@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import {
@@ -19,12 +19,17 @@ const maxCoverSize = 10 * 1024 * 1024
 const videoExtension = /\.(mp4|webm|mov)$/i
 const coverExtension = /\.(jpg|jpeg|png|webp)$/i
 
+type PublishingOperation =
+  'create-draft' | 'upload-video' | 'upload-cover' | 'publish' | 'discard-draft'
+
 const router = useRouter()
 const toast = useToastStore()
 const title = ref('')
 const description = ref('')
 const videoFile = ref<File>()
 const coverFile = ref<File>()
+const videoPreviewURL = ref('')
+const coverPreviewURL = ref('')
 const activeDraft = ref<DraftItem>()
 const boundVideoFile = ref<File>()
 const boundCoverFile = ref<File>()
@@ -36,6 +41,7 @@ const isDiscarding = ref(false)
 const activeUploadController = ref<AbortController>()
 const isCancellingUpload = ref(false)
 const cancellationRequested = ref(false)
+const currentOperation = ref<PublishingOperation>()
 
 const progressLabel = computed(() => `${Math.round(uploadProgress.value * 100)}%`)
 const isBusy = computed(() => isSubmitting.value || isDiscarding.value)
@@ -109,17 +115,88 @@ function markDraftMediaBound(kind: 'video' | 'cover', originalName: string, file
   boundCoverFile.value = file
 }
 
+function releaseVideoPreview() {
+  if (videoPreviewURL.value && typeof URL.revokeObjectURL === 'function') {
+    URL.revokeObjectURL(videoPreviewURL.value)
+  }
+  videoPreviewURL.value = ''
+}
+
+function releaseCoverPreview() {
+  if (coverPreviewURL.value && typeof URL.revokeObjectURL === 'function') {
+    URL.revokeObjectURL(coverPreviewURL.value)
+  }
+  coverPreviewURL.value = ''
+}
+
+function updateVideoPreview(file: File) {
+  releaseVideoPreview()
+  if (typeof URL.createObjectURL === 'function') {
+    videoPreviewURL.value = URL.createObjectURL(file)
+  }
+}
+
+function updateCoverPreview(file: File) {
+  releaseCoverPreview()
+  if (typeof URL.createObjectURL === 'function') {
+    coverPreviewURL.value = URL.createObjectURL(file)
+  }
+}
+
+function mediaValidationError(kind: 'video' | 'cover', file: File) {
+  const validExtension =
+    kind === 'video' ? videoExtension.test(file.name) : coverExtension.test(file.name)
+  const maxSize = kind === 'video' ? maxVideoSize : maxCoverSize
+  if (!validExtension || file.size <= 0 || file.size > maxSize) {
+    return kind === 'video'
+      ? '视频仅支持不超过 200 MiB 的 MP4、WebM 或 MOV 文件'
+      : '封面仅支持不超过 10 MiB 的 JPG、PNG 或 WebP 文件'
+  }
+  return ''
+}
+
 function selectVideo(event: Event) {
   const input = event.target as HTMLInputElement
-  videoFile.value = input.files?.[0]
+  const file = input.files?.[0]
   errorMessage.value = ''
+  if (!file) {
+    videoFile.value = undefined
+    releaseVideoPreview()
+    return
+  }
+  const validationMessage = mediaValidationError('video', file)
+  if (validationMessage) {
+    errorMessage.value = validationMessage
+    input.value = ''
+    return
+  }
+  videoFile.value = file
+  updateVideoPreview(file)
 }
 
 function selectCover(event: Event) {
   const input = event.target as HTMLInputElement
-  coverFile.value = input.files?.[0]
+  const file = input.files?.[0]
   errorMessage.value = ''
+  if (!file) {
+    coverFile.value = undefined
+    releaseCoverPreview()
+    return
+  }
+  const validationMessage = mediaValidationError('cover', file)
+  if (validationMessage) {
+    errorMessage.value = validationMessage
+    input.value = ''
+    return
+  }
+  coverFile.value = file
+  updateCoverPreview(file)
 }
+
+onBeforeUnmount(() => {
+  releaseVideoPreview()
+  releaseCoverPreview()
+})
 
 function formatFileSize(size: number) {
   return `${(size / 1024 / 1024).toFixed(size >= 10 * 1024 * 1024 ? 0 : 1)} MiB`
@@ -132,22 +209,16 @@ function validationError() {
   if (!videoFile.value) {
     return '请选择一个视频文件'
   }
-  if (
-    !videoExtension.test(videoFile.value.name) ||
-    videoFile.value.size === 0 ||
-    videoFile.value.size > maxVideoSize
-  ) {
-    return '视频仅支持不超过 200 MiB 的 MP4、WebM 或 MOV 文件'
+  const videoError = mediaValidationError('video', videoFile.value)
+  if (videoError) {
+    return videoError
   }
   if (!coverFile.value) {
     return '请选择一张封面图片'
   }
-  if (
-    !coverExtension.test(coverFile.value.name) ||
-    coverFile.value.size === 0 ||
-    coverFile.value.size > maxCoverSize
-  ) {
-    return '封面仅支持不超过 10 MiB 的 JPG、PNG 或 WebP 文件'
+  const coverError = mediaValidationError('cover', coverFile.value)
+  if (coverError) {
+    return coverError
   }
   if (activeDraft.value?.status === 'purging') {
     return '草稿已进入清扫，无法继续上传'
@@ -166,6 +237,64 @@ function isAbortError(error: unknown) {
   return (
     typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError'
   )
+}
+
+function mediaTooLargeMessage(operation: PublishingOperation | undefined) {
+  if (operation === 'upload-video') {
+    return '视频文件超过 200 MiB，请重新选择'
+  }
+  if (operation === 'upload-cover') {
+    return '封面文件超过 10 MiB，请重新选择'
+  }
+  return '请求内容超过限制，请检查后重新提交'
+}
+
+function messageForPublishingError(
+  error: unknown,
+  operation: PublishingOperation | undefined = currentOperation.value,
+) {
+  if (isAbortError(error)) {
+    return '上传已取消，可稍后重试'
+  }
+  if (!(error instanceof ApiError) || error.status === 0) {
+    return '网络连接失败，请检查网络后重试'
+  }
+
+  switch (error.status) {
+    case 401:
+      return '登录状态已失效，请重新登录后重试'
+    case 400:
+      if (error.message === 'media file too large') {
+        return mediaTooLargeMessage(operation)
+      }
+      if (operation === 'upload-video') {
+        return '视频文件未通过服务端校验，请检查文件格式和内容后重试'
+      }
+      if (operation === 'upload-cover') {
+        return '封面文件未通过服务端校验，请检查文件格式和内容后重试'
+      }
+      if (operation === 'create-draft') {
+        return '标题或简介未通过校验，请检查后重新提交'
+      }
+      return '提交内容未通过校验，请检查后重试'
+    case 403:
+      return '当前账号无权继续处理该草稿，请返回后重新开始'
+    case 404:
+      return '草稿已不存在或已被清扫，请重新创建草稿'
+    case 409:
+      if (error.message === '草稿已进入清扫，无法继续上传') {
+        return error.message
+      }
+      return operation === 'publish'
+        ? '草稿尚未完整或状态已变化，请检查后重试'
+        : '草稿状态已变化，请重新提交'
+    case 413:
+      return mediaTooLargeMessage(operation)
+    default:
+      return operation === 'create-draft'
+        ? '服务暂时不可用，请稍后重新提交'
+        : '服务暂时不可用，草稿已保留，请稍后重试'
+  }
 }
 
 async function reconcileMediaUpload(
@@ -215,6 +344,7 @@ async function reconcileCancelledMediaUpload(draftID: number, kind: 'video' | 'c
 }
 
 async function uploadMissingVideo(draftID: number, file: File) {
+  currentOperation.value = 'upload-video'
   currentStage.value = '正在上传视频'
   uploadProgress.value = 0
   const controller = new AbortController()
@@ -252,6 +382,7 @@ async function uploadMissingVideo(draftID: number, file: File) {
 }
 
 async function uploadMissingCover(draftID: number, file: File) {
+  currentOperation.value = 'upload-cover'
   currentStage.value = '正在上传封面'
   uploadProgress.value = 0
   const controller = new AbortController()
@@ -317,7 +448,7 @@ async function discardCurrentDraft() {
     toast.info('草稿已放弃，媒体将在后台清理')
     return true
   } catch (error) {
-    errorMessage.value = error instanceof ApiError ? error.message : '放弃草稿失败，请稍后重试'
+    errorMessage.value = messageForPublishingError(error, 'discard-draft')
     toast.error(errorMessage.value)
     return false
   } finally {
@@ -348,6 +479,7 @@ async function submit() {
     const normalizedTitle = title.value.trim()
     const normalizedDescription = description.value.trim()
     if (!activeDraft.value) {
+      currentOperation.value = 'create-draft'
       currentStage.value = '正在创建草稿'
       const response = await createDraft({
         title: normalizedTitle,
@@ -372,6 +504,7 @@ async function submit() {
       }
     }
 
+    currentOperation.value = 'publish'
     currentStage.value = '正在发布视频'
     uploadProgress.value = 1
     const response = await publishDraft(currentDraftID)
@@ -379,12 +512,13 @@ async function submit() {
     toast.success('视频已发布，正在返回 Feed')
     await router.replace({ name: 'feed', query: { published: String(response.video.id) } })
   } catch (error) {
-    errorMessage.value = error instanceof ApiError ? error.message : '发布失败，请检查网络后重试'
+    errorMessage.value = messageForPublishingError(error)
     toast.error(errorMessage.value)
   } finally {
     isSubmitting.value = false
     isCancellingUpload.value = false
     activeUploadController.value = undefined
+    currentOperation.value = undefined
     currentStage.value = ''
   }
 }
@@ -430,6 +564,17 @@ async function submit() {
             >{{ videoDisplayName }} · {{ formatFileSize(videoFile.size) }}</small
           >
           <small v-else>MP4、WebM 或 MOV，最大 200 MiB</small>
+          <video
+            v-if="videoPreviewURL"
+            class="media-preview"
+            :src="videoPreviewURL"
+            aria-label="所选视频预览"
+            controls
+            muted
+            playsinline
+            preload="metadata"
+            @click.stop
+          ></video>
         </label>
 
         <label class="file-field">
@@ -444,6 +589,13 @@ async function submit() {
             >{{ coverDisplayName }} · {{ formatFileSize(coverFile.size) }}</small
           >
           <small v-else>JPG、PNG 或 WebP，最大 10 MiB</small>
+          <img
+            v-if="coverPreviewURL"
+            class="media-preview"
+            :src="coverPreviewURL"
+            alt="所选封面预览"
+            @click.stop
+          />
         </label>
       </div>
 
@@ -605,6 +757,16 @@ async function submit() {
   font-weight: 400;
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.media-preview {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid #d7dcda;
+  border-radius: 4px;
+  object-fit: contain;
+  background: #151b1c;
 }
 
 .upload-status {

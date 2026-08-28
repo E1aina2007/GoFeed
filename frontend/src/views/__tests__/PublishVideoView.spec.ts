@@ -80,6 +80,42 @@ function abortableUpload<T>(signal: AbortSignal | undefined) {
   })
 }
 
+async function mountWithSelectedMedia() {
+  const wrapper = mount(PublishVideoView, {
+    global: { plugins: [createPinia()], stubs: { RouterLink: true } },
+  })
+  const fields = wrapper.findAll('input')
+  const video = new File(['video'], 'local.mp4', { type: 'video/mp4' })
+  const cover = new File(['cover'], 'local.png', { type: 'image/png' })
+  await fields[0]?.setValue('春日散步')
+  Object.defineProperty(fields[1]?.element, 'files', { configurable: true, value: [video] })
+  Object.defineProperty(fields[2]?.element, 'files', { configurable: true, value: [cover] })
+  await fields[1]?.trigger('change')
+  await fields[2]?.trigger('change')
+
+  return { wrapper, video, cover }
+}
+
+const uploadFailureCases: Array<[string, ApiError, string]> = [
+  [
+    'authentication',
+    new ApiError(401, 'invalid or expired token'),
+    '登录状态已失效，请重新登录后重试',
+  ],
+  [
+    'validation',
+    new ApiError(400, 'invalid media file'),
+    '视频文件未通过服务端校验，请检查文件格式和内容后重试',
+  ],
+  [
+    'size validation',
+    new ApiError(400, 'media file too large'),
+    '视频文件超过 200 MiB，请重新选择',
+  ],
+  ['size', new ApiError(413, 'media file too large'), '视频文件超过 200 MiB，请重新选择'],
+  ['server', new ApiError(500, 'video operation failed'), '服务暂时不可用，草稿已保留，请稍后重试'],
+]
+
 describe('PublishVideoView', () => {
   beforeEach(() => {
     vi.resetAllMocks()
@@ -109,6 +145,73 @@ describe('PublishVideoView', () => {
     await wrapper.get('form').trigger('submit')
 
     expect(wrapper.get('[role="alert"]').text()).toBe('请选择一个视频文件')
+  })
+
+  it('renders local media previews and releases their object URLs when replaced or unmounted', async () => {
+    const createObjectURL = vi
+      .fn<typeof URL.createObjectURL>()
+      .mockReturnValueOnce('blob:video-first')
+      .mockReturnValueOnce('blob:cover-first')
+      .mockReturnValueOnce('blob:video-second')
+      .mockReturnValueOnce('blob:cover-second')
+    const revokeObjectURL = vi.fn<typeof URL.revokeObjectURL>()
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL })
+
+    const wrapper = mount(PublishVideoView, {
+      global: { plugins: [createPinia()], stubs: { RouterLink: true } },
+    })
+    const fields = wrapper.findAll('input')
+    const firstVideo = new File(['video'], 'first.mp4', { type: 'video/mp4' })
+    const cover = new File(['cover'], 'cover.png', { type: 'image/png' })
+    Object.defineProperty(fields[1]?.element, 'files', { configurable: true, value: [firstVideo] })
+    Object.defineProperty(fields[2]?.element, 'files', { configurable: true, value: [cover] })
+    await fields[1]?.trigger('change')
+    await fields[2]?.trigger('change')
+
+    expect(wrapper.get('video.media-preview').attributes('src')).toBe('blob:video-first')
+    expect(wrapper.get('img.media-preview').attributes('src')).toBe('blob:cover-first')
+
+    const secondVideo = new File(['video'], 'second.mp4', { type: 'video/mp4' })
+    Object.defineProperty(fields[1]?.element, 'files', { configurable: true, value: [secondVideo] })
+    await fields[1]?.trigger('change')
+
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:video-first')
+    expect(wrapper.get('video.media-preview').attributes('src')).toBe('blob:video-second')
+
+    const secondCover = new File(['cover'], 'second-cover.png', { type: 'image/png' })
+    Object.defineProperty(fields[2]?.element, 'files', { configurable: true, value: [secondCover] })
+    await fields[2]?.trigger('change')
+
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:cover-first')
+    expect(wrapper.get('img.media-preview').attributes('src')).toBe('blob:cover-second')
+
+    wrapper.unmount()
+
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:video-second')
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:cover-second')
+  })
+
+  it('rejects invalid media selection before creating a preview', async () => {
+    const createObjectURL = vi.fn<typeof URL.createObjectURL>()
+    const revokeObjectURL = vi.fn<typeof URL.revokeObjectURL>()
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL })
+    const wrapper = mount(PublishVideoView, {
+      global: { plugins: [createPinia()], stubs: { RouterLink: true } },
+    })
+    const fileInput = wrapper.findAll('input')[1]
+    if (!fileInput) {
+      throw new Error('video file input was not rendered')
+    }
+    const file = new File(['not a video'], 'notes.txt', { type: 'text/plain' })
+    Object.defineProperty(fileInput.element, 'files', { configurable: true, value: [file] })
+
+    await fileInput.trigger('change')
+
+    expect(wrapper.get('[role="alert"]').text()).toBe(
+      '视频仅支持不超过 200 MiB 的 MP4、WebM 或 MOV 文件',
+    )
+    expect(wrapper.find('video.media-preview').exists()).toBe(false)
+    expect(createObjectURL).not.toHaveBeenCalled()
   })
 
   it('creates a draft, binds both media files, then publishes it', async () => {
@@ -162,6 +265,22 @@ describe('PublishVideoView', () => {
     expect(publishDraft).toHaveBeenCalledWith(7)
     expect(routerReplace).toHaveBeenCalledWith({ name: 'feed', query: { published: '100' } })
   })
+
+  it.each(uploadFailureCases)(
+    'shows a recoverable %s upload error',
+    async (_category, uploadError, expectedMessage) => {
+      vi.mocked(createDraft).mockResolvedValue({ draft: draft() })
+      vi.mocked(uploadVideo).mockRejectedValue(uploadError)
+      const { wrapper } = await mountWithSelectedMedia()
+
+      await wrapper.get('form').trigger('submit')
+      await flushPromises()
+
+      expect(wrapper.get('[role="alert"]').text()).toBe(expectedMessage)
+      expect(uploadCover).not.toHaveBeenCalled()
+      expect(publishDraft).not.toHaveBeenCalled()
+    },
+  )
 
   it('cancels a video upload and keeps server-bound media on the draft', async () => {
     vi.mocked(createDraft).mockResolvedValue({ draft: draft() })
