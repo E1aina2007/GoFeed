@@ -57,7 +57,9 @@ export type DraftItem = {
   id: number
   title: string
   description: string
-  status: 'draft'
+  status: 'draft' | 'purging'
+  has_video: boolean
+  has_cover: boolean
   play_original_name?: string
   cover_original_name?: string
   created_at: string
@@ -195,6 +197,29 @@ export function uploadCover(draftID: number, file: File, onProgress?: (progress:
     return Promise.reject(new ApiError(400, '草稿 ID 无效'))
   }
   return uploadMedia<UploadedCover>(`/api/video/auth/drafts/${draftID}/cover`, file, onProgress)
+}
+
+export function getDraft(draftID: number) {
+  if (!validDraftID(draftID)) {
+    return Promise.reject(new ApiError(400, '草稿 ID 无效'))
+  }
+  return withAuthenticatedSession((accessToken) =>
+    request<DraftResponse>(`/api/video/auth/drafts/${draftID}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }),
+  )
+}
+
+export function discardDraft(draftID: number) {
+  if (!validDraftID(draftID)) {
+    return Promise.reject(new ApiError(400, '草稿 ID 无效'))
+  }
+  return withAuthenticatedSession((accessToken) =>
+    request<DraftResponse>(`/api/video/auth/drafts/${draftID}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }),
+  )
 }
 
 export function publishDraft(draftID: number) {

@@ -4,7 +4,9 @@ import { ApiError } from '@/lib/api'
 import { clearSession, login } from '@/features/auth/session'
 import {
   createDraft,
+  discardDraft,
   deleteVideo,
+  getDraft,
   getPublishedVideo,
   listMyVideos,
   listPublishedVideos,
@@ -262,6 +264,88 @@ describe('listPublishedVideos', () => {
     ).toEqual(['Bearer access-token', 'Bearer access-token'])
     expect(MockXMLHttpRequest.requests[0]?.body?.get('file')).toBe(video)
     expect(MockXMLHttpRequest.requests[1]?.body?.get('file')).toBe(cover)
+  })
+
+  it('reads and discards a draft through authenticated endpoints', async () => {
+    const session = {
+      access_token: 'access-token',
+      refresh_token: 'refresh-token',
+      expires_at: '2026-08-26T08:00:00Z',
+      user: { id: 42, username: 'alice' },
+    }
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(session), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            draft: {
+              id: 7,
+              title: '我的第一条视频',
+              description: '',
+              status: 'draft',
+              has_video: true,
+              has_cover: false,
+              created_at: '2026-08-26T08:00:00Z',
+              updated_at: '2026-08-26T08:01:00Z',
+            },
+          }),
+          {
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            draft: {
+              id: 7,
+              status: 'purging',
+              has_video: true,
+              has_cover: false,
+            },
+          }),
+          {
+            status: 202,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await login({ username: 'alice', password: 'password-123' })
+    await expect(getDraft(7)).resolves.toMatchObject({
+      draft: { id: 7, has_video: true, has_cover: false },
+    })
+    await expect(discardDraft(7)).resolves.toMatchObject({ draft: { id: 7, status: 'purging' } })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/video/auth/drafts/7',
+      expect.objectContaining({
+        headers: expect.objectContaining({ get: expect.any(Function) }),
+      }),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      '/api/video/auth/drafts/7',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+  })
+
+  it('rejects invalid draft IDs before making an authenticated request', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+    vi.stubGlobal('fetch', fetchMock)
+
+    for (const draftID of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      await expect(getDraft(draftID)).rejects.toEqual(new ApiError(400, '草稿 ID 无效'))
+      await expect(discardDraft(draftID)).rejects.toEqual(new ApiError(400, '草稿 ID 无效'))
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('creates and publishes a draft without client media metadata', async () => {

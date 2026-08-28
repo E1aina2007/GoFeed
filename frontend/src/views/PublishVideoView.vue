@@ -4,11 +4,12 @@ import { useRouter } from 'vue-router'
 
 import {
   createDraft,
+  discardDraft,
+  getDraft,
   publishDraft,
   uploadCover,
   uploadVideo,
-  type UploadedCover,
-  type UploadedVideo,
+  type DraftItem,
 } from '@/features/video/api'
 import { ApiError } from '@/lib/api'
 import { useToastStore } from '@/stores/toast'
@@ -24,49 +25,89 @@ const title = ref('')
 const description = ref('')
 const videoFile = ref<File>()
 const coverFile = ref<File>()
-const uploadedVideo = ref<UploadedVideo>()
-const uploadedCover = ref<UploadedCover>()
-const draftID = ref<number>()
-const draftTitle = ref('')
-const draftDescription = ref('')
+const activeDraft = ref<DraftItem>()
+const boundVideoFile = ref<File>()
+const boundCoverFile = ref<File>()
 const currentStage = ref('')
 const uploadProgress = ref(0)
 const errorMessage = ref('')
 const isSubmitting = ref(false)
+const isDiscarding = ref(false)
 
 const progressLabel = computed(() => `${Math.round(uploadProgress.value * 100)}%`)
+const isBusy = computed(() => isSubmitting.value || isDiscarding.value)
 const videoDisplayName = computed(
-  () => uploadedVideo.value?.play_original_name || videoFile.value?.name,
+  () => activeDraft.value?.play_original_name || videoFile.value?.name,
 )
 const coverDisplayName = computed(
-  () => uploadedCover.value?.cover_original_name || coverFile.value?.name,
+  () => activeDraft.value?.cover_original_name || coverFile.value?.name,
 )
+const activeDraftNeedsDiscard = computed(() => {
+  const draft = activeDraft.value
+  if (!draft) {
+    return false
+  }
+  return (
+    draft.status !== 'draft' ||
+    draft.title !== title.value.trim() ||
+    draft.description !== description.value.trim() ||
+    (draft.has_video && boundVideoFile.value !== videoFile.value) ||
+    (draft.has_cover && boundCoverFile.value !== coverFile.value)
+  )
+})
 
-function resetDraft() {
-  draftID.value = undefined
-  draftTitle.value = ''
-  draftDescription.value = ''
-  uploadedVideo.value = undefined
-  uploadedCover.value = undefined
+function clearActiveDraft() {
+  activeDraft.value = undefined
+  boundVideoFile.value = undefined
+  boundCoverFile.value = undefined
+}
+
+function setActiveDraft(draft: DraftItem) {
+  const previousID = activeDraft.value?.id
+  activeDraft.value = draft
+  if (!draft.has_video) {
+    boundVideoFile.value = undefined
+  } else if (previousID !== draft.id || !boundVideoFile.value) {
+    boundVideoFile.value = videoFile.value
+  }
+  if (!draft.has_cover) {
+    boundCoverFile.value = undefined
+  } else if (previousID !== draft.id || !boundCoverFile.value) {
+    boundCoverFile.value = coverFile.value
+  }
+}
+
+function markDraftMediaBound(kind: 'video' | 'cover', originalName: string, file: File) {
+  const draft = activeDraft.value
+  if (!draft) {
+    throw new ApiError(500, '草稿状态丢失，请重试')
+  }
+  if (kind === 'video') {
+    activeDraft.value = {
+      ...draft,
+      has_video: true,
+      play_original_name: originalName,
+    }
+    boundVideoFile.value = file
+    return
+  }
+  activeDraft.value = {
+    ...draft,
+    has_cover: true,
+    cover_original_name: originalName,
+  }
+  boundCoverFile.value = file
 }
 
 function selectVideo(event: Event) {
   const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (file !== videoFile.value) {
-    resetDraft()
-  }
-  videoFile.value = file
+  videoFile.value = input.files?.[0]
   errorMessage.value = ''
 }
 
 function selectCover(event: Event) {
   const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (file !== coverFile.value) {
-    resetDraft()
-  }
-  coverFile.value = file
+  coverFile.value = input.files?.[0]
   errorMessage.value = ''
 }
 
@@ -98,7 +139,106 @@ function validationError() {
   ) {
     return '封面仅支持不超过 10 MiB 的 JPG、PNG 或 WebP 文件'
   }
+  if (activeDraft.value?.status === 'purging') {
+    return '草稿已进入清扫，无法继续上传'
+  }
+  if (activeDraftNeedsDiscard.value) {
+    return '当前草稿内容已变更，请先放弃当前草稿'
+  }
   return ''
+}
+
+function canReconcileMediaUpload(error: unknown) {
+  return error instanceof ApiError && (error.status === 0 || error.status === 409)
+}
+
+async function reconcileMediaUpload(
+  draftID: number,
+  kind: 'video' | 'cover',
+  originalError: unknown,
+) {
+  if (!canReconcileMediaUpload(originalError)) {
+    throw originalError
+  }
+
+  currentStage.value = '正在确认草稿状态'
+  let draft: DraftItem
+  try {
+    draft = (await getDraft(draftID)).draft
+  } catch {
+    throw originalError
+  }
+  setActiveDraft(draft)
+  if (draft.status !== 'draft') {
+    throw new ApiError(409, '草稿已进入清扫，无法继续上传')
+  }
+
+  const mediaBound = kind === 'video' ? draft.has_video : draft.has_cover
+  if (!mediaBound) {
+    throw originalError
+  }
+  toast.info(kind === 'video' ? '已确认视频上传成功，继续处理' : '已确认封面上传成功，继续处理')
+}
+
+async function uploadMissingVideo(draftID: number, file: File) {
+  currentStage.value = '正在上传视频'
+  uploadProgress.value = 0
+  try {
+    const uploaded = await uploadVideo(draftID, file, (progress) => {
+      uploadProgress.value = progress
+    })
+    markDraftMediaBound('video', uploaded.play_original_name, file)
+  } catch (error) {
+    await reconcileMediaUpload(draftID, 'video', error)
+  }
+}
+
+async function uploadMissingCover(draftID: number, file: File) {
+  currentStage.value = '正在上传封面'
+  uploadProgress.value = 0
+  try {
+    const uploaded = await uploadCover(draftID, file, (progress) => {
+      uploadProgress.value = progress
+    })
+    markDraftMediaBound('cover', uploaded.cover_original_name, file)
+  } catch (error) {
+    await reconcileMediaUpload(draftID, 'cover', error)
+  }
+}
+
+async function discardCurrentDraft() {
+  const draft = activeDraft.value
+  if (!draft) {
+    return true
+  }
+  if (!window.confirm('放弃草稿后将无法继续上传或发布，确定继续吗？')) {
+    return false
+  }
+
+  isDiscarding.value = true
+  errorMessage.value = ''
+  try {
+    await discardDraft(draft.id)
+    clearActiveDraft()
+    toast.info('草稿已放弃，媒体将在后台清理')
+    return true
+  } catch (error) {
+    errorMessage.value = error instanceof ApiError ? error.message : '放弃草稿失败，请稍后重试'
+    toast.error(errorMessage.value)
+    return false
+  } finally {
+    isDiscarding.value = false
+  }
+}
+
+async function cancelPublishing() {
+  if (isBusy.value) {
+    return
+  }
+  if (!(await discardCurrentDraft())) {
+    return
+  }
+  await router.replace({ name: 'feed' })
 }
 
 async function submit() {
@@ -111,46 +251,31 @@ async function submit() {
   try {
     const normalizedTitle = title.value.trim()
     const normalizedDescription = description.value.trim()
-    if (
-      draftID.value &&
-      (draftTitle.value !== normalizedTitle || draftDescription.value !== normalizedDescription)
-    ) {
-      resetDraft()
-    }
-    if (!draftID.value) {
+    if (!activeDraft.value) {
       currentStage.value = '正在创建草稿'
       const response = await createDraft({
         title: normalizedTitle,
         description: normalizedDescription,
       })
-      draftID.value = response.draft.id
-      draftTitle.value = normalizedTitle
-      draftDescription.value = normalizedDescription
+      setActiveDraft(response.draft)
     }
-    const currentDraftID = draftID.value
+    const currentDraftID = activeDraft.value?.id
     if (!currentDraftID) {
       throw new ApiError(500, '草稿创建失败，请重试')
     }
 
-    if (!uploadedVideo.value) {
-      currentStage.value = '正在上传视频'
-      uploadProgress.value = 0
-      uploadedVideo.value = await uploadVideo(currentDraftID, videoFile.value, (progress) => {
-        uploadProgress.value = progress
-      })
+    if (!activeDraft.value?.has_video) {
+      await uploadMissingVideo(currentDraftID, videoFile.value)
     }
 
-    if (!uploadedCover.value) {
-      currentStage.value = '正在上传封面'
-      uploadProgress.value = 0
-      uploadedCover.value = await uploadCover(currentDraftID, coverFile.value, (progress) => {
-        uploadProgress.value = progress
-      })
+    if (!activeDraft.value?.has_cover) {
+      await uploadMissingCover(currentDraftID, coverFile.value)
     }
 
     currentStage.value = '正在发布视频'
     uploadProgress.value = 1
     const response = await publishDraft(currentDraftID)
+    clearActiveDraft()
     toast.success('视频已发布，正在返回 Feed')
     await router.replace({ name: 'feed', query: { published: String(response.video.id) } })
   } catch (error) {
@@ -171,7 +296,9 @@ async function submit() {
           <p>发布</p>
           <h1>上传视频</h1>
         </div>
-        <RouterLink class="cancel-link" :to="{ name: 'feed' }">取消</RouterLink>
+        <button class="cancel-link" type="button" :disabled="isBusy" @click="cancelPublishing">
+          取消
+        </button>
       </header>
 
       <p class="publish-hint" role="note">
@@ -180,17 +307,12 @@ async function submit() {
 
       <label class="form-field">
         <span>标题</span>
-        <input v-model="title" maxlength="255" required :disabled="isSubmitting" />
+        <input v-model="title" maxlength="255" required :disabled="isBusy" />
       </label>
 
       <label class="form-field">
         <span>简介</span>
-        <textarea
-          v-model="description"
-          maxlength="1000"
-          rows="4"
-          :disabled="isSubmitting"
-        ></textarea>
+        <textarea v-model="description" maxlength="1000" rows="4" :disabled="isBusy"></textarea>
       </label>
 
       <div class="file-fields">
@@ -199,7 +321,7 @@ async function submit() {
           <input
             accept=".mp4,.webm,.mov,video/mp4,video/webm,video/quicktime"
             type="file"
-            :disabled="isSubmitting"
+            :disabled="isBusy"
             @change="selectVideo"
           />
           <small v-if="videoFile"
@@ -213,7 +335,7 @@ async function submit() {
           <input
             accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
             type="file"
-            :disabled="isSubmitting"
+            :disabled="isBusy"
             @change="selectCover"
           />
           <small v-if="coverFile"
@@ -233,8 +355,19 @@ async function submit() {
 
       <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
 
-      <button class="primary-action" type="submit" :disabled="isSubmitting">
-        {{ isSubmitting ? '正在处理' : '上传并发布' }}
+      <div v-if="activeDraft" class="draft-actions">
+        <button
+          class="discard-action"
+          type="button"
+          :disabled="isBusy"
+          @click="discardCurrentDraft"
+        >
+          {{ isDiscarding ? '正在放弃草稿' : '放弃当前草稿' }}
+        </button>
+      </div>
+
+      <button class="primary-action" type="submit" :disabled="isBusy">
+        {{ isSubmitting ? '正在处理' : isDiscarding ? '正在放弃草稿' : '上传并发布' }}
       </button>
     </form>
   </main>
@@ -283,8 +416,17 @@ async function submit() {
 }
 
 .cancel-link {
+  border: 0;
+  padding: 0;
   color: var(--ink-muted);
+  background: transparent;
   font-size: 0.92rem;
+  cursor: pointer;
+}
+
+.cancel-link:disabled {
+  cursor: wait;
+  opacity: 0.62;
 }
 
 .publish-hint {
@@ -381,6 +523,34 @@ async function submit() {
   color: #ae2c20;
   font-size: 0.9rem;
   line-height: 1.45;
+}
+
+.draft-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+.discard-action {
+  min-height: 36px;
+  border: 1px solid #c56359;
+  border-radius: 4px;
+  padding: 0 14px;
+  color: #9a2b21;
+  background: #ffffff;
+  font-size: 0.86rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.discard-action:hover:not(:disabled) {
+  border-color: #9a2b21;
+  background: #fff4f2;
+}
+
+.discard-action:disabled {
+  opacity: 0.62;
+  cursor: wait;
 }
 
 .primary-action {
