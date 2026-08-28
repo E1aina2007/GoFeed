@@ -124,15 +124,15 @@ pnpm preview        # 本地预览构建产物
 
 每次 push、Pull Request 和手动触发都会执行以下门禁：
 
-1. 后端：启动 MySQL 8.0 service，执行 `go vet ./...`、`go build ./...` 和 `go test -race -count=1 ./...`。集成测试会创建临时数据库并应用全部向上迁移。
-2. 部署配置：从 `backend/.env.example` 和 `backend/configs/config.example.yaml` 生成 CI 临时的忽略配置文件，执行 `docker compose config --quiet`，并检查后端 `/ready` 探针与前端 `service_healthy` 依赖契约。不使用真实 `.env` 或秘密。
+1. 后端：启动 MySQL 8.0、Redis 7 和 RabbitMQ 3 service，执行 `go vet ./...`、`go build ./...` 和 `go test -race -count=1 ./...`。集成测试会创建临时数据库并应用全部向上迁移；Redis/RabbitMQ 当前只固定服务可用性契约，Go 进程尚不建立客户端连接。
+2. 部署配置：从 `backend/.env.example` 和 `backend/configs/config.example.yaml` 生成 CI 临时的忽略配置文件，执行 `docker compose config --quiet`，并检查后端 `/ready`、前端 `service_healthy`、Redis/RabbitMQ 健康检查、持久卷及 API 不依赖中间件启动的契约。不使用真实 `.env` 或秘密。
 3. 前端：以冻结锁文件安装依赖，执行只读 `pnpm run lint`、Vitest、类型检查与生产构建。
 
 当前 Playwright 用例会 mock 公共 Feed API，可在本地按需运行，因此它验证浏览器中的页面行为，不替代本机 MySQL 下的真实发布和鉴权联调。`pnpm run lint:fix` 与 `pnpm run format` 都会写入文件，只应在本地修复后配合 `git diff` 审查，不能作为 CI 门禁。
 
 ## 配置
 
-配置加载顺序：先读取 `CONFIG_PATH` 指定的 YAML（默认 `configs/config.dev.yaml`），再用环境变量覆盖，环境变量优先级最高。数据库密码、JWT 密钥和运行模式只从环境变量读取，YAML 中即使存在同名字段也会被忽略。模板 `backend/configs/config.example.yaml` 中的 `redis`、`rabbitmq` 和 `observe.pprof` 为后续功能预留，当前配置加载器尚未读取它们；现有请求日志与健康检查不依赖这些字段。
+配置加载顺序：先读取 `CONFIG_PATH` 指定的 YAML（默认 `configs/config.dev.yaml`），再用环境变量覆盖，环境变量优先级最高。数据库、Redis、RabbitMQ 的密码、JWT 密钥和运行模式只从环境变量读取，YAML 中即使存在同名字段也会被忽略。`redis` 和 `rabbitmq` 配置已由加载器读取，但当前 API、worker 与 sweeper 不创建中间件客户端；`observe.pprof` 仍是后续功能预留，当前加载器不读取它，现有 `/ready` 只依赖 MySQL。
 
 当前生效的配置项：
 
@@ -152,19 +152,27 @@ pnpm preview        # 本地预览构建产物
 | 草稿保留时长 | `RETENTION_VIDEO_DRAFT_HOURS` | 默认 `24`；未发布草稿到期后进入不可逆清扫 |
 | 清扫间隔 | `SWEEPER_INTERVAL_MINUTES` | 默认 `60`；sweeper 执行用户、已发布视频和草稿清扫的间隔分钟数 |
 | 草稿清扫租约 | `SWEEPER_DRAFT_PURGE_LEASE_MINUTES` | 默认 `15`；单个草稿的 token 围栏租约，过期后可由其他 sweeper 接管 |
+| Redis 主机 | `REDIS_HOST` | 本地默认 `localhost`；Docker 容器由 Compose 覆盖为 `redis` |
+| Redis 端口 | `REDIS_PORT` | `6379` |
+| Redis DB | `REDIS_DB` | `0`；仅供后续 Redis 客户端选择逻辑库 |
+| Redis 密码 | `REDIS_PASSWORD` | 仅从环境变量读取；Compose Redis 将其传给 `requirepass` |
+| RabbitMQ 主机 | `RABBITMQ_HOST` | 本地默认 `localhost`；Docker 容器由 Compose 覆盖为 `rabbitmq` |
+| RabbitMQ 端口 | `RABBITMQ_PORT` | `5672` |
+| RabbitMQ 用户 | `RABBITMQ_DEFAULT_USER` | 默认 `gofeed`；覆盖 YAML 用户名并用于 Compose RabbitMQ 首次初始化 |
+| RabbitMQ 密码 | `RABBITMQ_DEFAULT_PASS` | 仅从环境变量读取；用于 Compose RabbitMQ 首次初始化 |
 
 ### 本地开发配置
 
-本机 MySQL 的完整初始化、迁移和直接启动流程见上方「本地开发（不使用 Compose）」。`backend/.env` 存放数据库密码和固定 `JWT_SECRET`，`backend/configs/config.dev.yaml` 存放非敏感配置；两者均由从 `backend` 目录运行的 API 读取。
+本机 MySQL 的完整初始化、迁移和直接启动流程见上方「本地开发（不使用 Compose）」。`backend/.env` 存放数据库和中间件密码及固定 `JWT_SECRET`，`backend/configs/config.dev.yaml` 存放非敏感配置；两者均由从 `backend` 目录运行的 API 读取。当前 API、worker 与 sweeper 不连接 Redis/RabbitMQ，因此日常直接启动仍只要求 MySQL；需要预先启动中间件服务时，在填好 `backend/.env` 后执行 `docker compose up -d redis rabbitmq`。
 
 ### Docker 部署
 
 Docker 同样采用复制修改的方式：
 
 1. 复制 `backend/configs/config.example.yaml` 为 `backend/configs/config.yaml`（已被 git 忽略，不会入库）。
-2. 修改 `database.host` 为 `mysql`；数据库密码由 `backend/.env` 注入，YAML 内不保存秘密。
+2. 修改 `database.host` 为 `mysql`；数据库、Redis 和 RabbitMQ 密码均由 `backend/.env` 注入，YAML 内不保存秘密。Compose 会把后端进程的 Redis/RabbitMQ 主机和端口覆盖为服务名及容器端口。
 3. compose 将宿主机 `backend/configs` 挂载到容器 `/app/configs`，并设置 `CONFIG_PATH=/app/configs/config.yaml`，容器实际读取的就是这份 `config.yaml`。
-4. 在 `backend` 目录创建 `.env`（变量参考 `backend/.env.example`，文件本身不入库）。Compose 通过 `env_file` 将其注入 MySQL、迁移和后端进程；API、worker 与 sweeper 同时将该文件以只读方式挂载到 `/app/.env`，供 `godotenv` 加载。容器内覆盖 `MODE=prod`、`MYSQL_HOST=mysql` 与 `CONFIG_PATH=/app/configs/config.yaml`。示例：
+4. 在 `backend` 目录创建 `.env`（变量参考 `backend/.env.example`，文件本身不入库）。将 Redis 与 RabbitMQ 的密码替换为非占位符值后再首次启动。Compose 通过 `env_file` 将该文件注入 MySQL、Redis、RabbitMQ、迁移和后端进程；API、worker 与 sweeper 同时将该文件以只读方式挂载到 `/app/.env`，供 `godotenv` 加载。容器内覆盖 `MODE=prod`、MySQL/Redis/RabbitMQ 主机和端口，以及 `CONFIG_PATH=/app/configs/config.yaml`。示例：
 
 ```env
 MODE=dev
@@ -180,13 +188,21 @@ RETENTION_VIDEO_DELETED_DAYS=7
 RETENTION_VIDEO_DRAFT_HOURS=24
 SWEEPER_INTERVAL_MINUTES=60
 SWEEPER_DRAFT_PURGE_LEASE_MINUTES=15
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_PASSWORD=replace-with-a-long-random-redis-password
+RABBITMQ_HOST=localhost
+RABBITMQ_PORT=5672
+RABBITMQ_DEFAULT_USER=gofeed
+RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 ```
 
-如需调整 HTTP 端口，修改 `server.port`，并同步 `docker-compose.yml` 中 `8080:8080` 的端口映射。
+如需调整 HTTP 端口，修改 `server.port`，并同步 `docker-compose.yml` 中 `8080:8080` 的端口映射。Redis `6379` 与 RabbitMQ `5672` 仅绑定到宿主机回环地址，供本地诊断或后续直接运行的进程使用；Compose 内服务始终通过 `redis:6379` 和 `rabbitmq:5672` 通信。
 
 ### 观测与健康检查
 
-`GET /health` 只检查 API 进程存活，`GET /ready` 还会在 2 秒内探测 MySQL，数据库不可用时返回 `503`。Compose 使用 `/ready` 作为 backend 健康检查，frontend 仅在 backend 健康后启动。每个响应会返回 `X-Request-ID`；客户端可复用该请求头值关联服务端的 `http_request`、`http_request_error` 和 `readiness_check` 日志。sweeper 每项清扫和每轮汇总都会记录事件、结果、耗时、删除数量及失败数量。当前未启用或暴露 pprof。
+`GET /health` 只检查 API 进程存活，`GET /ready` 还会在 2 秒内探测 MySQL，数据库不可用时返回 `503`。Compose 使用 `/ready` 作为 backend 健康检查，frontend 仅在 backend 健康后启动；Redis/RabbitMQ 各自有容器健康检查，但尚未进入 API 就绪条件。每个响应会返回 `X-Request-ID`；客户端可复用该请求头值关联服务端的 `http_request`、`http_request_error` 和 `readiness_check` 日志。sweeper 每项清扫和每轮汇总都会记录事件、结果、耗时、删除数量及失败数量。当前未启用或暴露 pprof；后续实现会参考 `feedsystem` 的隔离模式，以独立 `ServeMux`、仅回环监听、显式开关和独立关闭生命周期提供诊断端点，而不将其注册到 Gin 路由。
 
 ## 项目进度
 
@@ -223,17 +239,17 @@ SWEEPER_DRAFT_PURGE_LEASE_MINUTES=15
 | 已完成 | 上传取消 | 将媒体上传请求改为可中止操作，并与草稿状态查询协作处理取消时的服务端实际结果 | `655e878` 已完成 lint、Vitest、类型检查和构建；取消不会误判已绑定媒体，也不会重新激活 `purging` 草稿 |
 | 已完成 | 媒体预览与错误分类 | 本地预览视频和封面，按鉴权、校验、网络、服务端失败给出不同反馈 | `ccbd659` 已完成 lint、13 个 Vitest 文件共 59 个用例、类型检查和构建；预览资源在替换和离开页面时释放，浏览器测试按当前任务要求未执行 |
 | 已完成 | 运维可观测性 | 增加请求 ID、请求完成日志、MySQL 就绪检查和 sweeper 轮次汇总，并补齐 Compose/CI 健康契约 | `1b702cd` 已完成 `go vet ./...`、`go build ./...`、`go test ./...`、竞态回归和 Compose 配置/健康契约验证；真实 MySQL 集成因环境未配置而跳过，pprof 未启用 |
-| 1 | 中间件接入准备 | 增加 Redis/RabbitMQ 配置结构、环境变量覆盖测试、Compose 健康检查和 CI 服务；先明确依赖可用性策略 | 配置契约、服务连通性和本地/CI 启动方式可独立回归，不改变现有业务事实源 |
-| 2 | RabbitMQ 视频处理闭环 | 以 outbox 可靠发布视频处理事件，由 worker 消费、重试并更新 `processing`/`rejected` 状态 | 重复消费、进程崩溃、死信和状态不可逆性均有测试；worker 可访问共享媒体存储 |
-| 3 | Redis 定向能力 | 先接入限流、会话缓存、短期幂等键或任务进度，再依据指标评估更广缓存 | 明确 TTL、失效、降级策略和命中率；MySQL 仍是用户、视频、草稿及清扫状态的权威来源 |
+| 已完成 | 中间件接入准备 | 增加 Redis/RabbitMQ 配置结构、环境变量覆盖测试、Compose 健康检查、持久卷和 CI service；当前不建立客户端连接 | `487d700` 已完成 `go vet ./...`、`go build ./...`、`go test ./...`、竞态回归和 Compose 配置/健康契约验证；真实 MySQL 集成因 `MYSQL_DATABASE` 未设置而跳过，pprof 未启用 |
+| 1 | RabbitMQ 视频处理闭环 | 以 outbox 可靠发布视频处理事件，由 worker 消费、重试并更新 `processing`/`rejected` 状态 | 重复消费、进程崩溃、死信和状态不可逆性均有测试；worker 可访问共享媒体存储 |
+| 2 | Redis 定向能力 | 先接入限流、会话缓存、短期幂等键或任务进度，再依据指标评估更广缓存 | 明确 TTL、失效、降级策略和命中率；MySQL 仍是用户、视频、草稿及清扫状态的权威来源 |
 
-### 当前模块：发布体验与运维
+### 当前阶段：中间件接入准备已完成
 
-互动模块已经完成并按后端、前端拆分提交。草稿恢复后端已在 `7afa144` 完成并同步更新 [`API.md`](./API.md)：`GET /api/video/auth/drafts/:id` 返回当前草稿和媒体完成标识，`DELETE /api/video/auth/drafts/:id` 将草稿不可逆地排入清扫。草稿恢复前端已在 `2028f95` 完成，只消费这两个既有接口来确认上传响应不确定后的服务端事实，并提供明确的放弃草稿操作；上传取消已在 `655e878` 完成，通过可中止媒体请求和服务端草稿状态确认避免取消后误发后续请求或重新激活 `purging` 草稿；媒体预览与错误分类已在 `ccbd659` 完成，覆盖本地预览生命周期、选择前校验和可恢复错误提示；运维可观测性已在 `1b702cd` 完成，提供请求关联、健康探针和清扫轮次日志。下一步进入中间件接入准备，先固定 Redis/RabbitMQ 的配置、可用性和本地/CI 契约，不改变现有业务事实源。
+互动模块已经完成并按后端、前端拆分提交。草稿恢复后端已在 `7afa144` 完成并同步更新 [`API.md`](./API.md)：`GET /api/video/auth/drafts/:id` 返回当前草稿和媒体完成标识，`DELETE /api/video/auth/drafts/:id` 将草稿不可逆地排入清扫。草稿恢复前端已在 `2028f95` 完成，只消费这两个既有接口来确认上传响应不确定后的服务端事实，并提供明确的放弃草稿操作；上传取消已在 `655e878` 完成，通过可中止媒体请求和服务端草稿状态确认避免取消后误发后续请求或重新激活 `purging` 草稿；媒体预览与错误分类已在 `ccbd659` 完成，覆盖本地预览生命周期、选择前校验和可恢复错误提示；运维可观测性已在 `1b702cd` 完成，提供请求关联、健康探针和清扫轮次日志。中间件接入准备已在 `487d700` 完成，固定 Redis/RabbitMQ 的配置、可用性和本地/CI 契约，但不改变 MySQL 业务事实源，也不把它们设为现有进程的启动必需依赖。下一步是 RabbitMQ 视频处理 outbox 闭环。
 
 ### Redis 与 RabbitMQ 引入边界
 
-当前不同时把两个中间件全面接入，也不让它们替代 MySQL 的业务事实源。先完成发布体验和基础可观测性，再做一组可独立回归的基础设施准备改动：扩展 `config.Config` 与环境变量覆盖测试，补齐 Compose 服务、健康检查、持久化和 CI 服务；本地开发仍以本机 MySQL 加直接运行 Go/Vue 为默认方式。是否将 Redis/RabbitMQ 设为 API 的启动必需依赖，应在这一步通过配置和故障策略明确，而不是由连接失败时的临时重试决定。
+当前不同时把两个中间件全面接入，也不让它们替代 MySQL 的业务事实源。`487d700` 已扩展 `config.Config` 与环境变量覆盖测试，补齐 Compose 服务、健康检查、持久卷和 CI service；Redis/RabbitMQ 使用独立健康检查，端口仅回环暴露，API 不等待或探测它们。本地开发仍以本机 MySQL 加直接运行 Go/Vue 为默认方式。后续任何客户端接入都必须先固定对应功能的故障策略和就绪语义，而不是由连接失败时的临时重试决定。
 
 RabbitMQ 的首个业务闭环应是视频异步处理，而不是把现有清扫租约搬到队列：
 
