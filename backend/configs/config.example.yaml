@@ -33,14 +33,14 @@ sweeper:
   draft_purge_lease_minutes: 15 # 单条草稿清扫租约；可用 SWEEPER_DRAFT_PURGE_LEASE_MINUTES 覆盖
 
 redis:
-  host: localhost
-  port: 6379
-  db: 0
+  host: localhost # 可用 REDIS_HOST 覆盖
+  port: 6379       # 可用 REDIS_PORT 覆盖
+  db: 0            # 可用 REDIS_DB 覆盖；密码仅由 REDIS_PASSWORD 提供
 
 rabbitmq:
-  host: localhost
-  port: 5672
-  username: admin
+  host: localhost  # 可用 RABBITMQ_HOST 覆盖
+  port: 5672       # 可用 RABBITMQ_PORT 覆盖
+  username: gofeed # 可用 RABBITMQ_DEFAULT_USER 覆盖；密码仅由 RABBITMQ_DEFAULT_PASS 提供
 
 observe:
   pprof:

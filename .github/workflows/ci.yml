@@ -33,6 +33,27 @@ jobs:
           --health-timeout=5s
           --health-retries=10
           --health-start-period=10s
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+      rabbitmq:
+        image: rabbitmq:3-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: gofeed-ci
+          RABBITMQ_DEFAULT_PASS: rabbitmq-ci-password
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd="rabbitmq-diagnostics -q ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -59,6 +80,14 @@ jobs:
           MYSQL_USER: root
           MYSQL_ROOT_PASSWORD: test-password
           MYSQL_DATABASE: feedsystem_test
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: "6379"
+          REDIS_DB: "0"
+          REDIS_PASSWORD: redis-ci-password
+          RABBITMQ_HOST: 127.0.0.1
+          RABBITMQ_PORT: "5672"
+          RABBITMQ_DEFAULT_USER: gofeed-ci
+          RABBITMQ_DEFAULT_PASS: rabbitmq-ci-password
         run: go test -race -count=1 ./...
 
   compose:
@@ -79,7 +108,7 @@ jobs:
       - name: Verify readiness health contract
         run: |
           docker compose config --format json |
-            jq -e '(.services.backend.healthcheck.test | join(" ") | contains("/ready")) and (.services.frontend.depends_on.backend.condition == "service_healthy")'
+            jq -e '(.services.backend.healthcheck.test | join(" ") | contains("/ready")) and (.services.frontend.depends_on.backend.condition == "service_healthy") and (.services.redis.healthcheck.test | join(" ") | contains("redis-cli")) and (.services.rabbitmq.healthcheck.test | join(" ") | contains("rabbitmq-diagnostics")) and (.volumes | has("redis_data")) and (.volumes | has("rabbitmq_data")) and ((.services.backend.depends_on | has("redis")) | not) and ((.services.backend.depends_on | has("rabbitmq")) | not)'
 
   frontend:
     name: Frontend Code Review

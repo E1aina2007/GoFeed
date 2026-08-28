@@ -11,6 +11,8 @@ import (
 type Config struct {
 	Server    ServerConfig    `yaml:"server"`
 	DB        DatabaseConfig  `yaml:"database"`
+	Redis     RedisConfig     `yaml:"redis"`
+	RabbitMQ  RabbitMQConfig  `yaml:"rabbitmq"`
 	Retention RetentionConfig `yaml:"retention"`
 	Sweeper   SweeperConfig   `yaml:"sweeper"`
 
@@ -29,6 +31,22 @@ type DatabaseConfig struct {
 	// Password is supplied through MYSQL_ROOT_PASSWORD or MYSQL_PASSWORD.
 	Password string `yaml:"-"`
 	DBName   string `yaml:"dbname"`
+}
+
+type RedisConfig struct {
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
+	DB   int    `yaml:"db"`
+	// Password is supplied through REDIS_PASSWORD.
+	Password string `yaml:"-"`
+}
+
+type RabbitMQConfig struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Username string `yaml:"username"`
+	// Password is supplied through RABBITMQ_DEFAULT_PASS.
+	Password string `yaml:"-"`
 }
 
 type RetentionConfig struct {
@@ -105,6 +123,47 @@ func OverrideWithEnv(cfg *Config) {
 	if v := os.Getenv("MYSQL_DATABASE"); v != "" {
 		cfg.DB.DBName = v
 	}
+
+	// 读取 Redis 配置
+	if v := os.Getenv("REDIS_HOST"); v != "" {
+		cfg.Redis.Host = v
+	}
+	if v := os.Getenv("REDIS_PORT"); v != "" {
+		if port, err := strconv.Atoi(v); err == nil {
+			cfg.Redis.Port = port
+		}
+	}
+	if v := os.Getenv("REDIS_DB"); v != "" {
+		if db, err := strconv.Atoi(v); err == nil {
+			cfg.Redis.DB = db
+		}
+	}
+	// Password is environment-only, so discard any value supplied by a caller
+	// before applying the supported environment variable.
+	cfg.Redis.Password = ""
+	if v := os.Getenv("REDIS_PASSWORD"); v != "" {
+		cfg.Redis.Password = v
+	}
+
+	// 读取 RabbitMQ 配置
+	if v := os.Getenv("RABBITMQ_HOST"); v != "" {
+		cfg.RabbitMQ.Host = v
+	}
+	if v := os.Getenv("RABBITMQ_PORT"); v != "" {
+		if port, err := strconv.Atoi(v); err == nil {
+			cfg.RabbitMQ.Port = port
+		}
+	}
+	// Reuse the image bootstrap variable so Compose and future AMQP clients
+	// receive one credential source from backend/.env.
+	if v := os.Getenv("RABBITMQ_DEFAULT_USER"); v != "" {
+		cfg.RabbitMQ.Username = v
+	}
+	cfg.RabbitMQ.Password = ""
+	if v := os.Getenv("RABBITMQ_DEFAULT_PASS"); v != "" {
+		cfg.RabbitMQ.Password = v
+	}
+
 	// 读取保留期和清扫任务配置
 	if v := os.Getenv("RETENTION_USER_DELETED_DAYS"); v != "" {
 		if days, err := strconv.Atoi(v); err == nil {

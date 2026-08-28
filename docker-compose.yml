@@ -20,6 +20,40 @@ services:
       timeout: 5s
       retries: 20
 
+  redis:
+    image: redis:7-alpine
+    restart: always
+    env_file:
+      - ./backend/.env
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    command:
+      - /bin/sh
+      - -ec
+      - exec redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3-alpine
+    restart: always
+    env_file:
+      - ./backend/.env
+    ports:
+      - "127.0.0.1:5672:5672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   # 初始化业务数据库；IF NOT EXISTS 保证已有数据卷可重复启动
   init-db:
     image: mysql:8.0
@@ -63,6 +97,10 @@ services:
       CONFIG_PATH: /app/configs/config.yaml
       MODE: prod
       MYSQL_HOST: mysql
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
     ports:
       - "8080:8080"
     volumes:
@@ -91,6 +129,10 @@ services:
       CONFIG_PATH: /app/configs/config.yaml
       MODE: prod
       MYSQL_HOST: mysql
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
     volumes:
       - ./backend/.env:/app/.env:ro
       - ./backend/configs:/app/configs:ro
@@ -110,6 +152,10 @@ services:
       CONFIG_PATH: /app/configs/config.yaml
       MODE: prod
       MYSQL_HOST: mysql
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
     volumes:
       - ./backend/.env:/app/.env:ro
       - ./backend/configs:/app/configs:ro
@@ -136,4 +182,6 @@ services:
 
 volumes:
   mysql_data:
+  redis_data:
+  rabbitmq_data:
   backend_uploads:
