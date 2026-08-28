@@ -76,4 +76,30 @@ func TestLogPurgeResultReportsFailure(t *testing.T) {
 	if !strings.Contains(output, "Video purge sweep failed: disk unavailable") {
 		t.Fatalf("失败清扫日志错误 output=%q", output)
 	}
+	if !strings.Contains(output, "event=sweeper_purge") || !strings.Contains(output, "result=failed") {
+		t.Fatalf("失败清扫日志缺少结构化字段 output=%q", output)
+	}
+}
+
+// 测试目标：验证清扫轮次日志汇总耗时、删除数量和失败数量
+// 预期效果：运维可以定位慢轮次并区分部分失败
+func TestLogSweepCycleReportsSummary(t *testing.T) {
+	output := captureLog(t, func() {
+		logSweepCycle(time.Now().Add(-time.Second), []purgeSummary{
+			{kind: "user", object: "accounts", purged: 2},
+			{kind: "video", object: "videos", purged: 1, err: errors.New("disk unavailable")},
+		})
+	})
+	for _, fragment := range []string{
+		"event=sweeper_cycle",
+		"result=failed",
+		"purged=3",
+		"user_purged=2",
+		"video_purged=1",
+		"failed=1",
+	} {
+		if !strings.Contains(output, fragment) {
+			t.Errorf("清扫轮次日志缺少字段 %q output=%q", fragment, output)
+		}
+	}
 }

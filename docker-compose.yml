@@ -69,6 +69,12 @@ services:
       - ./backend/.env:/app/.env:ro
       - ./backend/configs:/app/configs:ro
       - backend_uploads:/app/.run/uploads
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ready >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -120,7 +126,8 @@ services:
     ports:
       - "5173:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ || exit 1"]
       interval: 10s

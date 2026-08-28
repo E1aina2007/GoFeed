@@ -43,7 +43,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -ldflags="-s -w" -o /out/sweeper ./cmd/sweeper
 
 FROM alpine:3.21 AS base
-RUN apk add --no-cache ca-certificates tzdata && adduser -D -H -s /sbin/nologin app
+RUN apk add --no-cache ca-certificates tzdata wget && adduser -D -H -s /sbin/nologin app
 WORKDIR /app
 COPY --from=source /src/backend/configs ./configs
 RUN mkdir -p ./.run/uploads && chown -R app:app /app

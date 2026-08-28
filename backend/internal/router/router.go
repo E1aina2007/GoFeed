@@ -2,10 +2,10 @@ package router
 
 import (
 	"log"
-	"net/http"
 
 	"gofeed/internal/auth"
 	"gofeed/internal/middleware/jwt"
+	"gofeed/internal/observability"
 	"gofeed/internal/social"
 	"gofeed/internal/user"
 	"gofeed/internal/video"
@@ -19,6 +19,8 @@ type Options struct {
 	// UploadDir 本地媒体存储与 /static 静态服务的根目录
 	// 留空时回退到生产默认值 "./.run/uploads"
 	UploadDir string
+	// ReadinessCheck 覆盖默认的 MySQL 就绪检查，主要用于隔离路由测试
+	ReadinessCheck observability.ReadinessCheck
 }
 
 func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
@@ -34,10 +36,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	}
 
 	r := gin.New()
-	r.Use(gin.Recovery())
-	if dev {
-		r.Use(gin.Logger())
-	}
+	r.Use(observability.RequestLogger(), gin.Recovery())
 
 	// 注册通用中间件
 
@@ -45,10 +44,13 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		log.Printf("Failed to set trusted proxies: %v", err)
 	}
 
-	// 注册健康检查接口
-	r.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"name": "GoFeed", "status": "ok"})
-	})
+	// 注册存活和就绪检查接口
+	r.GET("/health", observability.LivenessHandler)
+	readinessCheck := opts.ReadinessCheck
+	if readinessCheck == nil {
+		readinessCheck = observability.DatabaseReadiness(db)
+	}
+	r.GET("/ready", observability.ReadinessHandler(readinessCheck))
 
 	// 注册静态资源服务
 	r.Static("/static", uploadDir)

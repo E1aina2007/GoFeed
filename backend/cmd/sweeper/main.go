@@ -103,14 +103,21 @@ func main() {
 		draftPurgeLease,
 	)
 	run := func() {
+		started := time.Now()
+		results := make([]purgeSummary, 0, 3)
+
 		purged, err := userPurgeJob.Run(ctx)
 		logPurgeResult("User", "accounts", purged, err)
+		results = append(results, purgeSummary{kind: "user", object: "accounts", purged: purged, err: err})
 
 		purged, err = videoPurgeJob.Run(ctx)
 		logPurgeResult("Video", "videos", purged, err)
+		results = append(results, purgeSummary{kind: "video", object: "videos", purged: purged, err: err})
 
 		purged, err = draftPurgeJob.Run(ctx)
 		logPurgeResult("Draft", "drafts", purged, err)
+		results = append(results, purgeSummary{kind: "draft", object: "drafts", purged: purged, err: err})
+		logSweepCycle(started, results)
 	}
 
 	log.Printf("Sweeper started: user retention=%dd video retention=%dd draft retention=%dh draft lease=%dm interval=%dm", userRetentionDays, videoRetentionDays, draftRetentionHours, draftPurgeLeaseMinutes, intervalMinutes)
@@ -124,16 +131,64 @@ func main() {
 	log.Println("Sweeper stopped")
 }
 
+type purgeSummary struct {
+	kind   string
+	object string
+	purged int64
+	err    error
+}
+
 func logPurgeResult(kind, object string, purged int64, err error) {
 	if err != nil {
-		log.Printf("%s purge sweep failed: %v", kind, err)
+		log.Printf("%s purge sweep failed: %v event=sweeper_purge kind=%s object=%s result=failed purged=%d", kind, err, kind, object, purged)
 		return
 	}
 	if purged > 0 {
-		log.Printf("%s purge swept %d expired %s", kind, purged, object)
+		log.Printf("%s purge swept %d expired %s event=sweeper_purge kind=%s object=%s result=success purged=%d", kind, purged, object, kind, object, purged)
 		return
 	}
-	log.Printf("%s purge sweep completed: no expired %s", kind, object)
+	log.Printf("%s purge sweep completed: no expired %s event=sweeper_purge kind=%s object=%s result=success purged=0", kind, object, kind, object)
+}
+
+// logSweepCycle 输出一轮清扫的耗时和汇总结果，便于定位慢任务与连续失败
+func logSweepCycle(started time.Time, results []purgeSummary) {
+	var (
+		purged                  int64
+		failed                  int
+		userPurged, videoPurged int64
+		draftPurged             int64
+	)
+	for _, result := range results {
+		purged += result.purged
+		switch result.kind {
+		case "user":
+			userPurged += result.purged
+		case "video":
+			videoPurged += result.purged
+		case "draft":
+			draftPurged += result.purged
+		}
+		if result.err != nil {
+			failed++
+		}
+	}
+	log.Printf(
+		"event=sweeper_cycle result=%s duration_ms=%d purged=%d user_purged=%d video_purged=%d draft_purged=%d failed=%d",
+		cycleResult(failed),
+		time.Since(started).Milliseconds(),
+		purged,
+		userPurged,
+		videoPurged,
+		draftPurged,
+		failed,
+	)
+}
+
+func cycleResult(failed int) string {
+	if failed > 0 {
+		return "failed"
+	}
+	return "success"
 }
 
 func positiveDuration(value int, unit time.Duration) (time.Duration, error) {

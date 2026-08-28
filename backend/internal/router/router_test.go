@@ -16,6 +16,8 @@ func TestUserRouteGroups(t *testing.T) {
 	// 测试目标：列出产品对外提供的路由
 	// 预期效果：全部出现在已注册路由集合中
 	expected := []string{
+		"GET /health",
+		"GET /ready",
 		"POST /api/user/register",
 		"POST /api/user/login",
 		"POST /api/user/refresh",

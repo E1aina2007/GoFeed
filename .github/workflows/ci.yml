@@ -62,7 +62,7 @@ jobs:
         run: go test -race -count=1 ./...
 
   compose:
-    name: Compose Configuration
+    name: Compose Configuration and Health Contracts
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -75,6 +75,11 @@ jobs:
 
       - name: Validate Compose configuration
         run: docker compose config --quiet
+
+      - name: Verify readiness health contract
+        run: |
+          docker compose config --format json |
+            jq -e '(.services.backend.healthcheck.test | join(" ") | contains("/ready")) and (.services.frontend.depends_on.backend.condition == "service_healthy")'
 
   frontend:
     name: Frontend Code Review

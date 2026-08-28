@@ -7,6 +7,7 @@
 - 开发环境服务地址：`http://localhost:8080`
 - 除文件上传接口外，请求和响应均使用 `application/json; charset=utf-8`
 - 需要认证的接口必须携带请求头：`Authorization: Bearer <access_token>`
+- 每个响应都会返回 `X-Request-ID`；客户端可在请求中携带该值，以便关联服务端日志
 - `access_token` 有效期为 15 分钟；刷新令牌有效期为 7 天。刷新令牌每次调用刷新接口后都会轮换，旧令牌立即失效。
 - 时间字段使用 RFC 3339 格式，例如 `2026-08-19T08:00:00Z`
 - 业务处理器返回错误时，响应格式为 `{"error":"错误说明"}`。未注册路径和未支持方法由 Gin 返回默认 404/405 响应。
@@ -16,6 +17,7 @@
 | 方法 | 路径 | 认证 | 说明 |
 | --- | --- | --- | --- |
 | GET | `/health` | 否 | 健康检查 |
+| GET | `/ready` | 否 | 检查 API 依赖是否就绪 |
 | GET | `/static/*filepath` | 否 | 已上传媒体文件 |
 | HEAD | `/static/*filepath` | 否 | 查询已上传媒体的响应头 |
 | POST | `/api/user/register` | 否 | 注册用户 |
@@ -179,6 +181,20 @@
   "status": "ok"
 }
 ```
+
+`/health` 只表示 API 进程存活，不检查外部依赖。部署探针应使用 `GET /ready`：数据库连接可用时返回 `200 OK`，响应为：
+
+```json
+{
+  "name": "GoFeed",
+  "status": "ready",
+  "dependencies": {
+    "database": "ok"
+  }
+}
+```
+
+数据库不可用时返回 `503 Service Unavailable`，响应中的 `status` 为 `not_ready`，`dependencies.database` 为 `unavailable`。内部错误详情只写入服务端日志，不通过接口返回。
 
 ### 静态媒体
 
