@@ -137,33 +137,96 @@ function readUploadResponse<T>(xhr: XMLHttpRequest): T {
   return body as T
 }
 
-function uploadMedia<T>(path: string, file: File, onProgress?: (progress: number) => void) {
+function createUploadAbortError() {
+  const error = new Error('上传已取消')
+  error.name = 'AbortError'
+  return error
+}
+
+function uploadMedia<T>(
+  path: string,
+  file: File,
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal,
+) {
   return withAuthenticatedSession(
     (accessToken) =>
       new Promise<T>((resolve, reject) => {
+        if (signal?.aborted) {
+          reject(createUploadAbortError())
+          return
+        }
+
         const xhr = new XMLHttpRequest()
         const formData = new FormData()
+        let settled = false
+
+        function finish() {
+          if (settled) {
+            return false
+          }
+          settled = true
+          signal?.removeEventListener('abort', abortRequest)
+          return true
+        }
+
+        function resolveOnce(value: T) {
+          if (finish()) {
+            resolve(value)
+          }
+        }
+
+        function rejectOnce(error: unknown) {
+          if (finish()) {
+            reject(error)
+          }
+        }
+
+        function abortRequest() {
+          if (settled) {
+            return
+          }
+          try {
+            xhr.abort()
+          } catch {
+            // The request may already be closed when cancellation races with completion.
+          }
+          rejectOnce(createUploadAbortError())
+        }
+
         formData.append('file', file)
 
         xhr.open('POST', path)
         xhr.setRequestHeader('Accept', 'application/json')
         xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`)
         xhr.upload.addEventListener('progress', (event) => {
-          if (event.lengthComputable) {
+          if (!settled && event.lengthComputable) {
             onProgress?.(event.loaded / event.total)
           }
         })
         xhr.addEventListener('load', () => {
           try {
-            resolve(readUploadResponse<T>(xhr))
+            resolveOnce(readUploadResponse<T>(xhr))
           } catch (error) {
-            reject(error)
+            rejectOnce(error)
           }
         })
-        xhr.addEventListener('error', () =>
-          reject(new ApiError(0, '网络连接失败，请检查网络后重试')),
-        )
-        xhr.send(formData)
+        xhr.addEventListener('error', () => {
+          rejectOnce(new ApiError(0, '网络连接失败，请检查网络后重试'))
+        })
+        xhr.addEventListener('abort', () => {
+          rejectOnce(createUploadAbortError())
+        })
+        signal?.addEventListener('abort', abortRequest, { once: true })
+        if (signal?.aborted) {
+          abortRequest()
+          return
+        }
+        try {
+          xhr.send(formData)
+        } catch (error) {
+          rejectOnce(error)
+        }
       }),
   )
 }
@@ -185,18 +248,38 @@ function validDraftID(draftID: number) {
   return Number.isSafeInteger(draftID) && draftID > 0
 }
 
-export function uploadVideo(draftID: number, file: File, onProgress?: (progress: number) => void) {
+export function uploadVideo(
+  draftID: number,
+  file: File,
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal,
+) {
   if (!validDraftID(draftID)) {
     return Promise.reject(new ApiError(400, '草稿 ID 无效'))
   }
-  return uploadMedia<UploadedVideo>(`/api/video/auth/drafts/${draftID}/play`, file, onProgress)
+  return uploadMedia<UploadedVideo>(
+    `/api/video/auth/drafts/${draftID}/play`,
+    file,
+    onProgress,
+    signal,
+  )
 }
 
-export function uploadCover(draftID: number, file: File, onProgress?: (progress: number) => void) {
+export function uploadCover(
+  draftID: number,
+  file: File,
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal,
+) {
   if (!validDraftID(draftID)) {
     return Promise.reject(new ApiError(400, '草稿 ID 无效'))
   }
-  return uploadMedia<UploadedCover>(`/api/video/auth/drafts/${draftID}/cover`, file, onProgress)
+  return uploadMedia<UploadedCover>(
+    `/api/video/auth/drafts/${draftID}/cover`,
+    file,
+    onProgress,
+    signal,
+  )
 }
 
 export function getDraft(draftID: number) {

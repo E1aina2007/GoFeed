@@ -18,6 +18,7 @@ import {
 type MockUploadResponse = {
   status: number
   body: unknown
+  deferred?: boolean
 }
 
 class MockXMLHttpRequest {
@@ -29,11 +30,13 @@ class MockXMLHttpRequest {
   method = ''
   path = ''
   body: FormData | undefined
+  aborted = false
   headers = new Map<string, string>()
   private readonly listeners = new Map<string, Array<() => void>>()
   private readonly progressListeners: Array<
     (event: { lengthComputable: boolean; loaded: number; total: number }) => void
   > = []
+  private pendingResponse: MockUploadResponse | undefined
 
   upload = {
     addEventListener: (
@@ -72,6 +75,25 @@ class MockXMLHttpRequest {
     if (!response) {
       throw new Error('missing mock upload response')
     }
+    if (response.deferred) {
+      this.pendingResponse = response
+      return
+    }
+    this.complete(response)
+  }
+
+  abort() {
+    this.aborted = true
+    for (const listener of this.listeners.get('abort') ?? []) {
+      listener()
+    }
+  }
+
+  complete(response = this.pendingResponse) {
+    if (!response) {
+      throw new Error('missing pending mock upload response')
+    }
+    this.pendingResponse = undefined
     this.status = response.status
     this.responseText = JSON.stringify(response.body)
     for (const listener of this.listeners.get('load') ?? []) {
@@ -264,6 +286,78 @@ describe('listPublishedVideos', () => {
     ).toEqual(['Bearer access-token', 'Bearer access-token'])
     expect(MockXMLHttpRequest.requests[0]?.body?.get('file')).toBe(video)
     expect(MockXMLHttpRequest.requests[1]?.body?.get('file')).toBe(cover)
+  })
+
+  it('aborts an in-flight media upload without reporting a network error', async () => {
+    const session = {
+      access_token: 'access-token',
+      refresh_token: 'refresh-token',
+      expires_at: '2026-08-26T08:00:00Z',
+      user: { id: 42, username: 'alice' },
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify(session), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    )
+    MockXMLHttpRequest.responses = [
+      {
+        status: 201,
+        body: {
+          draft_id: 7,
+          play_url: '/static/videos/42/demo.mp4',
+          play_file_name: 'demo.mp4',
+          play_original_name: 'demo.mp4',
+        },
+        deferred: true,
+      },
+    ]
+    MockXMLHttpRequest.requests = []
+    vi.stubGlobal('XMLHttpRequest', MockXMLHttpRequest)
+    await login({ username: 'alice', password: 'password-123' })
+
+    const controller = new AbortController()
+    const file = new File(['video'], 'demo.mp4', { type: 'video/mp4' })
+    const upload = uploadVideo(7, file, undefined, controller.signal)
+    await vi.waitFor(() => expect(MockXMLHttpRequest.requests).toHaveLength(1))
+
+    controller.abort()
+
+    await expect(upload).rejects.toMatchObject({ name: 'AbortError', message: '上传已取消' })
+    expect(MockXMLHttpRequest.requests[0]?.aborted).toBe(true)
+  })
+
+  it('rejects immediately when the upload signal was already aborted', async () => {
+    const session = {
+      access_token: 'access-token',
+      refresh_token: 'refresh-token',
+      expires_at: '2026-08-26T08:00:00Z',
+      user: { id: 42, username: 'alice' },
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify(session), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    )
+    MockXMLHttpRequest.requests = []
+    vi.stubGlobal('XMLHttpRequest', MockXMLHttpRequest)
+    await login({ username: 'alice', password: 'password-123' })
+
+    const controller = new AbortController()
+    controller.abort()
+    const file = new File(['video'], 'demo.mp4', { type: 'video/mp4' })
+
+    await expect(uploadVideo(7, file, undefined, controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+      message: '上传已取消',
+    })
+    expect(MockXMLHttpRequest.requests).toHaveLength(0)
   })
 
   it('reads and discards a draft through authenticated endpoints', async () => {

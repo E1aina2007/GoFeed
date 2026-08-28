@@ -62,6 +62,24 @@ function publishedVideo(id = 100) {
   }
 }
 
+function abortableUpload<T>(signal: AbortSignal | undefined) {
+  return new Promise<T>((_, reject) => {
+    const rejectAbort = () => {
+      const error = new Error('上传已取消')
+      error.name = 'AbortError'
+      reject(error)
+    }
+    if (!signal) {
+      return
+    }
+    if (signal.aborted) {
+      rejectAbort()
+      return
+    }
+    signal.addEventListener('abort', rejectAbort, { once: true })
+  })
+}
+
 describe('PublishVideoView', () => {
   beforeEach(() => {
     vi.resetAllMocks()
@@ -129,10 +147,177 @@ describe('PublishVideoView', () => {
     await flushPromises()
 
     expect(createDraft).toHaveBeenCalledWith({ title: '春日散步', description: '' })
-    expect(uploadVideo).toHaveBeenCalledWith(7, video, expect.any(Function))
-    expect(uploadCover).toHaveBeenCalledWith(7, cover, expect.any(Function))
+    expect(uploadVideo).toHaveBeenCalledWith(
+      7,
+      video,
+      expect.any(Function),
+      expect.any(AbortSignal),
+    )
+    expect(uploadCover).toHaveBeenCalledWith(
+      7,
+      cover,
+      expect.any(Function),
+      expect.any(AbortSignal),
+    )
     expect(publishDraft).toHaveBeenCalledWith(7)
     expect(routerReplace).toHaveBeenCalledWith({ name: 'feed', query: { published: '100' } })
+  })
+
+  it('cancels a video upload and keeps server-bound media on the draft', async () => {
+    vi.mocked(createDraft).mockResolvedValue({ draft: draft() })
+    let videoSignal: AbortSignal | undefined
+    vi.mocked(uploadVideo).mockImplementation((_draftID, _file, _onProgress, signal) => {
+      videoSignal = signal
+      return abortableUpload(signal)
+    })
+    vi.mocked(getDraft).mockResolvedValue({
+      draft: draft({ has_video: true, play_original_name: '服务端视频.mp4' }),
+    })
+
+    const wrapper = mount(PublishVideoView, {
+      global: { plugins: [createPinia()], stubs: { RouterLink: true } },
+    })
+    const fields = wrapper.findAll('input')
+    const video = new File(['video'], 'local.mp4', { type: 'video/mp4' })
+    const cover = new File(['cover'], 'local.png', { type: 'image/png' })
+    await fields[0]?.setValue('春日散步')
+    Object.defineProperty(fields[1]?.element, 'files', { configurable: true, value: [video] })
+    Object.defineProperty(fields[2]?.element, 'files', { configurable: true, value: [cover] })
+    await fields[1]?.trigger('change')
+    await fields[2]?.trigger('change')
+
+    await wrapper.get('form').trigger('submit')
+    await vi.waitFor(() => expect(uploadVideo).toHaveBeenCalledTimes(1))
+    await wrapper.get('.cancel-upload-action').trigger('click')
+    await flushPromises()
+
+    expect(videoSignal?.aborted).toBe(true)
+    expect(getDraft).toHaveBeenCalledWith(7)
+    expect(uploadCover).not.toHaveBeenCalled()
+    expect(publishDraft).not.toHaveBeenCalled()
+    expect(wrapper.find('.draft-actions').exists()).toBe(true)
+    expect(wrapper.find('.cancel-upload-action').exists()).toBe(false)
+  })
+
+  it('cancels a cover upload without publishing the draft', async () => {
+    vi.mocked(createDraft).mockResolvedValue({ draft: draft() })
+    vi.mocked(uploadVideo).mockResolvedValue({
+      draft_id: 7,
+      play_url: '/static/videos/42/clip.mp4',
+      play_file_name: 'clip.mp4',
+      play_original_name: '服务端视频.mp4',
+    })
+    let coverSignal: AbortSignal | undefined
+    vi.mocked(uploadCover).mockImplementation((_draftID, _file, _onProgress, signal) => {
+      coverSignal = signal
+      return abortableUpload(signal)
+    })
+    vi.mocked(getDraft).mockResolvedValue({
+      draft: draft({ has_video: true, play_original_name: '服务端视频.mp4' }),
+    })
+
+    const wrapper = mount(PublishVideoView, {
+      global: { plugins: [createPinia()], stubs: { RouterLink: true } },
+    })
+    const fields = wrapper.findAll('input')
+    const video = new File(['video'], 'local.mp4', { type: 'video/mp4' })
+    const cover = new File(['cover'], 'local.png', { type: 'image/png' })
+    await fields[0]?.setValue('春日散步')
+    Object.defineProperty(fields[1]?.element, 'files', { configurable: true, value: [video] })
+    Object.defineProperty(fields[2]?.element, 'files', { configurable: true, value: [cover] })
+    await fields[1]?.trigger('change')
+    await fields[2]?.trigger('change')
+
+    await wrapper.get('form').trigger('submit')
+    await vi.waitFor(() => expect(uploadCover).toHaveBeenCalledTimes(1))
+    await wrapper.get('.cancel-upload-action').trigger('click')
+    await flushPromises()
+
+    expect(coverSignal?.aborted).toBe(true)
+    expect(getDraft).toHaveBeenCalledWith(7)
+    expect(publishDraft).not.toHaveBeenCalled()
+  })
+
+  it('keeps a canceled missing upload retryable', async () => {
+    vi.mocked(createDraft).mockResolvedValue({ draft: draft() })
+    let videoSignal: AbortSignal | undefined
+    vi.mocked(uploadVideo).mockImplementationOnce((_draftID, _file, _onProgress, signal) => {
+      videoSignal = signal
+      return abortableUpload(signal)
+    })
+    vi.mocked(getDraft).mockResolvedValue({ draft: draft() })
+
+    const wrapper = mount(PublishVideoView, {
+      global: { plugins: [createPinia()], stubs: { RouterLink: true } },
+    })
+    const fields = wrapper.findAll('input')
+    const video = new File(['video'], 'local.mp4', { type: 'video/mp4' })
+    const cover = new File(['cover'], 'local.png', { type: 'image/png' })
+    await fields[0]?.setValue('春日散步')
+    Object.defineProperty(fields[1]?.element, 'files', { configurable: true, value: [video] })
+    Object.defineProperty(fields[2]?.element, 'files', { configurable: true, value: [cover] })
+    await fields[1]?.trigger('change')
+    await fields[2]?.trigger('change')
+
+    await wrapper.get('form').trigger('submit')
+    await vi.waitFor(() => expect(uploadVideo).toHaveBeenCalledTimes(1))
+    await wrapper.get('.cancel-upload-action').trigger('click')
+    await flushPromises()
+
+    expect(videoSignal?.aborted).toBe(true)
+    expect(getDraft).toHaveBeenCalledWith(7)
+    expect(uploadCover).not.toHaveBeenCalled()
+    expect(publishDraft).not.toHaveBeenCalled()
+
+    vi.mocked(uploadVideo).mockResolvedValue({
+      draft_id: 7,
+      play_url: '/static/videos/42/clip.mp4',
+      play_file_name: 'clip.mp4',
+      play_original_name: '服务端视频.mp4',
+    })
+    vi.mocked(uploadCover).mockResolvedValue({
+      draft_id: 7,
+      cover_url: '/static/covers/42/cover.png',
+      cover_file_name: 'cover.png',
+      cover_original_name: '服务端封面.png',
+    })
+    vi.mocked(publishDraft).mockResolvedValue({ video: publishedVideo() })
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(uploadVideo).toHaveBeenCalledTimes(2)
+    expect(uploadCover).toHaveBeenCalledTimes(1)
+    expect(publishDraft).toHaveBeenCalledWith(7)
+  })
+
+  it('does not continue after cancellation when the draft is purging', async () => {
+    vi.mocked(createDraft).mockResolvedValue({ draft: draft() })
+    vi.mocked(uploadVideo).mockImplementation((_draftID, _file, _onProgress, signal) =>
+      abortableUpload(signal),
+    )
+    vi.mocked(getDraft).mockResolvedValue({ draft: draft({ status: 'purging' }) })
+
+    const wrapper = mount(PublishVideoView, {
+      global: { plugins: [createPinia()], stubs: { RouterLink: true } },
+    })
+    const fields = wrapper.findAll('input')
+    const video = new File(['video'], 'local.mp4', { type: 'video/mp4' })
+    const cover = new File(['cover'], 'local.png', { type: 'image/png' })
+    await fields[0]?.setValue('春日散步')
+    Object.defineProperty(fields[1]?.element, 'files', { configurable: true, value: [video] })
+    Object.defineProperty(fields[2]?.element, 'files', { configurable: true, value: [cover] })
+    await fields[1]?.trigger('change')
+    await fields[2]?.trigger('change')
+
+    await wrapper.get('form').trigger('submit')
+    await vi.waitFor(() => expect(uploadVideo).toHaveBeenCalledTimes(1))
+    await wrapper.get('.cancel-upload-action').trigger('click')
+    await flushPromises()
+
+    expect(uploadCover).not.toHaveBeenCalled()
+    expect(publishDraft).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="alert"]').text()).toBe('草稿已进入清扫，无法继续上传')
   })
 
   it('reconciles a lost video upload response from the server draft state', async () => {
@@ -170,7 +355,12 @@ describe('PublishVideoView', () => {
 
     expect(uploadVideo).toHaveBeenCalledTimes(1)
     expect(getDraft).toHaveBeenCalledWith(7)
-    expect(uploadCover).toHaveBeenCalledWith(7, cover, expect.any(Function))
+    expect(uploadCover).toHaveBeenCalledWith(
+      7,
+      cover,
+      expect.any(Function),
+      expect.any(AbortSignal),
+    )
     expect(publishDraft).toHaveBeenCalledWith(7)
     expect(routerReplace).toHaveBeenCalledWith({ name: 'feed', query: { published: '100' } })
   })

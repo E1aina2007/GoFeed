@@ -33,9 +33,19 @@ const uploadProgress = ref(0)
 const errorMessage = ref('')
 const isSubmitting = ref(false)
 const isDiscarding = ref(false)
+const activeUploadController = ref<AbortController>()
+const isCancellingUpload = ref(false)
+const cancellationRequested = ref(false)
 
 const progressLabel = computed(() => `${Math.round(uploadProgress.value * 100)}%`)
 const isBusy = computed(() => isSubmitting.value || isDiscarding.value)
+const canCancelUpload = computed(
+  () =>
+    isSubmitting.value &&
+    activeUploadController.value !== undefined &&
+    !isCancellingUpload.value &&
+    (currentStage.value === '正在上传视频' || currentStage.value === '正在上传封面'),
+)
 const videoDisplayName = computed(
   () => activeDraft.value?.play_original_name || videoFile.value?.name,
 )
@@ -152,6 +162,12 @@ function canReconcileMediaUpload(error: unknown) {
   return error instanceof ApiError && (error.status === 0 || error.status === 409)
 }
 
+function isAbortError(error: unknown) {
+  return (
+    typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError'
+  )
+}
+
 async function reconcileMediaUpload(
   draftID: number,
   kind: 'video' | 'cover',
@@ -180,30 +196,108 @@ async function reconcileMediaUpload(
   toast.info(kind === 'video' ? '已确认视频上传成功，继续处理' : '已确认封面上传成功，继续处理')
 }
 
+async function reconcileCancelledMediaUpload(draftID: number, kind: 'video' | 'cover') {
+  currentStage.value = '正在确认取消结果'
+  const draft = (await getDraft(draftID)).draft
+  setActiveDraft(draft)
+  if (draft.status === 'purging') {
+    throw new ApiError(409, '草稿已进入清扫，无法继续上传')
+  }
+
+  const mediaBound = kind === 'video' ? draft.has_video : draft.has_cover
+  toast.info(
+    mediaBound
+      ? kind === 'video'
+        ? '上传已取消，已保留服务端视频'
+        : '上传已取消，已保留服务端封面'
+      : '上传已取消，可稍后重试',
+  )
+}
+
 async function uploadMissingVideo(draftID: number, file: File) {
   currentStage.value = '正在上传视频'
   uploadProgress.value = 0
+  const controller = new AbortController()
+  activeUploadController.value = controller
   try {
-    const uploaded = await uploadVideo(draftID, file, (progress) => {
-      uploadProgress.value = progress
-    })
+    let uploaded: Awaited<ReturnType<typeof uploadVideo>>
+    try {
+      uploaded = await uploadVideo(
+        draftID,
+        file,
+        (progress) => {
+          uploadProgress.value = progress
+        },
+        controller.signal,
+      )
+    } catch (error) {
+      if (controller.signal.aborted || cancellationRequested.value || isAbortError(error)) {
+        await reconcileCancelledMediaUpload(draftID, 'video')
+        return false
+      }
+      await reconcileMediaUpload(draftID, 'video', error)
+      return true
+    }
+    if (controller.signal.aborted || cancellationRequested.value) {
+      await reconcileCancelledMediaUpload(draftID, 'video')
+      return false
+    }
     markDraftMediaBound('video', uploaded.play_original_name, file)
-  } catch (error) {
-    await reconcileMediaUpload(draftID, 'video', error)
+    return true
+  } finally {
+    if (activeUploadController.value === controller) {
+      activeUploadController.value = undefined
+    }
   }
 }
 
 async function uploadMissingCover(draftID: number, file: File) {
   currentStage.value = '正在上传封面'
   uploadProgress.value = 0
+  const controller = new AbortController()
+  activeUploadController.value = controller
   try {
-    const uploaded = await uploadCover(draftID, file, (progress) => {
-      uploadProgress.value = progress
-    })
+    let uploaded: Awaited<ReturnType<typeof uploadCover>>
+    try {
+      uploaded = await uploadCover(
+        draftID,
+        file,
+        (progress) => {
+          uploadProgress.value = progress
+        },
+        controller.signal,
+      )
+    } catch (error) {
+      if (controller.signal.aborted || cancellationRequested.value || isAbortError(error)) {
+        await reconcileCancelledMediaUpload(draftID, 'cover')
+        return false
+      }
+      await reconcileMediaUpload(draftID, 'cover', error)
+      return true
+    }
+    if (controller.signal.aborted || cancellationRequested.value) {
+      await reconcileCancelledMediaUpload(draftID, 'cover')
+      return false
+    }
     markDraftMediaBound('cover', uploaded.cover_original_name, file)
-  } catch (error) {
-    await reconcileMediaUpload(draftID, 'cover', error)
+    return true
+  } finally {
+    if (activeUploadController.value === controller) {
+      activeUploadController.value = undefined
+    }
   }
+}
+
+function cancelUpload() {
+  const controller = activeUploadController.value
+  if (!controller || !canCancelUpload.value) {
+    return
+  }
+  cancellationRequested.value = true
+  isCancellingUpload.value = true
+  errorMessage.value = ''
+  currentStage.value = '正在取消上传'
+  controller.abort()
 }
 
 async function discardCurrentDraft() {
@@ -248,6 +342,8 @@ async function submit() {
   }
 
   isSubmitting.value = true
+  cancellationRequested.value = false
+  isCancellingUpload.value = false
   try {
     const normalizedTitle = title.value.trim()
     const normalizedDescription = description.value.trim()
@@ -265,11 +361,15 @@ async function submit() {
     }
 
     if (!activeDraft.value?.has_video) {
-      await uploadMissingVideo(currentDraftID, videoFile.value)
+      if (!(await uploadMissingVideo(currentDraftID, videoFile.value))) {
+        return
+      }
     }
 
     if (!activeDraft.value?.has_cover) {
-      await uploadMissingCover(currentDraftID, coverFile.value)
+      if (!(await uploadMissingCover(currentDraftID, coverFile.value))) {
+        return
+      }
     }
 
     currentStage.value = '正在发布视频'
@@ -283,6 +383,8 @@ async function submit() {
     toast.error(errorMessage.value)
   } finally {
     isSubmitting.value = false
+    isCancellingUpload.value = false
+    activeUploadController.value = undefined
     currentStage.value = ''
   }
 }
@@ -346,9 +448,20 @@ async function submit() {
       </div>
 
       <div v-if="isSubmitting" class="upload-status" role="status">
-        <div>
-          <span>{{ currentStage }}</span>
-          <strong>{{ progressLabel }}</strong>
+        <div class="upload-status__row">
+          <div class="upload-status__summary">
+            <span>{{ currentStage }}</span>
+            <strong>{{ progressLabel }}</strong>
+          </div>
+          <button
+            v-if="canCancelUpload || isCancellingUpload"
+            class="cancel-upload-action"
+            type="button"
+            :disabled="!canCancelUpload"
+            @click="cancelUpload"
+          >
+            {{ isCancellingUpload ? '正在取消上传' : '取消上传' }}
+          </button>
         </div>
         <progress :value="uploadProgress" max="1"></progress>
       </div>
@@ -500,11 +613,20 @@ async function submit() {
   font-size: 0.9rem;
 }
 
-.upload-status > div {
+.upload-status__row {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 8px;
+}
+
+.upload-status__summary {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  justify-content: space-between;
+  gap: 16px;
 }
 
 .upload-status strong {
@@ -516,6 +638,29 @@ async function submit() {
   width: 100%;
   height: 8px;
   accent-color: var(--accent);
+}
+
+.cancel-upload-action {
+  min-height: 32px;
+  flex: 0 0 auto;
+  border: 1px solid #b8c0bd;
+  border-radius: 4px;
+  padding: 0 10px;
+  color: var(--ink-strong);
+  background: #ffffff;
+  font-size: 0.82rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.cancel-upload-action:hover:not(:disabled) {
+  border-color: var(--accent-strong);
+  background: #f1f8f5;
+}
+
+.cancel-upload-action:disabled {
+  cursor: wait;
+  opacity: 0.62;
 }
 
 .form-error {
@@ -586,6 +731,15 @@ async function submit() {
 
   .file-fields {
     grid-template-columns: 1fr;
+  }
+
+  .upload-status__row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .cancel-upload-action {
+    align-self: flex-start;
   }
 }
 </style>
