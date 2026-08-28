@@ -4,8 +4,41 @@ import { ApiError } from '@/lib/api'
 
 import { listPublishedVideos, type VideoItem, type VideoListResponse } from './api'
 
+const feedRetryDelays = [300, 900] as const
+
 function isAbortError(error: unknown) {
-  return typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError'
+  return (
+    typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError'
+  )
+}
+
+function isRetryableFeedError(error: unknown) {
+  if (!(error instanceof ApiError)) {
+    return true
+  }
+  return error.status === 0 || error.status === 408 || error.status === 429 || error.status >= 500
+}
+
+function waitForRetry(signal: AbortSignal, delay: number) {
+  return new Promise<void>((resolve) => {
+    let settled = false
+
+    function finish() {
+      if (settled) {
+        return
+      }
+      settled = true
+      clearTimeout(timer)
+      signal.removeEventListener('abort', finish)
+      resolve()
+    }
+
+    const timer = setTimeout(finish, delay)
+    signal.addEventListener('abort', finish, { once: true })
+    if (signal.aborted) {
+      finish()
+    }
+  })
 }
 
 function requestErrorMessage(error: unknown) {
@@ -72,23 +105,36 @@ export function usePublishedFeed() {
     errorMessage.value = ''
 
     try {
-      const response = await listPublishedVideos({ signal: controller.signal })
-      if (!ownsInitialRequest(controller, requestGeneration)) {
-        return undefined
-      }
+      for (let retry = 0; ; retry += 1) {
+        try {
+          const response = await listPublishedVideos({ signal: controller.signal })
+          if (!ownsInitialRequest(controller, requestGeneration)) {
+            return undefined
+          }
 
-      videos.value = mergeVideos([], response.items)
-      nextCursor.value = response.next_cursor
-      return response
-    } catch (error) {
-      if (!ownsInitialRequest(controller, requestGeneration) || isAbortError(error)) {
-        return undefined
-      }
+          videos.value = mergeVideos([], response.items)
+          nextCursor.value = response.next_cursor
+          return response
+        } catch (error) {
+          if (!ownsInitialRequest(controller, requestGeneration) || isAbortError(error)) {
+            return undefined
+          }
 
-      videos.value = []
-      nextCursor.value = undefined
-      errorMessage.value = requestErrorMessage(error)
-      return undefined
+          const retryDelay = feedRetryDelays[retry]
+          if (retryDelay !== undefined && isRetryableFeedError(error)) {
+            await waitForRetry(controller.signal, retryDelay)
+            if (!ownsInitialRequest(controller, requestGeneration)) {
+              return undefined
+            }
+            continue
+          }
+
+          videos.value = []
+          nextCursor.value = undefined
+          errorMessage.value = requestErrorMessage(error)
+          return undefined
+        }
+      }
     } finally {
       if (initialController === controller) {
         initialController = undefined
@@ -110,21 +156,34 @@ export function usePublishedFeed() {
     errorMessage.value = ''
 
     try {
-      const response = await listPublishedVideos({ cursor, signal: controller.signal })
-      if (!ownsMoreRequest(controller, requestGeneration, cursor)) {
-        return undefined
-      }
+      for (let retry = 0; ; retry += 1) {
+        try {
+          const response = await listPublishedVideos({ cursor, signal: controller.signal })
+          if (!ownsMoreRequest(controller, requestGeneration, cursor)) {
+            return undefined
+          }
 
-      videos.value = mergeVideos(videos.value, response.items)
-      nextCursor.value = response.next_cursor
-      return response
-    } catch (error) {
-      if (!ownsMoreRequest(controller, requestGeneration, cursor) || isAbortError(error)) {
-        return undefined
-      }
+          videos.value = mergeVideos(videos.value, response.items)
+          nextCursor.value = response.next_cursor
+          return response
+        } catch (error) {
+          if (!ownsMoreRequest(controller, requestGeneration, cursor) || isAbortError(error)) {
+            return undefined
+          }
 
-      errorMessage.value = requestErrorMessage(error)
-      return undefined
+          const retryDelay = feedRetryDelays[retry]
+          if (retryDelay !== undefined && isRetryableFeedError(error)) {
+            await waitForRetry(controller.signal, retryDelay)
+            if (!ownsMoreRequest(controller, requestGeneration, cursor)) {
+              return undefined
+            }
+            continue
+          }
+
+          errorMessage.value = requestErrorMessage(error)
+          return undefined
+        }
+      }
     } finally {
       if (moreController === controller) {
         moreController = undefined

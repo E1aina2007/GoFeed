@@ -95,6 +95,7 @@ describe('FeedView', () => {
     }
     MockIntersectionObserver.instances = []
     restoreVisibilityState()
+    vi.useRealTimers()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
@@ -158,7 +159,8 @@ describe('FeedView', () => {
     expect(router.currentRoute.value.query.published).toBeUndefined()
   })
 
-  it('retries a failed published return before clearing its one-time query parameter', async () => {
+  it('automatically restores a failed published return before clearing its one-time query parameter', async () => {
+    vi.useFakeTimers()
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
@@ -176,11 +178,7 @@ describe('FeedView', () => {
 
     const { router, wrapper } = await mountFeed('/?published=7')
     await flushPromises()
-
-    expect(wrapper.get('[role="alert"]').text()).toContain('服务暂不可用')
-    expect(router.currentRoute.value.query.published).toBe('7')
-
-    await wrapper.get('button').trigger('click')
+    await vi.runAllTimersAsync()
     await flushPromises()
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
