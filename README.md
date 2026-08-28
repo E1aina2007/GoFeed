@@ -125,14 +125,14 @@ pnpm preview        # 本地预览构建产物
 每次 push、Pull Request 和手动触发都会执行以下门禁：
 
 1. 后端：启动 MySQL 8.0 service，执行 `go vet ./...`、`go build ./...` 和 `go test -race -count=1 ./...`。集成测试会创建临时数据库并应用全部向上迁移。
-2. 部署配置：从 `backend/.env.example` 和 `backend/configs/config.example.yaml` 生成 CI 临时的忽略配置文件，再执行 `docker compose config --quiet`。不使用真实 `.env` 或秘密。
+2. 部署配置：从 `backend/.env.example` 和 `backend/configs/config.example.yaml` 生成 CI 临时的忽略配置文件，执行 `docker compose config --quiet`，并检查后端 `/ready` 探针与前端 `service_healthy` 依赖契约。不使用真实 `.env` 或秘密。
 3. 前端：以冻结锁文件安装依赖，执行只读 `pnpm run lint`、Vitest、类型检查与生产构建。
 
 当前 Playwright 用例会 mock 公共 Feed API，可在本地按需运行，因此它验证浏览器中的页面行为，不替代本机 MySQL 下的真实发布和鉴权联调。`pnpm run lint:fix` 与 `pnpm run format` 都会写入文件，只应在本地修复后配合 `git diff` 审查，不能作为 CI 门禁。
 
 ## 配置
 
-配置加载顺序：先读取 `CONFIG_PATH` 指定的 YAML（默认 `configs/config.dev.yaml`），再用环境变量覆盖，环境变量优先级最高。数据库密码、JWT 密钥和运行模式只从环境变量读取，YAML 中即使存在同名字段也会被忽略。模板 `backend/configs/config.example.yaml` 中的 `redis`、`rabbitmq`、`observe` 为后续功能预留，当前版本尚未读取。
+配置加载顺序：先读取 `CONFIG_PATH` 指定的 YAML（默认 `configs/config.dev.yaml`），再用环境变量覆盖，环境变量优先级最高。数据库密码、JWT 密钥和运行模式只从环境变量读取，YAML 中即使存在同名字段也会被忽略。模板 `backend/configs/config.example.yaml` 中的 `redis`、`rabbitmq` 和 `observe.pprof` 为后续功能预留，当前配置加载器尚未读取它们；现有请求日志与健康检查不依赖这些字段。
 
 当前生效的配置项：
 
@@ -184,6 +184,10 @@ SWEEPER_DRAFT_PURGE_LEASE_MINUTES=15
 
 如需调整 HTTP 端口，修改 `server.port`，并同步 `docker-compose.yml` 中 `8080:8080` 的端口映射。
 
+### 观测与健康检查
+
+`GET /health` 只检查 API 进程存活，`GET /ready` 还会在 2 秒内探测 MySQL，数据库不可用时返回 `503`。Compose 使用 `/ready` 作为 backend 健康检查，frontend 仅在 backend 健康后启动。每个响应会返回 `X-Request-ID`；客户端可复用该请求头值关联服务端的 `http_request`、`http_request_error` 和 `readiness_check` 日志。sweeper 每项清扫和每轮汇总都会记录事件、结果、耗时、删除数量及失败数量。当前未启用或暴露 pprof。
+
 ## 项目进度
 
 当前主线：发布体验与运维。后端已完成草稿聚合上传、发布、公开列表与详情、我的视频、作者删除、头像上传，并接入会话鉴权；用户主页会统计已发布且未软删除的视频数量。存储侧将清洗后的物理名与用户指定名分离，并为每次保存附加不可复用对象键；DB 只存相对路径。草稿恢复后端已提供状态查询和主动丢弃：媒体完成情况只通过 `has_video`、`has_cover` 暴露，主动丢弃会将草稿原子转入 `purging`，由 sweeper 用 token 租约逐媒体持久化删除进度，最后硬删除；任何失败都不会把 `purging` 草稿恢复为可写状态。账号和已发布视频删除仍采用软删除 + 7 天宽限期。
@@ -218,14 +222,14 @@ SWEEPER_DRAFT_PURGE_LEASE_MINUTES=15
 | 已完成 | 草稿恢复前端 | 在上传响应不确定时查询服务端草稿状态，只继续上传缺失媒体；用户主动放弃或取消发布时排入异步清扫 | `2028f95` 已完成 lint、Vitest、类型检查和构建；按当前任务要求不把浏览器测试作为门槛 |
 | 已完成 | 上传取消 | 将媒体上传请求改为可中止操作，并与草稿状态查询协作处理取消时的服务端实际结果 | `655e878` 已完成 lint、Vitest、类型检查和构建；取消不会误判已绑定媒体，也不会重新激活 `purging` 草稿 |
 | 已完成 | 媒体预览与错误分类 | 本地预览视频和封面，按鉴权、校验、网络、服务端失败给出不同反馈 | `ccbd659` 已完成 lint、13 个 Vitest 文件共 59 个用例、类型检查和构建；预览资源在替换和离开页面时释放，浏览器测试按当前任务要求未执行 |
-| 1 | 运维可观测性 | 补充日志、健康检查和 CI/Compose 回归 | 关键上传与清扫状态可定位，部署门禁覆盖配置与基础链路 |
-| 2 | 中间件接入准备 | 增加 Redis/RabbitMQ 配置结构、环境变量覆盖测试、Compose 健康检查和 CI 服务；先明确依赖可用性策略 | 配置契约、服务连通性和本地/CI 启动方式可独立回归，不改变现有业务事实源 |
-| 3 | RabbitMQ 视频处理闭环 | 以 outbox 可靠发布视频处理事件，由 worker 消费、重试并更新 `processing`/`rejected` 状态 | 重复消费、进程崩溃、死信和状态不可逆性均有测试；worker 可访问共享媒体存储 |
-| 4 | Redis 定向能力 | 先接入限流、会话缓存、短期幂等键或任务进度，再依据指标评估更广缓存 | 明确 TTL、失效、降级策略和命中率；MySQL 仍是用户、视频、草稿及清扫状态的权威来源 |
+| 已完成 | 运维可观测性 | 增加请求 ID、请求完成日志、MySQL 就绪检查和 sweeper 轮次汇总，并补齐 Compose/CI 健康契约 | `1b702cd` 已完成 `go vet ./...`、`go build ./...`、`go test ./...`、竞态回归和 Compose 配置/健康契约验证；真实 MySQL 集成因环境未配置而跳过，pprof 未启用 |
+| 1 | 中间件接入准备 | 增加 Redis/RabbitMQ 配置结构、环境变量覆盖测试、Compose 健康检查和 CI 服务；先明确依赖可用性策略 | 配置契约、服务连通性和本地/CI 启动方式可独立回归，不改变现有业务事实源 |
+| 2 | RabbitMQ 视频处理闭环 | 以 outbox 可靠发布视频处理事件，由 worker 消费、重试并更新 `processing`/`rejected` 状态 | 重复消费、进程崩溃、死信和状态不可逆性均有测试；worker 可访问共享媒体存储 |
+| 3 | Redis 定向能力 | 先接入限流、会话缓存、短期幂等键或任务进度，再依据指标评估更广缓存 | 明确 TTL、失效、降级策略和命中率；MySQL 仍是用户、视频、草稿及清扫状态的权威来源 |
 
 ### 当前模块：发布体验与运维
 
-互动模块已经完成并按后端、前端拆分提交。草稿恢复后端已在 `7afa144` 完成并同步更新 [`API.md`](./API.md)：`GET /api/video/auth/drafts/:id` 返回当前草稿和媒体完成标识，`DELETE /api/video/auth/drafts/:id` 将草稿不可逆地排入清扫。草稿恢复前端已在 `2028f95` 完成，只消费这两个既有接口来确认上传响应不确定后的服务端事实，并提供明确的放弃草稿操作；上传取消已在 `655e878` 完成，通过可中止媒体请求和服务端草稿状态确认避免取消后误发后续请求或重新激活 `purging` 草稿；媒体预览与错误分类已在 `ccbd659` 完成，覆盖本地预览生命周期、选择前校验和可恢复错误提示。上述前端模块均已覆盖 lint、Vitest、类型检查和构建，浏览器测试按当前任务要求不作为提交门槛。下一步推进运维可观测性，再进入中间件接入准备。
+互动模块已经完成并按后端、前端拆分提交。草稿恢复后端已在 `7afa144` 完成并同步更新 [`API.md`](./API.md)：`GET /api/video/auth/drafts/:id` 返回当前草稿和媒体完成标识，`DELETE /api/video/auth/drafts/:id` 将草稿不可逆地排入清扫。草稿恢复前端已在 `2028f95` 完成，只消费这两个既有接口来确认上传响应不确定后的服务端事实，并提供明确的放弃草稿操作；上传取消已在 `655e878` 完成，通过可中止媒体请求和服务端草稿状态确认避免取消后误发后续请求或重新激活 `purging` 草稿；媒体预览与错误分类已在 `ccbd659` 完成，覆盖本地预览生命周期、选择前校验和可恢复错误提示；运维可观测性已在 `1b702cd` 完成，提供请求关联、健康探针和清扫轮次日志。下一步进入中间件接入准备，先固定 Redis/RabbitMQ 的配置、可用性和本地/CI 契约，不改变现有业务事实源。
 
 ### Redis 与 RabbitMQ 引入边界
 
@@ -244,7 +248,7 @@ Redis 先承担短生命周期的保护和加速职责：登录/注册/上传限
 
 本地验收使用“本机 MySQL + 直接启动前后端”方式：先执行未应用的 `migrate ... up`，再从 `backend` 启动 API、从 `frontend` 启动 Vite。验收顺序如下：
 
-1. `GET /health` 返回 `200`，前端 `/api` 与 `/static` 代理可用。
+1. `GET /health` 返回 `200`，MySQL 可用时 `GET /ready` 返回 `200`，前端 `/api` 与 `/static` 代理可用。
 2. 注册新用户、登录、刷新令牌、退出；访问受保护页面时未登录会跳转登录。
 3. 上传视频和封面，发布后回到 Feed，能看到成功提示、封面、标题和作者入口。
 4. Feed 首屏、继续滚动分页、到底状态、空状态和失败重试均可用；视频按短视频全屏纵向流播放。
