@@ -118,11 +118,11 @@
   "items": [
     { "id": 100, "title": "我的第一条视频" }
   ],
-  "next_cursor": "eyJwdWJsaXNoZWRfYXQiOiIyMDI2LTA4LTE5VDA4OjAwOjAwWiIsImlkIjoxMDB9"
+  "next_cursor": "eyJ2IjoxLCJrIjoicHVibGljIiwicCI6IjIwMjYtMDgtMTlUMDg6MDA6MDBaIiwiaSI6MTAwfQ"
 }
 ```
 
-当没有下一页时，`next_cursor` 不返回。后续分页将该字段原样作为 `cursor` 查询参数传回；它是服务端生成的不透明值，不应自行构造或修改。
+当没有下一页时，`next_cursor` 不返回。后续分页将该字段原样作为 `cursor` 查询参数传回；它是服务端生成的不透明值，不应自行构造或修改。视频列表游标当前版本为 `1`，并绑定生成它的查询范围：全局列表使用 `public`，指定作者列表使用 `author` 和作者 ID，`/api/video/auth/mine` 使用 `mine` 和当前用户 ID。跨范围、跨作者、版本不支持、旧格式或字段被篡改的游标均返回 `400`；空游标仍表示第一页。
 
 ### `CommentListResponse`
 
@@ -517,7 +517,7 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 
 视频按发布时间倒序排列；发布时间相同时按 ID 倒序排列。成功响应：`200 OK`，响应体为 [`VideoListResponse`](#videolistresponse)。
 
-常见失败：`400` `author_id`、`cursor` 或 `limit` 不合法。
+常见失败：`400` `author_id`、`cursor` 或 `limit` 不合法。`cursor` 必须是本接口当前查询范围生成的游标，不能复用于全局、其他作者或“我的视频”列表。
 
 ### 查询公开视频详情
 
@@ -740,7 +740,7 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 
 成功响应：`200 OK`，响应体为 [`VideoListResponse`](#videolistresponse)。该接口仅返回当前用户已发布且未软删除的视频；草稿不混入没有状态字段的 `VideoItem` 列表。
 
-常见失败：`400` `cursor` 或 `limit` 不合法，`401` 未认证。
+常见失败：`400` `cursor` 或 `limit` 不合法，或游标不是当前用户 `mine` 范围生成的值；`401` 未认证。
 
 ### 查询、点赞和取消点赞
 
