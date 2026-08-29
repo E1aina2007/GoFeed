@@ -52,8 +52,7 @@ func (r *Repository) GetPublishedVideo(ctx context.Context, id uint) error {
 		return gorm.ErrRecordNotFound
 	}
 	var count int64
-	err := r.db.WithContext(ctx).Model(&video.Video{}).
-		Scopes(video.PublicVideoScope).
+	err := video.PublicVideoQuery(r.db.WithContext(ctx)).
 		Where(clause.Eq{Column: clause.PrimaryColumn, Value: id}).
 		Count(&count).Error
 	if err != nil {
@@ -325,9 +324,8 @@ func (r *Repository) GetProfileMetrics(ctx context.Context, accountID uint) (use
 	if accountID == 0 {
 		return metrics, nil
 	}
-	if err := r.db.WithContext(ctx).Model(&video.Video{}).
+	if err := video.PublicVideoQuery(r.db.WithContext(ctx)).
 		Joins("JOIN video_likes AS likes ON likes.video_id = videos.id").
-		Scopes(video.PublicVideoScope).
 		Where(clause.Eq{
 			Column: clause.Column{Table: clause.CurrentTable, Name: "author_id"},
 			Value:  accountID,

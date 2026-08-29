@@ -5,9 +5,14 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// PublicVideoScope 为以 Video 作为当前 Model 的查询附加公开视频数据边界
+// PublicVideoQuery 创建固定绑定 Video 模型的公开视频查询
 // GORM 的默认软删除作用域负责排除 deleted_at 非空的记录
-func PublicVideoScope(db *gorm.DB) *gorm.DB {
+func PublicVideoQuery(db *gorm.DB) *gorm.DB {
+	return db.Model(&Video{}).Scopes(publicVideoScope)
+}
+
+// publicVideoScope 为公开视频查询附加统一的数据边界
+func publicVideoScope(db *gorm.DB) *gorm.DB {
 	column := func(name string) clause.Column {
 		return clause.Column{Table: clause.CurrentTable, Name: name}
 	}
