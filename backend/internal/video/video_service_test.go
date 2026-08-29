@@ -214,9 +214,9 @@ func TestServiceGetPublished(t *testing.T) {
 	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
 	service := NewService(
 		&fakeVideoReader{getVideo: &Video{
-			ID: 1, AuthorID: 2, Title: "title", PlayURL: "play", CoverURL: "cover", PublishedAt: timePtr(publishedAt),
-			PlayFileName: "clip.mp4", PlayOriginalName: "我的 clip.mp4",
-			CoverFileName: "cover.png", CoverOriginalName: "封面.png",
+			ID: 1, AuthorID: 2, Title: "title", Status: VideoStatusPublished,
+			PlayURL: "play", PlayFileName: "clip.mp4", PlayOriginalName: "我的 clip.mp4",
+			CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "封面.png", PublishedAt: timePtr(publishedAt),
 		}},
 		&fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}},
 	)
@@ -244,9 +244,9 @@ func TestServiceListPublishedUsesExtraRecordForCursor(t *testing.T) {
 	// 5 验证同一作者资料在一次列表查询中只读取一次
 	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
 	repository := &fakeVideoReader{listVideos: []Video{
-		{ID: 3, AuthorID: 2, PublishedAt: timePtr(publishedAt)},
-		{ID: 2, AuthorID: 2, PublishedAt: timePtr(publishedAt.Add(-time.Second))},
-		{ID: 1, AuthorID: 4, PublishedAt: timePtr(publishedAt.Add(-2 * time.Second))},
+		{ID: 3, AuthorID: 2, Status: VideoStatusPublished, PlayURL: "play-3", PlayFileName: "3.mp4", PlayOriginalName: "3.mp4", CoverURL: "cover-3", CoverFileName: "3.png", CoverOriginalName: "3.png", PublishedAt: timePtr(publishedAt)},
+		{ID: 2, AuthorID: 2, Status: VideoStatusPublished, PlayURL: "play-2", PlayFileName: "2.mp4", PlayOriginalName: "2.mp4", CoverURL: "cover-2", CoverFileName: "2.png", CoverOriginalName: "2.png", PublishedAt: timePtr(publishedAt.Add(-time.Second))},
+		{ID: 1, AuthorID: 4, Status: VideoStatusPublished, PlayURL: "play-1", PlayFileName: "1.mp4", PlayOriginalName: "1.mp4", CoverURL: "cover-1", CoverFileName: "1.png", CoverOriginalName: "1.png", PublishedAt: timePtr(publishedAt.Add(-2 * time.Second))},
 	}}
 	authors := &fakeAuthorReader{authors: map[uint]Author{
 		2: {ID: 2, Username: "first"},
@@ -281,7 +281,12 @@ func TestServiceListPublishedPopulatesAuthor(t *testing.T) {
 	// 3 验证作者资料透出到列表项（防止局部变量遮蔽回归）
 	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
 	service := NewService(
-		&fakeVideoReader{listVideos: []Video{{ID: 1, AuthorID: 2, PublishedAt: timePtr(publishedAt)}}},
+		&fakeVideoReader{listVideos: []Video{{
+			ID: 1, AuthorID: 2, Status: VideoStatusPublished,
+			PlayURL: "play", PlayFileName: "play.mp4", PlayOriginalName: "play.mp4",
+			CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "cover.png",
+			PublishedAt: timePtr(publishedAt),
+		}}},
 		&fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}},
 	)
 
@@ -291,6 +296,41 @@ func TestServiceListPublishedPopulatesAuthor(t *testing.T) {
 	}
 	if len(response.Items) != 1 || response.Items[0].Author.ID != 2 || response.Items[0].Author.Username != "author" {
 		t.Fatalf("列表项应透出作者资料 got=%#v", response.Items)
+	}
+}
+
+// 测试目标：验证服务层不会把替代仓储返回的残缺实体映射为公开响应
+// 预期效果：详情按视频不存在处理，列表只保留完整公开视频
+func TestServicePublicMappingRejectsIncompleteVideo(t *testing.T) {
+	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
+	valid := Video{
+		ID: 1, AuthorID: 2, Status: VideoStatusPublished,
+		PlayURL: "play", PlayFileName: "play.mp4", PlayOriginalName: "play.mp4",
+		CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "cover.png",
+		PublishedAt: timePtr(publishedAt),
+	}
+	incomplete := valid
+	incomplete.ID = 2
+	incomplete.PlayFileName = ""
+
+	detailService := NewService(
+		&fakeVideoReader{getVideo: &incomplete},
+		&fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}},
+	)
+	if _, err := detailService.GetPublished(context.Background(), incomplete.ID); !errors.Is(err, ErrVideoNotFound) {
+		t.Fatalf("残缺视频详情应按不存在处理, err=%v", err)
+	}
+
+	listService := NewService(
+		&fakeVideoReader{listVideos: []Video{incomplete, valid}},
+		&fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}},
+	)
+	response, err := listService.GetPublishedVideoList(context.Background(), 0, "", 10)
+	if err != nil {
+		t.Fatalf("残缺视频列表查询失败: %v", err)
+	}
+	if len(response.Items) != 1 || response.Items[0].ID != valid.ID {
+		t.Fatalf("列表应只返回完整公开视频, got=%+v", response.Items)
 	}
 }
 
@@ -493,9 +533,9 @@ func TestServiceListMinePassesExtraRecordForCursor(t *testing.T) {
 	// 与公开列表一致，仓储多取一条记录用于判断下一页
 	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
 	repository := &fakeVideoReader{mineVideos: []Video{
-		{ID: 3, AuthorID: 2, PublishedAt: timePtr(publishedAt)},
-		{ID: 2, AuthorID: 2, PublishedAt: timePtr(publishedAt.Add(-time.Second))},
-		{ID: 1, AuthorID: 2, PublishedAt: timePtr(publishedAt.Add(-2 * time.Second))},
+		{ID: 3, AuthorID: 2, Status: VideoStatusPublished, PlayURL: "play-3", PlayFileName: "3.mp4", PlayOriginalName: "3.mp4", CoverURL: "cover-3", CoverFileName: "3.png", CoverOriginalName: "3.png", PublishedAt: timePtr(publishedAt)},
+		{ID: 2, AuthorID: 2, Status: VideoStatusPublished, PlayURL: "play-2", PlayFileName: "2.mp4", PlayOriginalName: "2.mp4", CoverURL: "cover-2", CoverFileName: "2.png", CoverOriginalName: "2.png", PublishedAt: timePtr(publishedAt.Add(-time.Second))},
+		{ID: 1, AuthorID: 2, Status: VideoStatusPublished, PlayURL: "play-1", PlayFileName: "1.mp4", PlayOriginalName: "1.mp4", CoverURL: "cover-1", CoverFileName: "1.png", CoverOriginalName: "1.png", PublishedAt: timePtr(publishedAt.Add(-2 * time.Second))},
 	}}
 	authors := &fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}}
 	service := NewService(repository, authors)

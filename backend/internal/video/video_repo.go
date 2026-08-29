@@ -155,9 +155,7 @@ func (r *Repository) GetPublishedByID(ctx context.Context, id uint) (*Video, err
 	}
 
 	var video Video
-	err := r.db.WithContext(ctx).
-		Where("status = ?", VideoStatusPublished).
-		First(&video, id).Error
+	err := r.db.WithContext(ctx).Model(&Video{}).Scopes(PublicVideoScope).First(&video, id).Error
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +168,7 @@ func (r *Repository) GetPublishedVideoList(ctx context.Context, authorID uint, c
 		return []Video{}, nil
 	}
 
-	query := r.db.WithContext(ctx).Where("status = ?", VideoStatusPublished)
+	query := r.db.WithContext(ctx).Model(&Video{}).Scopes(PublicVideoScope)
 	if authorID != 0 {
 		query = query.Where("author_id = ?", authorID)
 	}
@@ -198,8 +196,8 @@ func (r *Repository) GetPublishedVideoCountByAuthor(ctx context.Context, authorI
 	}
 
 	var count int64
-	err := r.db.WithContext(ctx).Model(&Video{}).
-		Where("author_id = ? AND status = ?", authorID, VideoStatusPublished).
+	err := r.db.WithContext(ctx).Model(&Video{}).Scopes(PublicVideoScope).
+		Where("author_id = ?", authorID).
 		Count(&count).Error
 	return count, err
 }
@@ -211,7 +209,7 @@ func (r *Repository) GetAuthorVideoList(ctx context.Context, authorID uint, curs
 		return []Video{}, nil
 	}
 
-	query := r.db.WithContext(ctx).Where("author_id = ? AND status = ?", authorID, VideoStatusPublished)
+	query := r.db.WithContext(ctx).Model(&Video{}).Scopes(PublicVideoScope).Where("author_id = ?", authorID)
 	if cursor != nil {
 		query = query.Where(
 			"(published_at < ?) OR (published_at = ? AND id < ?)",

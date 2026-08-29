@@ -207,6 +207,9 @@ func (s *Service) GetPublished(ctx context.Context, id uint) (VideoItem, error) 
 
 	video, err := s.repository.GetPublishedByID(ctx, id)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return VideoItem{}, ErrVideoNotFound
+		}
 		return VideoItem{}, err
 	}
 	return s.toVideoItem(ctx, video)
@@ -293,6 +296,9 @@ func (s *Service) DeleteVideo(ctx context.Context, id, authorID uint) error {
 
 // buildListResponse 构建视频列表响应，包含作者资料与分页游标
 func (s *Service) buildListResponse(ctx context.Context, videos []Video, limit int) (ListResponse, error) {
+	// 仓储查询已按公开条件过滤，这里再做一次实体级检查，防止替代实现或并发快照
+	// 把残缺记录映射成半完整的公开响应
+	videos = filterPublicVideos(videos)
 	hasMore := len(videos) > limit
 	if hasMore {
 		videos = videos[:limit]
@@ -341,8 +347,8 @@ func (s *Service) buildListResponse(ctx context.Context, videos []Video, limit i
 }
 
 func (s *Service) toVideoItem(ctx context.Context, video *Video) (VideoItem, error) {
-	if video == nil {
-		return VideoItem{}, gorm.ErrRecordNotFound
+	if video == nil || !isPublicVideo(*video) {
+		return VideoItem{}, ErrVideoNotFound
 	}
 	if s.authorReader == nil {
 		return VideoItem{}, ErrAuthorReaderUnavailable
@@ -359,6 +365,32 @@ func (s *Service) toVideoItem(ctx context.Context, video *Video) (VideoItem, err
 	item := videoItem(*video, author)
 	applyEngagement(&item, engagements[video.ID])
 	return item, nil
+}
+
+// filterPublicVideos 丢弃不满足公开响应契约的实体
+// 公开列表宁可少返回一项，也不能把缺媒体或缺发布时间的记录暴露给客户端
+func filterPublicVideos(videos []Video) []Video {
+	filtered := make([]Video, 0, len(videos))
+	for _, item := range videos {
+		if isPublicVideo(item) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+// isPublicVideo 判断视频实体是否满足公开视频响应的最小数据契约
+func isPublicVideo(video Video) bool {
+	return video.Status == VideoStatusPublished &&
+		!video.DeletedAt.Valid &&
+		video.PublishedAt != nil &&
+		!video.PublishedAt.IsZero() &&
+		video.PlayURL != "" &&
+		video.PlayFileName != "" &&
+		video.PlayOriginalName != "" &&
+		video.CoverURL != "" &&
+		video.CoverFileName != "" &&
+		video.CoverOriginalName != ""
 }
 
 func (s *Service) engagements(ctx context.Context, videos []Video) (map[uint]EngagementCounts, error) {

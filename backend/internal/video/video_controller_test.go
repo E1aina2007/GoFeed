@@ -45,7 +45,12 @@ func TestHandlerGetVideo(t *testing.T) {
 	// 2 请求视频详情接口
 	// 3 验证 200 且响应中的视频字段与作者资料正确
 	ctl, repo, authors := newTestVideoController(t)
-	repo.getVideo = &Video{ID: 1, AuthorID: 2, Title: "t", PublishedAt: timePtr(time.Now())}
+	repo.getVideo = &Video{
+		ID: 1, AuthorID: 2, Title: "t", Status: VideoStatusPublished,
+		PlayURL: "play", PlayFileName: "play.mp4", PlayOriginalName: "play.mp4",
+		CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "cover.png",
+		PublishedAt: timePtr(time.Now()),
+	}
 	authors.authors = map[uint]Author{2: {ID: 2, Username: "u"}}
 
 	r := gin.New()
@@ -81,6 +86,27 @@ func TestHandlerGetVideoNotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status got=%d want=404", w.Code)
+	}
+}
+
+// 测试目标：验证公开详情不会暴露服务层收到的残缺视频实体
+// 预期效果：缺少媒体字段的记录返回 404 而不是半完整响应
+func TestHandlerGetVideoRejectsIncompleteRecord(t *testing.T) {
+	ctl, repo, _ := newTestVideoController(t)
+	repo.getVideo = &Video{
+		ID: 1, AuthorID: 2, Status: VideoStatusPublished,
+		PlayURL: "play", PlayFileName: "", PlayOriginalName: "play.mp4",
+		CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "cover.png",
+		PublishedAt: timePtr(time.Now()),
+	}
+
+	r := gin.New()
+	r.GET("/api/video/:id", ctl.GetVideo)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/video/1", nil))
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("残缺视频详情状态错误 got=%d want=404 body=%s", w.Code, w.Body.String())
 	}
 }
 

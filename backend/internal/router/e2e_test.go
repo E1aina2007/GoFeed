@@ -12,8 +12,11 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"gofeed/internal/testutil"
+	"gofeed/internal/user"
+	videoModel "gofeed/internal/video"
 )
 
 // 测试目标：提供端到端媒体上传所需的最小文件头
@@ -382,6 +385,67 @@ func TestVideoEndToEndFlow(t *testing.T) {
 	// 作者删除视频后读取详情，预期返回未找到状态
 	doJSON(t, client, http.MethodDelete, fmt.Sprintf("%s/api/video/auth/%d", base, item.ID), sess.AccessToken, nil, http.StatusNoContent, nil)
 	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, item.ID), "", nil, http.StatusNotFound, nil)
+}
+
+// 测试目标：验证公开路由在真实数据库中共同遵守公开视频完整性边界
+// 预期效果：残缺记录从 Feed、详情、评论入口和主页视频计数中排除
+func TestPublicRoutesExcludeIncompleteVideoRows(t *testing.T) {
+	db := testutil.DB(t)
+	author := &user.User{Username: "public-boundary-author", Password: "test-password-hash"}
+	if err := db.Create(author).Error; err != nil {
+		t.Fatalf("创建边界测试用户失败: %v", err)
+	}
+	publishedAt := time.Now()
+	valid := &videoModel.Video{
+		AuthorID:          author.ID,
+		Title:             "完整公开视频",
+		PlayURL:           "/static/videos/1/valid.mp4",
+		PlayFileName:      "valid.mp4",
+		PlayOriginalName:  "valid.mp4",
+		CoverURL:          "/static/covers/1/valid.png",
+		CoverFileName:     "valid.png",
+		CoverOriginalName: "valid.png",
+		Status:            videoModel.VideoStatusPublished,
+		PublishedAt:       &publishedAt,
+	}
+	incomplete := &videoModel.Video{
+		AuthorID:          author.ID,
+		Title:             "残缺公开视频",
+		PlayURL:           "/static/videos/1/incomplete.mp4",
+		PlayFileName:      "",
+		PlayOriginalName:  "incomplete.mp4",
+		CoverURL:          "/static/covers/1/incomplete.png",
+		CoverFileName:     "incomplete.png",
+		CoverOriginalName: "incomplete.png",
+		Status:            videoModel.VideoStatusPublished,
+		PublishedAt:       &publishedAt,
+	}
+	for _, item := range []*videoModel.Video{valid, incomplete} {
+		if err := db.Create(item).Error; err != nil {
+			t.Fatalf("创建视频 %q 失败: %v", item.Title, err)
+		}
+	}
+
+	engine := New(db, false, Options{UploadDir: t.TempDir()})
+	srv := httptest.NewServer(engine)
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+
+	var list struct {
+		Items []videoItem `json:"items"`
+	}
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video?author_id=%d&limit=10", srv.URL, author.ID), "", nil, http.StatusOK, &list)
+	if len(list.Items) != 1 || list.Items[0].ID != valid.ID {
+		t.Fatalf("Feed 应只返回完整公开视频 got=%+v", list.Items)
+	}
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", srv.URL, incomplete.ID), "", nil, http.StatusNotFound, nil)
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d/comments", srv.URL, incomplete.ID), "", nil, http.StatusNotFound, nil)
+
+	var profile profileResponse
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/user/%d/profile", srv.URL, author.ID), "", nil, http.StatusOK, &profile)
+	if profile.VideoCount != 1 {
+		t.Fatalf("主页视频计数应排除残缺记录 got=%d", profile.VideoCount)
+	}
 }
 
 // 测试目标：验证点赞、评论和关注接口的完整互动流程

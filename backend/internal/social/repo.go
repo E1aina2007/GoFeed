@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Repository struct {
@@ -51,8 +52,9 @@ func (r *Repository) GetPublishedVideo(ctx context.Context, id uint) error {
 		return gorm.ErrRecordNotFound
 	}
 	var count int64
-	err := r.db.WithContext(ctx).Table("videos").
-		Where("id = ? AND status = ? AND deleted_at IS NULL", id, video.VideoStatusPublished).
+	err := r.db.WithContext(ctx).Model(&video.Video{}).
+		Scopes(video.PublicVideoScope).
+		Where(clause.Eq{Column: clause.PrimaryColumn, Value: id}).
 		Count(&count).Error
 	if err != nil {
 		return err
@@ -323,9 +325,13 @@ func (r *Repository) GetProfileMetrics(ctx context.Context, accountID uint) (use
 	if accountID == 0 {
 		return metrics, nil
 	}
-	if err := r.db.WithContext(ctx).Table("video_likes AS likes").
-		Joins("JOIN videos AS videos ON videos.id = likes.video_id").
-		Where("videos.author_id = ? AND videos.status = ? AND videos.deleted_at IS NULL", accountID, video.VideoStatusPublished).
+	if err := r.db.WithContext(ctx).Model(&video.Video{}).
+		Joins("JOIN video_likes AS likes ON likes.video_id = videos.id").
+		Scopes(video.PublicVideoScope).
+		Where(clause.Eq{
+			Column: clause.Column{Table: clause.CurrentTable, Name: "author_id"},
+			Value:  accountID,
+		}).
 		Count(&metrics.TotalLikes).Error; err != nil {
 		return user.ProfileMetrics{}, err
 	}

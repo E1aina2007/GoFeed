@@ -132,6 +132,92 @@ func TestRepositoryGetPublishedByIDFiltersStatus(t *testing.T) {
 	}
 }
 
+// 测试目标：验证所有公开查询都要求完整的发布状态和媒体快照
+// 预期效果：状态异常、软删除、空发布时间或任一媒体字段为空的记录均不可见
+func TestRepositoryPublicQueriesRequireCompleteVideo(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	valid := seedVideo(t, repo, 1, "valid", VideoStatusPublished, baseTime)
+	otherAuthor := seedVideo(t, repo, 2, "other-author", VideoStatusPublished, baseTime.Add(time.Minute))
+	invalidIDs := make(map[uint]bool)
+
+	for _, status := range []string{VideoStatusDraft, VideoStatusPurging, VideoStatusProcessing, VideoStatusRejected} {
+		item := newVideoFixture(1, "status-"+status, status, baseTime.Add(2*time.Minute))
+		if err := repo.Create(ctx, item); err != nil {
+			t.Fatalf("创建 %s 测试记录失败: %v", status, err)
+		}
+		invalidIDs[item.ID] = true
+	}
+
+	withoutPublishedAt := newVideoFixture(1, "missing-published-at", VideoStatusPublished, baseTime)
+	withoutPublishedAt.PublishedAt = nil
+	if err := repo.Create(ctx, withoutPublishedAt); err != nil {
+		t.Fatalf("创建空发布时间记录失败: %v", err)
+	}
+	invalidIDs[withoutPublishedAt.ID] = true
+
+	for _, missing := range []struct {
+		name  string
+		clear func(*Video)
+	}{
+		{name: "play_url", clear: func(item *Video) { item.PlayURL = "" }},
+		{name: "play_file_name", clear: func(item *Video) { item.PlayFileName = "" }},
+		{name: "play_original_name", clear: func(item *Video) { item.PlayOriginalName = "" }},
+		{name: "cover_url", clear: func(item *Video) { item.CoverURL = "" }},
+		{name: "cover_file_name", clear: func(item *Video) { item.CoverFileName = "" }},
+		{name: "cover_original_name", clear: func(item *Video) { item.CoverOriginalName = "" }},
+	} {
+		item := newVideoFixture(1, "missing-"+missing.name, VideoStatusPublished, baseTime)
+		missing.clear(item)
+		if err := repo.Create(ctx, item); err != nil {
+			t.Fatalf("创建缺少 %s 的记录失败: %v", missing.name, err)
+		}
+		invalidIDs[item.ID] = true
+	}
+
+	deleted := seedVideo(t, repo, 1, "deleted", VideoStatusPublished, baseTime)
+	if err := db.Delete(&Video{}, deleted.ID).Error; err != nil {
+		t.Fatalf("软删除测试记录失败: %v", err)
+	}
+	invalidIDs[deleted.ID] = true
+
+	for id := range invalidIDs {
+		if _, err := repo.GetPublishedByID(ctx, id); !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Errorf("不完整视频 id=%d 不应通过详情查询, err=%v", id, err)
+		}
+	}
+
+	all, err := repo.GetPublishedVideoList(ctx, 0, nil, 100)
+	if err != nil {
+		t.Fatalf("查询公开列表失败: %v", err)
+	}
+	if len(all) != 2 || all[0].ID != otherAuthor.ID || all[1].ID != valid.ID {
+		t.Fatalf("公开列表应只包含两条完整视频, got=%+v", all)
+	}
+
+	mine, err := repo.GetAuthorVideoList(ctx, 1, nil, 100)
+	if err != nil {
+		t.Fatalf("查询作者公开列表失败: %v", err)
+	}
+	if len(mine) != 1 || mine[0].ID != valid.ID {
+		t.Fatalf("作者列表应排除全部不完整记录, got=%+v", mine)
+	}
+
+	count, err := repo.GetPublishedVideoCountByAuthor(ctx, 1)
+	if err != nil {
+		t.Fatalf("统计作者公开视频失败: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("作者统计应只计入完整公开视频, got=%d", count)
+	}
+	otherCount, err := repo.GetPublishedVideoCountByAuthor(ctx, 2)
+	if err != nil || otherCount != 1 {
+		t.Fatalf("其他作者统计错误 count=%d err=%v", otherCount, err)
+	}
+}
+
 // 测试目标：验证零值视频标识的读取边界
 // 预期效果：通用读取和公开读取均返回记录不存在错误
 func TestRepositoryGetByIDZero(t *testing.T) {

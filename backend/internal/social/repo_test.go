@@ -2,6 +2,7 @@ package social
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -32,13 +33,17 @@ func seedPublishedVideo(t *testing.T, db *gorm.DB, authorID uint) *video.Video {
 	t.Helper()
 	publishedAt := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
 	item := &video.Video{
-		AuthorID:    authorID,
-		Title:       "social test video",
-		Description: "",
-		PlayURL:     "/static/videos/1/20260826/test.mp4",
-		CoverURL:    "/static/covers/1/20260826/test.png",
-		Status:      video.VideoStatusPublished,
-		PublishedAt: &publishedAt,
+		AuthorID:          authorID,
+		Title:             "social test video",
+		Description:       "",
+		PlayURL:           "/static/videos/1/20260826/test.mp4",
+		PlayFileName:      "test.mp4",
+		PlayOriginalName:  "test.mp4",
+		CoverURL:          "/static/covers/1/20260826/test.png",
+		CoverFileName:     "test.png",
+		CoverOriginalName: "test.png",
+		Status:            video.VideoStatusPublished,
+		PublishedAt:       &publishedAt,
 	}
 	if err := db.Create(item).Error; err != nil {
 		t.Fatalf("创建测试视频失败: %v", err)
@@ -87,6 +92,100 @@ func TestRepositoryStoresInteractionsAndAggregatesMetrics(t *testing.T) {
 	engagement, err = repo.GetEngagementCounts(ctx, []uint{item.ID})
 	if err != nil || engagement[item.ID].CommentsCount != 0 {
 		t.Fatalf("软删除评论后统计错误 counts=%+v err=%v", engagement, err)
+	}
+}
+
+// 测试目标：构造可空发布时间测试指针
+// 预期效果：边界用例可分别创建有发布时间和空发布时间的视频
+func socialTimePtr(value time.Time) *time.Time {
+	return &value
+}
+
+// 测试目标：验证互动仓储只把完整公开视频视为可操作和可统计对象
+// 预期效果：残缺、非发布和软删除视频均返回不存在且不计入作者获赞数
+func TestRepositoryPublicVideoBoundary(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+	author := seedUser(t, db, "boundary-author")
+	viewer := seedUser(t, db, "boundary-viewer")
+
+	valid := seedPublishedVideo(t, db, author.ID)
+	if err := db.Create(&VideoLike{VideoID: valid.ID, UserID: viewer.ID}).Error; err != nil {
+		t.Fatalf("创建完整视频点赞失败: %v", err)
+	}
+
+	invalidIDs := make(map[uint]bool)
+	createVideo := func(title, status string, publishedAt *time.Time) *video.Video {
+		item := &video.Video{
+			AuthorID:          author.ID,
+			Title:             title,
+			PlayURL:           "/static/videos/1/test.mp4",
+			PlayFileName:      "test.mp4",
+			PlayOriginalName:  "test.mp4",
+			CoverURL:          "/static/covers/1/test.png",
+			CoverFileName:     "test.png",
+			CoverOriginalName: "test.png",
+			Status:            status,
+			PublishedAt:       publishedAt,
+		}
+		if err := db.Create(item).Error; err != nil {
+			t.Fatalf("创建 %s 视频失败: %v", title, err)
+		}
+		invalidIDs[item.ID] = true
+		if err := db.Create(&VideoLike{VideoID: item.ID, UserID: viewer.ID}).Error; err != nil {
+			t.Fatalf("创建 %s 视频点赞失败: %v", title, err)
+		}
+		return item
+	}
+
+	for _, status := range []string{video.VideoStatusDraft, video.VideoStatusPurging, video.VideoStatusProcessing, video.VideoStatusRejected} {
+		createVideo("status-"+status, status, socialTimePtr(time.Now()))
+	}
+	createVideo("missing-published-at", video.VideoStatusPublished, nil)
+
+	for _, missing := range []struct {
+		name  string
+		clear func(*video.Video)
+	}{
+		{name: "play_url", clear: func(item *video.Video) { item.PlayURL = "" }},
+		{name: "play_file_name", clear: func(item *video.Video) { item.PlayFileName = "" }},
+		{name: "play_original_name", clear: func(item *video.Video) { item.PlayOriginalName = "" }},
+		{name: "cover_url", clear: func(item *video.Video) { item.CoverURL = "" }},
+		{name: "cover_file_name", clear: func(item *video.Video) { item.CoverFileName = "" }},
+		{name: "cover_original_name", clear: func(item *video.Video) { item.CoverOriginalName = "" }},
+	} {
+		item := createVideo("missing-"+missing.name, video.VideoStatusPublished, socialTimePtr(time.Now()))
+		missing.clear(item)
+		if err := db.Save(item).Error; err != nil {
+			t.Fatalf("保存缺少 %s 的视频失败: %v", missing.name, err)
+		}
+	}
+
+	deleted := seedPublishedVideo(t, db, author.ID)
+	if err := db.Create(&VideoLike{VideoID: deleted.ID, UserID: viewer.ID}).Error; err != nil {
+		t.Fatalf("创建软删除视频点赞失败: %v", err)
+	}
+	if err := db.Delete(&video.Video{}, deleted.ID).Error; err != nil {
+		t.Fatalf("软删除视频失败: %v", err)
+	}
+	invalidIDs[deleted.ID] = true
+
+	if err := repo.GetPublishedVideo(ctx, valid.ID); err != nil {
+		t.Fatalf("完整公开视频应可用于互动: %v", err)
+	}
+	for id := range invalidIDs {
+		if err := repo.GetPublishedVideo(ctx, id); !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Errorf("不完整视频 id=%d 不应通过互动资源校验, err=%v", id, err)
+		}
+	}
+
+	metrics, err := repo.GetProfileMetrics(ctx, author.ID)
+	if err != nil {
+		t.Fatalf("读取作者互动统计失败: %v", err)
+	}
+	if metrics.TotalLikes != 1 {
+		t.Fatalf("作者获赞数应只统计完整公开视频, got=%d", metrics.TotalLikes)
 	}
 }
 
