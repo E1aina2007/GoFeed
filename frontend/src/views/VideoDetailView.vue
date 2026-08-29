@@ -13,9 +13,29 @@ const video = ref<VideoItem>()
 const engagement = ref<VideoEngagement>()
 const isLoading = ref(true)
 const errorMessage = ref('')
+const playerAspectRatio = ref<number>()
 const commentsCount = computed(
   () => engagement.value?.commentsCount ?? video.value?.comments_count ?? 0,
 )
+
+// 元数据加载后把播放器框收敛到视频真实比例，避免竖屏视频两侧大面积留黑
+const playerStyle = computed(() => {
+  const ratio = playerAspectRatio.value
+  if (!ratio) {
+    return undefined
+  }
+  return {
+    aspectRatio: String(ratio),
+    width: `min(100%, calc(70dvh * ${ratio}))`,
+  }
+})
+
+function handlePlayerMetadata(event: Event) {
+  const player = event.currentTarget
+  if (player instanceof HTMLVideoElement && player.videoWidth > 0 && player.videoHeight > 0) {
+    playerAspectRatio.value = player.videoWidth / player.videoHeight
+  }
+}
 
 function videoID() {
   const id = Number(route.params.id)
@@ -23,6 +43,7 @@ function videoID() {
 }
 
 async function load() {
+  playerAspectRatio.value = undefined
   const id = videoID()
   if (!id) {
     video.value = undefined
@@ -74,9 +95,11 @@ watch(
         class="detail-player"
         :src="video.play_url"
         :poster="video.cover_url"
+        :style="playerStyle"
         controls
         playsinline
         preload="metadata"
+        @loadedmetadata="handlePlayerMetadata"
       >
         抱歉，你的浏览器不支持视频播放。
       </video>
@@ -152,6 +175,8 @@ watch(
   display: block;
   width: 100%;
   max-height: 70dvh;
+  margin-inline: auto;
+  object-fit: contain;
   background: #080b0c;
 }
 
