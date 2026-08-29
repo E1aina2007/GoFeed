@@ -211,48 +211,55 @@ onBeforeUnmount(() => {
     </section>
 
     <section v-else-if="videos.length" class="video-stream" aria-label="视频列表">
-      <article v-for="video in videos" :key="video.id" class="short-video">
-        <video
-          :ref="(element) => registerPlayer(video.id, element as Element | null)"
-          class="short-video__player"
-          :poster="video.cover_url"
-          :src="video.play_url"
-          controls
-          controlslist="nodownload noplaybackrate"
-          loop
-          muted
-          playsinline
-          preload="metadata"
-        >
-          抱歉，你的浏览器不支持视频播放。
-        </video>
-        <div class="short-video__meta">
-          <RouterLink
-            class="short-video__author"
-            :to="{ name: 'user-profile', params: { id: video.author.id } }"
+      <article
+        v-for="video in videos"
+        :key="video.id"
+        class="short-video"
+        :style="{ '--feed-cover': `url(${video.cover_url})` }"
+      >
+        <div class="short-video__stage">
+          <video
+            :ref="(element) => registerPlayer(video.id, element as Element | null)"
+            class="short-video__player"
+            :poster="video.cover_url"
+            :src="video.play_url"
+            controls
+            controlslist="nodownload noplaybackrate"
+            loop
+            muted
+            playsinline
+            preload="metadata"
           >
-            @{{ video.author.username }}
-          </RouterLink>
-          <h2>
-            <RouterLink :to="{ name: 'video-detail', params: { id: video.id } }">{{
-              video.title
-            }}</RouterLink>
-          </h2>
-          <p v-if="video.description" class="short-video__description">{{ video.description }}</p>
-        </div>
-        <div class="short-video__actions" aria-label="视频互动">
-          <LikeButton
-            :video-id="video.id"
-            :likes-count="video.likes_count"
-            :comments-count="video.comments_count"
-            variant="overlay"
-          />
-          <RouterLink
-            class="short-video__comments"
-            :to="{ name: 'video-detail', params: { id: video.id } }"
-          >
-            评论 {{ video.comments_count }}
-          </RouterLink>
+            抱歉，你的浏览器不支持视频播放。
+          </video>
+          <div class="short-video__meta">
+            <RouterLink
+              class="short-video__author"
+              :to="{ name: 'user-profile', params: { id: video.author.id } }"
+            >
+              @{{ video.author.username }}
+            </RouterLink>
+            <h2>
+              <RouterLink :to="{ name: 'video-detail', params: { id: video.id } }">{{
+                video.title
+              }}</RouterLink>
+            </h2>
+            <p v-if="video.description" class="short-video__description">{{ video.description }}</p>
+          </div>
+          <div class="short-video__actions" aria-label="视频互动">
+            <LikeButton
+              :video-id="video.id"
+              :likes-count="video.likes_count"
+              :comments-count="video.comments_count"
+              variant="overlay"
+            />
+            <RouterLink
+              class="short-video__comments"
+              :to="{ name: 'video-detail', params: { id: video.id } }"
+            >
+              评论 {{ video.comments_count }}
+            </RouterLink>
+          </div>
         </div>
       </article>
 
@@ -302,27 +309,44 @@ onBeforeUnmount(() => {
 
 .short-video {
   position: relative;
-  min-height: calc(100dvh - 60px);
+  height: calc(100dvh - 60px);
   overflow: hidden;
   background: #171a1e;
   scroll-snap-align: start;
   scroll-snap-stop: always;
 }
 
+/* 参考抖音：contain 留出的区域用模糊压暗的封面填充，任何宽高比都不裁切 */
+.short-video::before {
+  content: '';
+  position: absolute;
+  inset: -24px;
+  background: var(--feed-cover) center / cover no-repeat;
+  filter: blur(32px) brightness(0.45);
+  transform: scale(1.1);
+}
+
+/* 播放舞台：桌面端收敛为手机比例的居中列，移动端铺满视口 */
+.short-video__stage {
+  position: relative;
+  width: min(100%, calc((100dvh - 60px) * 9 / 16));
+  height: 100%;
+  margin-inline: auto;
+}
+
 .short-video__player {
   display: block;
   width: 100%;
-  height: calc(100dvh - 60px);
-  background: #000000;
-  object-fit: cover;
+  height: 100%;
+  background: transparent;
+  object-fit: contain;
 }
 
 .short-video__meta {
   position: absolute;
-  right: max(112px, calc((100vw - 1180px) / 2));
+  right: 96px;
   bottom: 100px;
-  left: max(24px, calc((100vw - 1180px) / 2));
-  max-width: 680px;
+  left: 24px;
   color: #ffffff;
   pointer-events: none;
   text-shadow:
@@ -332,7 +356,7 @@ onBeforeUnmount(() => {
 
 .short-video__actions {
   position: absolute;
-  right: max(24px, calc((100vw - 1180px) / 2));
+  right: 16px;
   bottom: 96px;
   display: grid;
   gap: 8px;
@@ -482,10 +506,14 @@ onBeforeUnmount(() => {
 @media (max-width: 900px) {
   .short-feed,
   .short-video,
-  .short-video__player,
+  .short-video__stage,
   .feed-message {
     min-height: calc(100dvh - 102px);
     height: calc(100dvh - 102px);
+  }
+
+  .short-video__stage {
+    width: 100%;
   }
 
   .short-video__meta {
