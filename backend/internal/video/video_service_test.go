@@ -19,6 +19,7 @@ type fakeVideoReader struct {
 	listAuthorID      uint
 	listCursor        *Cursor
 	listLimit         int
+	listCalls         int
 	getAny            *Video
 	created           *Video
 	createErr         error
@@ -43,6 +44,7 @@ func (r *fakeVideoReader) GetPublishedByID(_ context.Context, _ uint) (*Video, e
 // 测试目标：模拟已发布视频列表读取
 // 预期效果：记录查询参数并返回预设的视频列表
 func (r *fakeVideoReader) GetPublishedVideoList(_ context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error) {
+	r.listCalls++
 	r.listAuthorID = authorID
 	r.listCursor = cursor
 	r.listLimit = limit
@@ -170,6 +172,7 @@ func (r *fakeVideoReader) GetByID(_ context.Context, id uint) (*Video, error) {
 // 测试目标：模拟作者视频列表读取
 // 预期效果：记录查询参数并返回预设的作者视频列表
 func (r *fakeVideoReader) GetAuthorVideoList(_ context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error) {
+	r.listCalls++
 	r.listAuthorID = authorID
 	r.listCursor = cursor
 	r.listLimit = limit
@@ -265,7 +268,8 @@ func TestServiceListPublishedUsesExtraRecordForCursor(t *testing.T) {
 		t.Fatalf("分页响应错误 got items=%#v nextCursor=%q want two items ending at id=2 with next cursor", response.Items, response.NextCursor)
 	}
 	cursor, err := decodeCursor(response.NextCursor)
-	if err != nil || cursor.ID != 2 || !cursor.PublishedAt.Equal(publishedAt.Add(-time.Second)) {
+	if err != nil || cursor.Version != currentCursorVersion || cursor.Kind != CursorKindAuthor || cursor.AuthorID != 9 ||
+		cursor.ID != 2 || !cursor.PublishedAt.Equal(publishedAt.Add(-time.Second)) {
 		t.Fatalf("下一页游标错误 got cursor=%#v error=%v want id=2 publishedAt=%s", cursor, err, publishedAt.Add(-time.Second))
 	}
 	if authors.calls[2] != 1 {
@@ -549,5 +553,9 @@ func TestServiceListMinePassesExtraRecordForCursor(t *testing.T) {
 	}
 	if len(response.Items) != 2 || response.Items[1].ID != 2 || response.NextCursor == "" {
 		t.Fatalf("我的视频分页错误 got=%#v", response)
+	}
+	cursor, err := decodeCursor(response.NextCursor)
+	if err != nil || cursor.Version != currentCursorVersion || cursor.Kind != CursorKindMine || cursor.AuthorID != 2 {
+		t.Fatalf("我的视频游标范围错误 got cursor=%#v error=%v", cursor, err)
 	}
 }

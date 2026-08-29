@@ -16,9 +16,26 @@ import (
 )
 
 const (
-	DefaultListLimit = 20
-	MaxListLimit     = 50
+	DefaultListLimit     = 20
+	MaxListLimit         = 50
+	currentCursorVersion = 1
 )
+
+type cursorScope struct {
+	kind     CursorKind
+	authorID uint
+}
+
+func publicCursorScope(authorID uint) cursorScope {
+	if authorID == 0 {
+		return cursorScope{kind: CursorKindPublic}
+	}
+	return cursorScope{kind: CursorKindAuthor, authorID: authorID}
+}
+
+func mineCursorScope(authorID uint) cursorScope {
+	return cursorScope{kind: CursorKindMine, authorID: authorID}
+}
 
 var (
 	ErrInvalidVideoID          = errors.New("invalid video id")
@@ -225,8 +242,12 @@ func (s *Service) GetPublishedVideoList(ctx context.Context, authorID uint, enco
 	if err != nil {
 		return ListResponse{}, err
 	}
+	scope := publicCursorScope(authorID)
 	cursor, err := decodeCursor(encodedCursor)
 	if err != nil {
+		return ListResponse{}, err
+	}
+	if err := validateCursorScope(cursor, scope); err != nil {
 		return ListResponse{}, err
 	}
 
@@ -234,7 +255,7 @@ func (s *Service) GetPublishedVideoList(ctx context.Context, authorID uint, enco
 	if err != nil {
 		return ListResponse{}, err
 	}
-	return s.buildListResponse(ctx, videos, limit)
+	return s.buildListResponse(ctx, videos, limit, scope)
 }
 
 // GetMyVideoList 返回当前用户已发布的视频管理列表
@@ -251,8 +272,12 @@ func (s *Service) GetMyVideoList(ctx context.Context, authorID uint, encodedCurs
 	if err != nil {
 		return ListResponse{}, err
 	}
+	scope := mineCursorScope(authorID)
 	cursor, err := decodeCursor(encodedCursor)
 	if err != nil {
+		return ListResponse{}, err
+	}
+	if err := validateCursorScope(cursor, scope); err != nil {
 		return ListResponse{}, err
 	}
 
@@ -260,7 +285,7 @@ func (s *Service) GetMyVideoList(ctx context.Context, authorID uint, encodedCurs
 	if err != nil {
 		return ListResponse{}, err
 	}
-	return s.buildListResponse(ctx, videos, limit)
+	return s.buildListResponse(ctx, videos, limit, scope)
 }
 
 // DeleteVideo 仅作者本人可软删除自己的已发布视频
@@ -295,7 +320,7 @@ func (s *Service) DeleteVideo(ctx context.Context, id, authorID uint) error {
 }
 
 // buildListResponse 构建视频列表响应，包含作者资料与分页游标
-func (s *Service) buildListResponse(ctx context.Context, videos []Video, limit int) (ListResponse, error) {
+func (s *Service) buildListResponse(ctx context.Context, videos []Video, limit int, scope cursorScope) (ListResponse, error) {
 	// 仓储查询已按公开条件过滤，这里再做一次实体级检查，防止替代实现或并发快照
 	// 把残缺记录映射成半完整的公开响应
 	videos = filterPublicVideos(videos)
@@ -335,6 +360,9 @@ func (s *Service) buildListResponse(ctx context.Context, videos []Video, limit i
 			return ListResponse{}, fmt.Errorf("published video %d has no publication time", last.ID)
 		}
 		next, err := encodeCursor(&Cursor{
+			Version:     currentCursorVersion,
+			Kind:        scope.kind,
+			AuthorID:    scope.authorID,
 			PublishedAt: *last.PublishedAt,
 			ID:          last.ID,
 		})
@@ -472,7 +500,7 @@ func normalizeLimit(limit int) (int, error) {
 
 // 编码分页游标
 func encodeCursor(cursor *Cursor) (string, error) {
-	if cursor == nil || cursor.ID == 0 || cursor.PublishedAt.IsZero() {
+	if !validCursorFields(cursor) {
 		return "", ErrInvalidCursor
 	}
 
@@ -494,12 +522,55 @@ func decodeCursor(encoded string) (*Cursor, error) {
 		return nil, ErrInvalidCursor
 	}
 
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return nil, ErrInvalidCursor
+	}
+	for field := range fields {
+		switch field {
+		case "v", "k", "a", "p", "i":
+		default:
+			return nil, ErrInvalidCursor
+		}
+	}
+
 	var cursor Cursor
 	if err := json.Unmarshal(payload, &cursor); err != nil {
 		return nil, ErrInvalidCursor
 	}
-	if cursor.ID == 0 || cursor.PublishedAt.IsZero() {
+	if cursor.Kind == CursorKindPublic {
+		if _, ok := fields["a"]; ok {
+			return nil, ErrInvalidCursor
+		}
+	} else if _, ok := fields["a"]; !ok {
+		return nil, ErrInvalidCursor
+	}
+	if !validCursorFields(&cursor) {
 		return nil, ErrInvalidCursor
 	}
 	return &cursor, nil
+}
+
+func validCursorFields(cursor *Cursor) bool {
+	if cursor == nil || cursor.Version != currentCursorVersion || cursor.ID == 0 || cursor.PublishedAt.IsZero() {
+		return false
+	}
+	switch cursor.Kind {
+	case CursorKindPublic:
+		return cursor.AuthorID == 0
+	case CursorKindAuthor, CursorKindMine:
+		return cursor.AuthorID != 0
+	default:
+		return false
+	}
+}
+
+func validateCursorScope(cursor *Cursor, scope cursorScope) error {
+	if cursor == nil {
+		return nil
+	}
+	if cursor.Kind != scope.kind || cursor.AuthorID != scope.authorID {
+		return ErrInvalidCursor
+	}
+	return nil
 }
