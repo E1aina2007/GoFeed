@@ -4,6 +4,7 @@ import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
 import { clearSession, login } from '@/features/auth/session'
+import { useConfirmStore } from '@/stores/confirm'
 import CommentSection from '../CommentSection.vue'
 
 function jsonResponse(body: unknown, status = 200) {
@@ -25,11 +26,13 @@ async function mountSection(videoId = 80, commentsCount = 0) {
   await router.push({ name: 'video-detail', params: { id: videoId } })
   await router.isReady()
 
+  const pinia = createPinia()
   return {
     router,
+    confirmStore: useConfirmStore(pinia),
     wrapper: mount(CommentSection, {
       props: { videoId, commentsCount },
-      global: { plugins: [createPinia(), router] },
+      global: { plugins: [pinia, router] },
     }),
   }
 }
@@ -92,10 +95,9 @@ describe('CommentSection', () => {
       )
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
     vi.stubGlobal('fetch', fetchMock)
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     await login({ username: 'alice', password: 'password-123' })
 
-    const { wrapper } = await mountSection(81, 1)
+    const { confirmStore, wrapper } = await mountSection(81, 1)
     await flushPromises()
     await wrapper.get('textarea').setValue('我的评论')
     await wrapper.get('form').trigger('submit')
@@ -104,6 +106,10 @@ describe('CommentSection', () => {
     expect(wrapper.text()).toContain('评论 2')
     expect(wrapper.text()).toContain('我的评论')
     await wrapper.get('.delete-comment').trigger('click')
+    await flushPromises()
+    expect(confirmStore.open).toBe(true)
+
+    confirmStore.accept()
     await flushPromises()
 
     expect(wrapper.text()).toContain('评论 1')

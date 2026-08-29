@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { ApiError } from '@/lib/api'
+import { useDialogA11y } from '@/lib/dialog'
 
 import { getFollowerList, getFollowingList, type FollowListItem } from './api'
 
@@ -24,6 +25,7 @@ const nextCursor = ref<string>()
 const isLoading = ref(false)
 const isLoadingMore = ref(false)
 const errorMessage = ref('')
+const dialogRef = ref<HTMLElement | null>(null)
 let listRequestID = 0
 
 const title = computed(() => (props.mode === 'followers' ? '粉丝' : '关注'))
@@ -107,12 +109,18 @@ watch(
   },
   { immediate: true },
 )
+
+useDialogA11y(
+  () => props.open,
+  dialogRef,
+  close,
+)
 </script>
 
 <template>
   <Teleport to="body">
     <section v-if="open" class="follow-dialog-backdrop" role="presentation" @click.self="close">
-      <div class="follow-dialog" role="dialog" aria-modal="true" :aria-label="`${title}列表`">
+      <div ref="dialogRef" class="follow-dialog" role="dialog" aria-modal="true" tabindex="-1" :aria-label="`${title}列表`">
         <header class="follow-dialog__header">
           <div class="follow-tabs" role="tablist" aria-label="关系列表">
             <button

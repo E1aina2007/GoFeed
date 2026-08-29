@@ -129,4 +129,62 @@ describe('follow controls', () => {
     )
     wrapper.unmount()
   })
+
+  it('traps keyboard focus inside the dialog and restores it on close', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        items: [
+          {
+            user: { id: 3, username: 'bob' },
+            followed_at: '2026-08-26T08:00:00Z',
+          },
+        ],
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const router = await createTestRouter()
+    const wrapper = mount(FollowListDialog, {
+      props: { open: false, userId: 90, mode: 'followers' },
+      global: { plugins: [router] },
+      attachTo: document.body,
+    })
+
+    const trigger = document.createElement('button')
+    trigger.textContent = '打开列表'
+    document.body.append(trigger)
+    trigger.focus()
+    expect(document.activeElement).toBe(trigger)
+
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+
+    const tabButtons = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.follow-tabs__item'))
+    const [firstTab] = tabButtons
+    const followLink = document.body.querySelector<HTMLAnchorElement>('.follow-user')
+    if (!firstTab || !followLink) {
+      throw new Error('对话框应渲染可聚焦的标签页与列表项')
+    }
+    expect(document.activeElement).toBe(firstTab)
+
+    // 焦点在首个元素上按 Shift+Tab 应回绕到对话框末尾的关注链接
+    firstTab.focus()
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true }))
+    expect(document.activeElement).toBe(followLink)
+
+    // 焦点在末尾元素上按 Tab 应回到对话框开头
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }))
+    expect(document.activeElement).toBe(firstTab)
+
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    const closeEvents = wrapper.emitted('update:open') ?? []
+    expect(closeEvents[closeEvents.length - 1]).toEqual([false])
+
+    await wrapper.setProps({ open: false })
+    await flushPromises()
+    expect(document.activeElement).toBe(trigger)
+
+    trigger.remove()
+    wrapper.unmount()
+  })
 })

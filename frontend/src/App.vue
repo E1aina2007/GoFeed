@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { RouterLink, RouterView, useRouter } from 'vue-router'
 
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import ToastHost from '@/components/ToastHost.vue'
 import { currentUser, isAuthenticated, logout } from '@/features/auth/session'
 
@@ -73,6 +74,7 @@ async function handleLogout() {
     </div>
 
     <ToastHost />
+    <ConfirmDialog />
   </div>
 </template>
 

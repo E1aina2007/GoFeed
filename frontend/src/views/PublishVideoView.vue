@@ -12,6 +12,7 @@ import {
   type DraftItem,
 } from '@/features/video/api'
 import { ApiError } from '@/lib/api'
+import { useConfirmStore } from '@/stores/confirm'
 import { useToastStore } from '@/stores/toast'
 
 const maxVideoSize = 200 * 1024 * 1024
@@ -24,6 +25,7 @@ type PublishingOperation =
 
 const router = useRouter()
 const toast = useToastStore()
+const confirmStore = useConfirmStore()
 const title = ref('')
 const description = ref('')
 const videoFile = ref<File>()
@@ -436,7 +438,13 @@ async function discardCurrentDraft() {
   if (!draft) {
     return true
   }
-  if (!window.confirm('放弃草稿后将无法继续上传或发布，确定继续吗？')) {
+  const confirmed = await confirmStore.confirm({
+    title: '放弃草稿',
+    message: '放弃草稿后将无法继续上传或发布，确定继续吗？',
+    confirmText: '放弃草稿',
+    danger: true,
+  })
+  if (!confirmed) {
     return false
   }
 

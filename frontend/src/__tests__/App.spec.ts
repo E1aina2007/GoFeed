@@ -11,6 +11,7 @@ describe('App', () => {
           RouterLink: { template: '<a><slot /></a>' },
           RouterView: { template: '<div />' },
           ToastHost: { template: '<div />' },
+          ConfirmDialog: { template: '<div />' },
         },
       },
     })

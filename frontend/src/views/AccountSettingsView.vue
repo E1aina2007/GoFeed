@@ -5,10 +5,12 @@ import { useRouter } from 'vue-router'
 import { clearSession, currentUser } from '@/features/auth/session'
 import { deleteAccount, updateName, updatePassword, updateProfile, uploadAvatar } from '@/features/user/api'
 import { ApiError } from '@/lib/api'
+import { useConfirmStore } from '@/stores/confirm'
 import { useToastStore } from '@/stores/toast'
 
 const router = useRouter()
 const toast = useToastStore()
+const confirmStore = useConfirmStore()
 const name = ref(currentUser.value?.username ?? '')
 const avatarInput = ref<HTMLInputElement>()
 const avatarFile = ref<File>()
@@ -144,7 +146,13 @@ async function savePassword() {
 }
 
 async function removeAccount() {
-  if (!window.confirm('注销后账号将立即从公开页面消失，确定继续吗？')) {
+  const confirmed = await confirmStore.confirm({
+    title: '注销账号',
+    message: '注销后账号将立即从公开页面消失，确定继续吗？',
+    confirmText: '注销',
+    danger: true,
+  })
+  if (!confirmed) {
     return
   }
   isDeleting.value = true

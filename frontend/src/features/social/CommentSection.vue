@@ -4,6 +4,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { currentUser, isAuthenticated } from '@/features/auth/session'
 import { ApiError } from '@/lib/api'
+import { useConfirmStore } from '@/stores/confirm'
 import { useToastStore } from '@/stores/toast'
 
 import { createComment, getCommentList, removeComment, type CommentItem } from './api'
@@ -17,6 +18,7 @@ const props = defineProps<{
 const route = useRoute()
 const router = useRouter()
 const toast = useToastStore()
+const confirmStore = useConfirmStore()
 const comments = ref<CommentItem[]>([])
 const nextCursor = ref<string>()
 const isLoading = ref(false)
@@ -129,7 +131,13 @@ async function deleteComment(comment: CommentItem) {
   if (!ownsComment(comment) || deletingCommentID.value) {
     return
   }
-  if (!window.confirm('确定删除这条评论吗？')) {
+  const confirmed = await confirmStore.confirm({
+    title: '删除评论',
+    message: '确定删除这条评论吗？',
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!confirmed) {
     return
   }
 

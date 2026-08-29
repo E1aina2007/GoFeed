@@ -4,10 +4,12 @@ import { computed, onMounted, ref } from 'vue'
 import VideoListItem from '@/components/VideoListItem.vue'
 import { deleteVideo, listMyVideos, type VideoItem } from '@/features/video/api'
 import { ApiError } from '@/lib/api'
+import { useConfirmStore } from '@/stores/confirm'
 import { useToastStore } from '@/stores/toast'
 
 const videos = ref<VideoItem[]>([])
 const toast = useToastStore()
+const confirmStore = useConfirmStore()
 const nextCursor = ref<string>()
 const isLoading = ref(true)
 const isLoadingMore = ref(false)
@@ -53,7 +55,13 @@ async function loadMore() {
 }
 
 async function removeVideo(video: VideoItem) {
-  if (!window.confirm(`确定删除“${video.title}”吗？`)) {
+  const confirmed = await confirmStore.confirm({
+    title: '删除视频',
+    message: `确定删除“${video.title}”吗？删除后 7 天内不可恢复。`,
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!confirmed) {
     return
   }
   actionMessage.value = ''

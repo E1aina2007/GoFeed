@@ -13,6 +13,7 @@ import {
   type DraftItem,
 } from '@/features/video/api'
 import { ApiError } from '@/lib/api'
+import { useConfirmStore } from '@/stores/confirm'
 import PublishVideoView from '../PublishVideoView.vue'
 
 const routerReplace = vi.hoisted(() => vi.fn<Router['replace']>())
@@ -542,10 +543,11 @@ describe('PublishVideoView', () => {
     vi.mocked(uploadVideo).mockRejectedValue(new ApiError(0, '网络连接失败，请检查网络后重试'))
     vi.mocked(getDraft).mockResolvedValue({ draft: draft() })
     vi.mocked(discardDraft).mockResolvedValue({ draft: draft({ status: 'purging' }) })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
 
+    const pinia = createPinia()
+    const confirmStore = useConfirmStore(pinia)
     const wrapper = mount(PublishVideoView, {
-      global: { plugins: [createPinia()], stubs: { RouterLink: true } },
+      global: { plugins: [pinia], stubs: { RouterLink: true } },
     })
     const fields = wrapper.findAll('input')
     const video = new File(['video'], 'local.mp4', { type: 'video/mp4' })
@@ -559,6 +561,10 @@ describe('PublishVideoView', () => {
     await flushPromises()
 
     await wrapper.get('.cancel-link').trigger('click')
+    await flushPromises()
+    expect(confirmStore.open).toBe(true)
+
+    confirmStore.accept()
     await flushPromises()
 
     expect(discardDraft).toHaveBeenCalledWith(7)
