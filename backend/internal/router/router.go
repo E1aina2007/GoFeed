@@ -21,6 +21,9 @@ type Options struct {
 	UploadDir string
 	// ReadinessCheck 覆盖默认的 MySQL 就绪检查，主要用于隔离路由测试
 	ReadinessCheck observability.ReadinessCheck
+	// Middlewares 附加的全局中间件，在请求日志与恢复中间件之后注册
+	// 主要用于测试注入查询计数等观测探针
+	Middlewares []gin.HandlerFunc
 }
 
 func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
@@ -37,6 +40,9 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 
 	r := gin.New()
 	r.Use(observability.RequestLogger(), gin.Recovery())
+	for _, middleware := range opts.Middlewares {
+		r.Use(middleware)
+	}
 
 	// 注册通用中间件
 
