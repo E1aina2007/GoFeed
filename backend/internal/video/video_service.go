@@ -46,6 +46,7 @@ var (
 	ErrNotAuthor               = errors.New("only the author can modify this video")
 	ErrRepositoryUnavailable   = errors.New("video repository unavailable")
 	ErrAuthorReaderUnavailable = errors.New("author reader unavailable")
+	ErrEngagementUnavailable   = errors.New("engagement stats unavailable")
 	ErrDraftNotWritable        = errors.New("video draft is not writable")
 	ErrDraftIncomplete         = errors.New("video draft is incomplete")
 )
@@ -450,7 +451,9 @@ func (s *Service) engagements(ctx context.Context, videos []Video) (map[uint]Eng
 	}
 	actual, err := s.engagementReader.GetEngagementCounts(ctx, ids)
 	if err != nil {
-		return nil, err
+		// 统计查询失败按服务不可用整体失败，禁止用零计数或实体列兜底值伪装成功响应
+		// 双重 %w 同时保留哨兵错误与底层原因，供状态映射与日志追溯
+		return nil, fmt.Errorf("%w: %w", ErrEngagementUnavailable, err)
 	}
 	for _, id := range ids {
 		if value, ok := actual[id]; ok {

@@ -3,6 +3,7 @@ package video
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -611,5 +612,39 @@ func TestHandlerMineRequiresAuth(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("未登录访问我的视频未被拒绝 status got=%d want=401", w.Code)
+	}
+}
+
+// 测试目标：验证互动统计查询失败经控制器映射为服务不可用
+// 预期效果：详情接口返回 503 与固定文案，且不回显底层错误细节
+func TestHandlerGetVideoEngagementUnavailable(t *testing.T) {
+	cause := errors.New("engagement database unavailable")
+	ctl := NewController(
+		NewService(
+			&fakeVideoReader{getVideo: &Video{
+				ID: 1, AuthorID: 2, Status: VideoStatusPublished,
+				PlayURL: "play", PlayFileName: "play.mp4", PlayOriginalName: "play.mp4",
+				CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "cover.png",
+				PublishedAt: timePtr(time.Now()),
+			}},
+			&fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "u"}}},
+			&fakeEngagementReader{err: cause},
+		),
+		NewLocalStorage(t.TempDir()),
+	)
+
+	r := gin.New()
+	r.GET("/api/video/:id", ctl.GetVideo)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/video/1", nil))
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("统计失败状态错误 got=%d want=503 body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), cause.Error()) {
+		t.Fatalf("响应不应回显底层错误细节 body=%s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "engagement stats temporarily unavailable") {
+		t.Fatalf("响应应返回固定文案 body=%s", w.Body.String())
 	}
 }

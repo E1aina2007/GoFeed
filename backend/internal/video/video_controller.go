@@ -313,6 +313,9 @@ func handleVideoError(c *gin.Context, err error) {
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 	case errors.Is(err, ErrDraftNotWritable), errors.Is(err, ErrDraftIncomplete):
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	case errors.Is(err, ErrEngagementUnavailable):
+		// 统计暂不可用属于可重试的服务端临时故障，响应使用固定文案，不回显底层错误细节
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "engagement stats temporarily unavailable"})
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "video operation failed"})
 	}

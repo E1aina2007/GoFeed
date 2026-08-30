@@ -676,3 +676,98 @@ func TestServiceListPropagatesBatchAuthorError(t *testing.T) {
 		t.Fatal("批量作者读取失败应返回错误")
 	}
 }
+
+// 测试目标：模拟互动统计读取依赖
+// 预期效果：记录批量统计查询的视频标识并返回预设统计或错误
+type fakeEngagementReader struct {
+	counts map[uint]EngagementCounts
+	err    error
+	ids    []uint
+}
+
+// 测试目标：实现 EngagementReader 并记录批量统计查询参数
+// 预期效果：返回预设统计映射或预设错误
+func (r *fakeEngagementReader) GetEngagementCounts(_ context.Context, ids []uint) (map[uint]EngagementCounts, error) {
+	r.ids = append(r.ids, ids...)
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.counts, nil
+}
+
+// 测试目标：验证互动统计查询失败时读路径按不可用语义整体失败
+// 预期效果：公开列表、我的视频与详情均返回哨兵错误且保留底层原因
+func TestServiceEngagementFailureMarksUnavailable(t *testing.T) {
+	cause := errors.New("engagement database unavailable")
+	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
+	published := Video{
+		ID: 1, AuthorID: 2, Status: VideoStatusPublished,
+		PlayURL: "play", PlayFileName: "play.mp4", PlayOriginalName: "play.mp4",
+		CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "cover.png",
+		PublishedAt: timePtr(publishedAt),
+	}
+	repository := &fakeVideoReader{listVideos: []Video{published}, mineVideos: []Video{published}, getVideo: &published}
+	service := NewService(repository, &fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "u"}}}, &fakeEngagementReader{err: cause})
+
+	if _, err := service.GetPublishedVideoList(context.Background(), 0, "", 10); !errors.Is(err, ErrEngagementUnavailable) || !errors.Is(err, cause) {
+		t.Fatalf("公开列表统计失败应返回不可用错误 got=%v", err)
+	}
+	if _, err := service.GetMyVideoList(context.Background(), 2, "", 10); !errors.Is(err, ErrEngagementUnavailable) {
+		t.Fatalf("我的视频统计失败应返回不可用错误 got=%v", err)
+	}
+	if _, err := service.GetPublished(context.Background(), 1); !errors.Is(err, ErrEngagementUnavailable) || !errors.Is(err, cause) {
+		t.Fatalf("详情统计失败应返回不可用错误 got=%v", err)
+	}
+}
+
+// 测试目标：验证发布响应组装遇统计失败时保持不可用语义
+// 预期效果：发布事务已完成后统计读取失败返回哨兵错误，提示客户端改查公开详情
+func TestServicePublishResponseMarksEngagementUnavailable(t *testing.T) {
+	complete := &Video{
+		ID: 7, AuthorID: 2, Status: VideoStatusDraft,
+		PlayURL: "/static/videos/2/20260810/a.mp4", PlayFileName: "a.mp4", PlayOriginalName: "我的视频.mp4",
+		CoverURL: "/static/covers/2/20260810/c.png", CoverFileName: "c.png", CoverOriginalName: "封面.png",
+	}
+	repository := &fakeVideoReader{drafts: map[uint]*Video{7: complete}}
+	service := NewService(
+		repository,
+		&fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "u"}}},
+		&fakeEngagementReader{err: errors.New("engagement database unavailable")},
+	)
+
+	_, err := service.UpdateDraftPublication(context.Background(), 7, 2)
+	if !errors.Is(err, ErrEngagementUnavailable) {
+		t.Fatalf("发布响应统计失败应返回不可用错误 got=%v", err)
+	}
+	if complete.Status != VideoStatusPublished || complete.PublishedAt == nil {
+		t.Fatalf("发布状态转换应已发生 got=%#v", complete)
+	}
+}
+
+// 测试目标：验证正常路径下批量互动统计值逐项透出到列表响应
+// 预期效果：点赞与评论计数来自统计读取，未被故障路径污染
+func TestServiceListAppliesEngagementCounts(t *testing.T) {
+	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
+	service := NewService(
+		&fakeVideoReader{listVideos: []Video{
+			{ID: 1, AuthorID: 2, Status: VideoStatusPublished, PlayURL: "play", PlayFileName: "play.mp4", PlayOriginalName: "play.mp4", CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "cover.png", PublishedAt: timePtr(publishedAt)},
+			{ID: 2, AuthorID: 3, Status: VideoStatusPublished, PlayURL: "play", PlayFileName: "play.mp4", PlayOriginalName: "play.mp4", CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "cover.png", PublishedAt: timePtr(publishedAt)},
+		}},
+		&fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "a"}, 3: {ID: 3, Username: "b"}}},
+		&fakeEngagementReader{counts: map[uint]EngagementCounts{
+			1: {LikesCount: 3, CommentsCount: 5},
+			2: {LikesCount: 0, CommentsCount: 0},
+		}},
+	)
+
+	response, err := service.GetPublishedVideoList(context.Background(), 0, "", 10)
+	if err != nil {
+		t.Fatalf("查询视频列表失败 error=%v", err)
+	}
+	if response.Items[0].LikesCount != 3 || response.Items[0].CommentsCount != 5 {
+		t.Fatalf("统计值未透出 got=%+v", response.Items[0])
+	}
+	if response.Items[1].LikesCount != 0 || response.Items[1].CommentsCount != 0 {
+		t.Fatalf("零计数应来自真实聚合结果 got=%+v", response.Items[1])
+	}
+}
