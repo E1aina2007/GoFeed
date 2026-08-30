@@ -11,6 +11,7 @@ import (
 	"gofeed/internal/testutil"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // queryCapture 按请求顺序记录请求内数据库查询次数，供预算断言读取
@@ -48,7 +49,7 @@ func (q *queryCapture) snapshot() []int64 {
 
 // 测试目标：装配启用查询计数回调并注入计数探针的完整路由服务
 // 预期效果：预算断言可以读取每个请求在真实 MySQL 上的语句数量
-func newCountingTestServer(t *testing.T) (*httptest.Server, *http.Client, *queryCapture) {
+func newCountingTestServer(t *testing.T) (*httptest.Server, *http.Client, *queryCapture, *gorm.DB) {
 	t.Helper()
 	gdb := testutil.DB(t)
 	if err := db.RegisterQueryCounter(gdb); err != nil {
@@ -58,7 +59,7 @@ func newCountingTestServer(t *testing.T) (*httptest.Server, *http.Client, *query
 	engine := New(gdb, false, Options{UploadDir: t.TempDir(), Middlewares: []gin.HandlerFunc{capture.middleware()}})
 	srv := httptest.NewServer(engine)
 	t.Cleanup(srv.Close)
-	return srv, srv.Client(), capture
+	return srv, srv.Client(), capture, gdb
 }
 
 // 测试目标：断言单个请求的查询次数落在预算范围内
@@ -79,11 +80,11 @@ func assertQueryBudget(t *testing.T, capture *queryCapture, before int, budget i
 // 测试目标：验证公开 Feed 首页的数据库查询收敛在预算内
 // 预期效果：列表请求最多执行视频、作者、点赞、评论各一次共四条语句
 func TestPublicListQueryBudget(t *testing.T) {
-	srv, client, capture := newCountingTestServer(t)
+	srv, client, capture, gdb := newCountingTestServer(t)
 	base := srv.URL
 	register(t, client, base, "budget-author", "budget-author-password")
 	session := login(t, client, base, "budget-author", "budget-author-password")
-	publishCompleteVideo(t, client, base, session.AccessToken, "预算列表视频")
+	publishCompleteVideo(t, gdb, client, base, session.AccessToken, "预算列表视频")
 
 	capture.reset()
 	before := len(capture.snapshot())
@@ -100,11 +101,11 @@ func TestPublicListQueryBudget(t *testing.T) {
 // 测试目标：验证公开视频详情的数据库查询收敛在预算内
 // 预期效果：详情请求最多执行视频、作者与两类聚合共四条语句
 func TestPublicDetailQueryBudget(t *testing.T) {
-	srv, client, capture := newCountingTestServer(t)
+	srv, client, capture, gdb := newCountingTestServer(t)
 	base := srv.URL
 	register(t, client, base, "budget-detail-author", "budget-detail-password")
 	session := login(t, client, base, "budget-detail-author", "budget-detail-password")
-	video := publishCompleteVideo(t, client, base, session.AccessToken, "预算详情视频")
+	video := publishCompleteVideo(t, gdb, client, base, session.AccessToken, "预算详情视频")
 
 	capture.reset()
 	before := len(capture.snapshot())

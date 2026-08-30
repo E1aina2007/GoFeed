@@ -9,7 +9,7 @@ import (
 // 测试目标：验证账号注销后历史视频仍可读取且作者显示为占位名
 // 预期效果：视频详情和作者列表均返回注销用户的占位信息
 func TestVideoSurvivesAuthorDeletion(t *testing.T) {
-	srv, client := newTestServer(t)
+	srv, client, gdb := newTestServer(t)
 	base := srv.URL
 
 	register(t, client, base, "tombstone_author", "tombstone-password-123")
@@ -18,7 +18,8 @@ func TestVideoSurvivesAuthorDeletion(t *testing.T) {
 	draft := createDraft(t, client, base, sess.AccessToken, "注销前的视频", "", http.StatusCreated)
 	uploadMedia(t, client, base, sess.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", draft.ID), "file", "a.mp4", mp4Bytes, http.StatusCreated)
 	uploadMedia(t, client, base, sess.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draft.ID), "file", "a.png", pngBytes, http.StatusCreated)
-	item := publishDraft(t, client, base, sess.AccessToken, draft.ID, http.StatusCreated)
+	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusCreated)
+	completeProcessing(t, gdb, item.ID)
 
 	// 注销账号并保留软删除记录
 	doJSON(t, client, http.MethodDelete, base+"/api/user/auth", sess.AccessToken, nil, http.StatusNoContent, nil)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -60,32 +61,53 @@ func (r *Repository) UpdateDraftMedia(ctx context.Context, draftID, authorID uin
 	})
 }
 
-// UpdateDraftPublication 原子验证草稿完整性并切换为公开可见状态
+// UpdateDraftPublication 原子验证草稿完整性并转入异步处理状态
+// 同一事务内完成条件更新 draft → processing、写入发布时刻与 outbox 事件；
+// processing 行不满足公开不变量，worker 校验通过后才会 CAS 为 published
 func (r *Repository) UpdateDraftPublication(ctx context.Context, draftID, authorID uint) (*Video, error) {
 	if draftID == 0 || authorID == 0 {
 		return nil, ErrInvalidVideoID
 	}
 
-	var published Video
+	var processing Video
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&published, draftID).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&processing, draftID).Error; err != nil {
 			return err
 		}
-		if published.AuthorID != authorID {
+		if processing.AuthorID != authorID {
 			return ErrNotAuthor
 		}
-		if published.Status != VideoStatusDraft {
+		if processing.Status != VideoStatusDraft {
 			return ErrDraftNotWritable
 		}
-		if published.PlayURL == "" || published.PlayFileName == "" || published.PlayOriginalName == "" ||
-			published.CoverURL == "" || published.CoverFileName == "" || published.CoverOriginalName == "" {
+		if processing.PlayURL == "" || processing.PlayFileName == "" || processing.PlayOriginalName == "" ||
+			processing.CoverURL == "" || processing.CoverFileName == "" || processing.CoverOriginalName == "" {
 			return ErrDraftIncomplete
 		}
 
 		publishedAt := time.Now()
-		published.Status = VideoStatusPublished
-		published.PublishedAt = &publishedAt
-		return tx.Save(&published).Error
+		// 条件更新保证 draft → processing 的 CAS 语义，并发或重复发布在此失败
+		result := tx.Model(&Video{}).
+			Where("id = ? AND status = ?", draftID, VideoStatusDraft).
+			Updates(map[string]any{
+				"status":       VideoStatusProcessing,
+				"published_at": publishedAt,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrDraftNotWritable
+		}
+		processing.Status = VideoStatusProcessing
+		processing.PublishedAt = &publishedAt
+
+		return tx.Create(&OutboxEvent{
+			EventID:   uuid.NewString(),
+			VideoID:   processing.ID,
+			EventType: VideoProcessEventType,
+			Status:    OutboxEventStatusPending,
+		}).Error
 	})
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -93,7 +115,7 @@ func (r *Repository) UpdateDraftPublication(ctx context.Context, draftID, author
 		}
 		return nil, err
 	}
-	return &published, nil
+	return &processing, nil
 }
 
 // UpdateDraftDiscard 原子将当前作者的可写草稿转入不可逆清扫状态

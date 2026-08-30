@@ -101,7 +101,7 @@ func (r *fakeVideoReader) UpdateDraftMedia(_ context.Context, draftID, authorID 
 }
 
 // 测试目标：模拟草稿发布状态转换
-// 预期效果：只有完整的作者草稿可转换为 published
+// 预期效果：只有完整的作者草稿可进入 processing，转换后写入发布时刻
 func (r *fakeVideoReader) UpdateDraftPublication(_ context.Context, draftID, authorID uint) (*Video, error) {
 	if r.publishErr != nil {
 		return nil, r.publishErr
@@ -120,7 +120,7 @@ func (r *fakeVideoReader) UpdateDraftPublication(_ context.Context, draftID, aut
 		draft.PlayOriginalName == "" || draft.CoverOriginalName == "" {
 		return nil, ErrDraftIncomplete
 	}
-	draft.Status = VideoStatusPublished
+	draft.Status = VideoStatusProcessing
 	draft.PublishedAt = timePtr(time.Now())
 	return draft, nil
 }
@@ -507,8 +507,11 @@ func TestServicePublishDraft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("发布草稿失败 error=%v", err)
 	}
-	if complete.Status != VideoStatusPublished || complete.PublishedAt == nil || complete.PublishedAt.IsZero() || item.PlayOriginalName != "我的视频.mp4" {
+	if complete.Status != VideoStatusProcessing || complete.PublishedAt == nil || complete.PublishedAt.IsZero() || item.PlayOriginalName != "我的视频.mp4" {
 		t.Fatalf("草稿发布结果错误 draft=%#v item=%#v", complete, item)
+	}
+	if item.ID != 7 || item.Author.Username != "author" {
+		t.Fatalf("发布响应应携带处理中的发布快照 got=%#v", item)
 	}
 	_, err = service.UpdateDraftPublication(context.Background(), 8, 2)
 	if !errors.Is(err, ErrDraftIncomplete) {
@@ -739,7 +742,7 @@ func TestServicePublishResponseMarksEngagementUnavailable(t *testing.T) {
 	if !errors.Is(err, ErrEngagementUnavailable) {
 		t.Fatalf("发布响应统计失败应返回不可用错误 got=%v", err)
 	}
-	if complete.Status != VideoStatusPublished || complete.PublishedAt == nil {
+	if complete.Status != VideoStatusProcessing || complete.PublishedAt == nil {
 		t.Fatalf("发布状态转换应已发生 got=%#v", complete)
 	}
 }

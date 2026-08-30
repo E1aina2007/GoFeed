@@ -11,13 +11,13 @@ import (
 // 测试目标：验证视频列表游标绑定全局、作者和当前用户查询范围
 // 预期效果：跨范围复用游标以及升级前旧格式均返回 400
 func TestVideoCursorScopeContract(t *testing.T) {
-	srv, client := newTestServer(t)
+	srv, client, gdb := newTestServer(t)
 	base := srv.URL
 
 	register(t, client, base, "cursor_contract", "cursor-contract-password-123")
 	sess := login(t, client, base, "cursor_contract", "cursor-contract-password-123")
-	publishCompleteVideo(t, client, base, sess.AccessToken, "游标范围视频一")
-	publishCompleteVideo(t, client, base, sess.AccessToken, "游标范围视频二")
+	publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "游标范围视频一")
+	publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "游标范围视频二")
 
 	var globalPage struct {
 		Items      []videoItem `json:"items"`

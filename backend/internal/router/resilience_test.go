@@ -65,8 +65,8 @@ func (f *faultInjection) disarm() {
 }
 
 // 测试目标：注册按表名短路语句执行的故障注入回调
-// 预期效果：内置 gorm:query、gorm:raw 与 gorm:row 回调因语句携带错误而跳过实际 SQL
-// 互动聚合经 Scan 走 Row 处理器，实体读取走 Query 处理器，三类读取都要覆盖
+// 预期效果：六类语句处理器均被覆盖，内置回调因语句携带错误而跳过实际 SQL
+// 互动聚合经 Scan 走 Row 处理器，outbox 插入走 Create 处理器，读写都要覆盖
 func registerFaultInjection(gdb *gorm.DB) error {
 	inject := func(tx *gorm.DB) {
 		if tx.Statement == nil || tx.Statement.Context == nil {
@@ -78,13 +78,21 @@ func registerFaultInjection(gdb *gorm.DB) error {
 		}
 		tx.AddError(target.err)
 	}
-	if err := gdb.Callback().Query().Before("gorm:query").Register("gofeed:test_fault_query", inject); err != nil {
-		return err
+	for _, registration := range []struct {
+		register func() error
+	}{
+		{func() error { return gdb.Callback().Query().Before("gorm:query").Register("gofeed:test_fault_query", inject) }},
+		{func() error { return gdb.Callback().Create().Before("gorm:create").Register("gofeed:test_fault_create", inject) }},
+		{func() error { return gdb.Callback().Update().Before("gorm:update").Register("gofeed:test_fault_update", inject) }},
+		{func() error { return gdb.Callback().Delete().Before("gorm:delete").Register("gofeed:test_fault_delete", inject) }},
+		{func() error { return gdb.Callback().Raw().Before("gorm:raw").Register("gofeed:test_fault_raw", inject) }},
+		{func() error { return gdb.Callback().Row().Before("gorm:row").Register("gofeed:test_fault_row", inject) }},
+	} {
+		if err := registration.register(); err != nil {
+			return err
+		}
 	}
-	if err := gdb.Callback().Raw().Before("gorm:raw").Register("gofeed:test_fault_raw", inject); err != nil {
-		return err
-	}
-	return gdb.Callback().Row().Before("gorm:row").Register("gofeed:test_fault_row", inject)
+	return nil
 }
 
 // 测试目标：装配启用故障注入回调的完整路由服务
@@ -125,8 +133,8 @@ func TestPublicListSameTimestampOrdering(t *testing.T) {
 	base := srv.URL
 	register(t, client, base, "same_ts_author", "same-ts-password-123")
 	sess := login(t, client, base, "same_ts_author", "same-ts-password-123")
-	first := publishCompleteVideo(t, client, base, sess.AccessToken, "同刻较早")
-	second := publishCompleteVideo(t, client, base, sess.AccessToken, "同刻较晚")
+	first := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "同刻较早")
+	second := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "同刻较晚")
 
 	// 两条视频强制共享同一精确发布时间，排序只剩标识倒序决定
 	sameTime := time.Date(2026, 8, 1, 8, 0, 0, 0, time.Local)
@@ -161,13 +169,13 @@ func TestPublicListSameTimestampOrdering(t *testing.T) {
 // 测试目标：验证翻页期间新增与软删除视频不产生重复或跳漏
 // 预期效果：旧游标翻页只返回游标之后的既有记录，新视频和被删记录不混入
 func TestFeedPagingDuringMutations(t *testing.T) {
-	srv, client, _, _ := newResilienceTestServer(t)
+	srv, client, _, gdb := newResilienceTestServer(t)
 	base := srv.URL
 	register(t, client, base, "mutation_author", "mutation-password-123")
 	sess := login(t, client, base, "mutation_author", "mutation-password-123")
-	oldest := publishCompleteVideo(t, client, base, sess.AccessToken, "翻页最旧")
-	middle := publishCompleteVideo(t, client, base, sess.AccessToken, "翻页中间")
-	newest := publishCompleteVideo(t, client, base, sess.AccessToken, "翻页最新")
+	oldest := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "翻页最旧")
+	middle := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "翻页中间")
+	newest := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "翻页最新")
 
 	var firstPage struct {
 		Items      []videoItem `json:"items"`
@@ -179,7 +187,7 @@ func TestFeedPagingDuringMutations(t *testing.T) {
 	}
 
 	// 翻页间隙新增更新的视频，旧游标之后不应出现该记录
-	during := publishCompleteVideo(t, client, base, sess.AccessToken, "翻页期间新增")
+	during := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "翻页期间新增")
 	var secondPage struct {
 		Items      []videoItem `json:"items"`
 		NextCursor string      `json:"next_cursor"`
@@ -205,11 +213,11 @@ func TestFeedPagingDuringMutations(t *testing.T) {
 // 测试目标：验证作者注销后公开列表与详情返回占位作者且不报错
 // 预期效果：软删除作者经完整 HTTP 路径映射为已注销用户占位资料
 func TestDeletedAuthorPlaceholderInPublicResponses(t *testing.T) {
-	srv, client, _, _ := newResilienceTestServer(t)
+	srv, client, _, gdb := newResilienceTestServer(t)
 	base := srv.URL
 	register(t, client, base, "gone_author", "gone-author-password-123")
 	sess := login(t, client, base, "gone_author", "gone-author-password-123")
-	video := publishCompleteVideo(t, client, base, sess.AccessToken, "注销作者的视频")
+	video := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "注销作者的视频")
 
 	doJSON(t, client, http.MethodDelete, base+"/api/user/auth", sess.AccessToken, nil, http.StatusNoContent, nil)
 
@@ -230,11 +238,11 @@ func TestDeletedAuthorPlaceholderInPublicResponses(t *testing.T) {
 // 测试目标：验证互动统计查询失败时公开读路径整体返回服务不可用
 // 预期效果：列表与详情返回 503 固定文案，不出现零计数的半组装响应
 func TestEngagementFailureReturnsServiceUnavailable(t *testing.T) {
-	srv, client, faults, _ := newResilienceTestServer(t)
+	srv, client, faults, gdb := newResilienceTestServer(t)
 	base := srv.URL
 	register(t, client, base, "stats_fault_author", "stats-fault-password-123")
 	sess := login(t, client, base, "stats_fault_author", "stats-fault-password-123")
-	video := publishCompleteVideo(t, client, base, sess.AccessToken, "统计故障视频")
+	video := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "统计故障视频")
 
 	faults.arm("video_likes", errors.New("injected engagement outage"))
 	defer faults.disarm()
@@ -259,11 +267,11 @@ func TestEngagementFailureReturnsServiceUnavailable(t *testing.T) {
 // 测试目标：验证数据库暂态失败时错误路径干净且无半组装响应
 // 预期效果：视频或作者读取被注入失败时统一返回 500 固定文案
 func TestInjectedDatabaseFailureYieldsCleanError(t *testing.T) {
-	srv, client, faults, _ := newResilienceTestServer(t)
+	srv, client, faults, gdb := newResilienceTestServer(t)
 	base := srv.URL
 	register(t, client, base, "db_fault_author", "db-fault-password-123")
 	sess := login(t, client, base, "db_fault_author", "db-fault-password-123")
-	video := publishCompleteVideo(t, client, base, sess.AccessToken, "暂态故障视频")
+	video := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "暂态故障视频")
 
 	faults.arm("videos", errors.New("injected database outage"))
 	var listBody map[string]any
@@ -294,11 +302,11 @@ func TestInjectedDatabaseFailureYieldsCleanError(t *testing.T) {
 // 测试目标：验证公开读接口对重复请求保持幂等
 // 预期效果：同一列表与详情的连续两次响应逐字节一致
 func TestRepeatedGetRequestsAreIdempotent(t *testing.T) {
-	srv, client, _, _ := newResilienceTestServer(t)
+	srv, client, _, gdb := newResilienceTestServer(t)
 	base := srv.URL
 	register(t, client, base, "idempotent_author", "idempotent-password-123")
 	sess := login(t, client, base, "idempotent_author", "idempotent-password-123")
-	video := publishCompleteVideo(t, client, base, sess.AccessToken, "幂等视频")
+	video := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "幂等视频")
 
 	listBody := getRawBody(t, client, base+"/api/video")
 	listReplay := getRawBody(t, client, base+"/api/video")

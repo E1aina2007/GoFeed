@@ -17,6 +17,8 @@ import (
 	"gofeed/internal/testutil"
 	"gofeed/internal/user"
 	videoModel "gofeed/internal/video"
+
+	"gorm.io/gorm"
 )
 
 // 测试目标：提供端到端媒体上传所需的最小文件头
@@ -97,13 +99,14 @@ func TestMain(m *testing.M) {
 }
 
 // 测试目标：装配独立测试库和临时上传目录的完整路由服务
-// 预期效果：返回可发送端到端请求的服务与客户端
-func newTestServer(t *testing.T) (*httptest.Server, *http.Client) {
+// 预期效果：返回可发送端到端请求的服务、客户端与数据库句柄
+func newTestServer(t *testing.T) (*httptest.Server, *http.Client, *gorm.DB) {
 	t.Helper()
-	engine := New(testutil.DB(t), false, Options{UploadDir: t.TempDir()})
+	db := testutil.DB(t)
+	engine := New(db, false, Options{UploadDir: t.TempDir()})
 	srv := httptest.NewServer(engine)
 	t.Cleanup(srv.Close)
-	return srv, srv.Client()
+	return srv, srv.Client(), db
 }
 
 // 测试目标：发送结构化请求并校验状态码
@@ -287,8 +290,8 @@ func createDraft(t *testing.T, client *http.Client, base, token, title, descript
 }
 
 // 测试目标：发布指定草稿
-// 预期效果：接口不接收客户端媒体元数据，只返回状态转换后的公开视频
-func publishDraft(t *testing.T, client *http.Client, base, token string, draftID uint, wantStatus int) videoItem {
+// 预期效果：接口不接收客户端媒体元数据，发布后行处于 processing 待处理状态
+func publishDraft(t *testing.T, gdb *gorm.DB, client *http.Client, base, token string, draftID uint, wantStatus int) videoItem {
 	t.Helper()
 	var out struct {
 		Video videoItem `json:"video"`
@@ -297,20 +300,34 @@ func publishDraft(t *testing.T, client *http.Client, base, token string, draftID
 	return out.Video
 }
 
+// 测试目标：模拟 R2 worker 校验通过后 processing → published 的状态流转
+// 预期效果：依赖发布后公开可见的既有用例保持原有验收语义
+func completeProcessing(t *testing.T, gdb *gorm.DB, videoID uint) {
+	t.Helper()
+	result := gdb.Model(&videoModel.Video{}).
+		Where("id = ? AND status = ?", videoID, videoModel.VideoStatusProcessing).
+		Update("status", videoModel.VideoStatusPublished)
+	if result.Error != nil || result.RowsAffected != 1 {
+		t.Fatalf("模拟处理完成失败 rows=%d err=%v", result.RowsAffected, result.Error)
+	}
+}
+
 // 测试目标：构造已上传完整媒体的公开视频
-// 预期效果：Feed 回归用例只关注公开读取行为，不重复展开上传细节
-func publishCompleteVideo(t *testing.T, client *http.Client, base, token, title string) videoItem {
+// 预期效果：发布后模拟处理完成，Feed 回归用例只关注公开读取行为
+func publishCompleteVideo(t *testing.T, gdb *gorm.DB, client *http.Client, base, token, title string) videoItem {
 	t.Helper()
 	draft := createDraft(t, client, base, token, title, "", http.StatusCreated)
 	uploadMedia(t, client, base, token, fmt.Sprintf("/api/video/auth/drafts/%d/play", draft.ID), "file", "feed.mp4", mp4Bytes, http.StatusCreated)
 	uploadMedia(t, client, base, token, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draft.ID), "file", "feed.png", pngBytes, http.StatusCreated)
-	return publishDraft(t, client, base, token, draft.ID, http.StatusCreated)
+	item := publishDraft(t, gdb, client, base, token, draft.ID, http.StatusCreated)
+	completeProcessing(t, gdb, item.ID)
+	return item
 }
 
 // 测试目标：验证视频从上传、发布、读取到删除的完整流程
 // 预期效果：媒体可访问，多个读取接口返回一致数据，删除后公开详情不可读取
 func TestVideoEndToEndFlow(t *testing.T) {
-	srv, client := newTestServer(t)
+	srv, client, gdb := newTestServer(t)
 	base := srv.URL
 
 	const username = "e2e_author"
@@ -350,7 +367,8 @@ func TestVideoEndToEndFlow(t *testing.T) {
 	}
 
 	// 发布后读取各接口，预期均返回同一条视频及其作者信息
-	item := publishDraft(t, client, base, sess.AccessToken, draft.ID, http.StatusCreated)
+	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusCreated)
+	completeProcessing(t, gdb, item.ID)
 	if item.ID == 0 || item.Title != "第一条视频" || item.Author.Username != username {
 		t.Fatalf("发布响应不正确 got=%+v", item)
 	}
@@ -451,12 +469,12 @@ func TestPublicRoutesExcludeIncompleteVideoRows(t *testing.T) {
 // 测试目标：验证点赞、评论和关注接口的完整互动流程
 // 预期效果：写入幂等且受认证和归属约束，视频与主页统计始终由关系表实时计算
 func TestSocialEndToEndFlow(t *testing.T) {
-	srv, client := newTestServer(t)
+	srv, client, gdb := newTestServer(t)
 	base := srv.URL
 
 	register(t, client, base, "social_author", "social-author-password-123")
 	author := login(t, client, base, "social_author", "social-author-password-123")
-	item := publishCompleteVideo(t, client, base, author.AccessToken, "互动测试视频")
+	item := publishCompleteVideo(t, gdb, client, base, author.AccessToken, "互动测试视频")
 
 	register(t, client, base, "social_viewer", "social-viewer-password-123")
 	viewer := login(t, client, base, "social_viewer", "social-viewer-password-123")
@@ -613,13 +631,13 @@ func TestSocialEndToEndFlow(t *testing.T) {
 // 测试目标：验证公开 Feed 的游标分页、草稿过滤和软删除可见性
 // 预期效果：最新发布的视频优先返回，下一页不重复，草稿和软删除视频不会公开
 func TestFeedRegressionCursorAndSoftDelete(t *testing.T) {
-	srv, client := newTestServer(t)
+	srv, client, gdb := newTestServer(t)
 	base := srv.URL
 
 	register(t, client, base, "feed_regression", "feed-regression-password-123")
 	sess := login(t, client, base, "feed_regression", "feed-regression-password-123")
-	older := publishCompleteVideo(t, client, base, sess.AccessToken, "较早发布的视频")
-	newer := publishCompleteVideo(t, client, base, sess.AccessToken, "较新发布的视频")
+	older := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "较早发布的视频")
+	newer := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "较新发布的视频")
 	createDraft(t, client, base, sess.AccessToken, "不应公开的草稿", "", http.StatusCreated)
 
 	var firstPage struct {
@@ -656,7 +674,7 @@ func TestFeedRegressionCursorAndSoftDelete(t *testing.T) {
 // 测试目标：验证公开用户资料实时统计当前公开可见的视频数量
 // 预期效果：发布后增加，软删除后立即减少，注销用户资料不可再读取
 func TestUserProfileVideoCount(t *testing.T) {
-	srv, client := newTestServer(t)
+	srv, client, gdb := newTestServer(t)
 	base := srv.URL
 
 	const username = "profile_video_author"
@@ -674,7 +692,8 @@ func TestUserProfileVideoCount(t *testing.T) {
 	draft := createDraft(t, client, base, sess.AccessToken, "用于资料统计的视频", "", http.StatusCreated)
 	uploadMedia(t, client, base, sess.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", draft.ID), "file", "profile.mp4", mp4Bytes, http.StatusCreated)
 	uploadMedia(t, client, base, sess.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draft.ID), "file", "profile.png", pngBytes, http.StatusCreated)
-	item := publishDraft(t, client, base, sess.AccessToken, draft.ID, http.StatusCreated)
+	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusCreated)
+	completeProcessing(t, gdb, item.ID)
 
 	doJSON(t, client, http.MethodGet, profileURL, "", nil, http.StatusOK, &profile)
 	if profile.VideoCount != 1 {
@@ -694,7 +713,7 @@ func TestUserProfileVideoCount(t *testing.T) {
 // 测试目标：验证头像上传、公开读取和旧对象清理的完整流程
 // 预期效果：头像落盘到当前用户目录，替换后旧对象不可读取，外部 URL 更新保持兼容
 func TestUserAvatarUploadFlow(t *testing.T) {
-	srv, client := newTestServer(t)
+	srv, client, _ := newTestServer(t)
 	base := srv.URL
 
 	const username = "avatar_upload_author"
@@ -755,7 +774,7 @@ func TestUserAvatarUploadFlow(t *testing.T) {
 // 测试目标：验证所有受保护的视频接口均要求有效认证
 // 预期效果：缺少令牌或使用伪造令牌时统一返回未认证状态
 func TestVideoEndToEndAuthRequired(t *testing.T) {
-	srv, client := newTestServer(t)
+	srv, client, _ := newTestServer(t)
 	base := srv.URL
 
 	// 测试目标：列出所有需要认证的视频写入和个人读取接口
@@ -782,7 +801,7 @@ func TestVideoEndToEndAuthRequired(t *testing.T) {
 // 测试目标：验证草稿媒体与发布操作均受草稿作者约束
 // 预期效果：客户端不能借用他人草稿或媒体路径，自己的完整草稿可发布
 func TestVideoEndToEndForeignDraftRejected(t *testing.T) {
-	srv, client := newTestServer(t)
+	srv, client, gdb := newTestServer(t)
 	base := srv.URL
 
 	register(t, client, base, "e2e_owner", "e2e-password-123")
@@ -796,13 +815,13 @@ func TestVideoEndToEndForeignDraftRejected(t *testing.T) {
 
 	// 他人不能写入或发布作者草稿
 	uploadMedia(t, client, base, other.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", ownerDraft.ID), "file", "stolen.mp4", mp4Bytes, http.StatusForbidden)
-	publishDraft(t, client, base, other.AccessToken, ownerDraft.ID, http.StatusForbidden)
+	publishDraft(t, gdb, client, base, other.AccessToken, ownerDraft.ID, http.StatusForbidden)
 
 	// 使用本人草稿继续发布，预期成功以证明归属校验按草稿作者判定
 	otherDraft := createDraft(t, client, base, other.AccessToken, "自己的视频", "", http.StatusCreated)
 	uploadMedia(t, client, base, other.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", otherDraft.ID), "file", "mine.mp4", mp4Bytes, http.StatusCreated)
 	uploadMedia(t, client, base, other.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", otherDraft.ID), "file", "mine.png", pngBytes, http.StatusCreated)
-	item := publishDraft(t, client, base, other.AccessToken, otherDraft.ID, http.StatusCreated)
+	item := publishDraft(t, gdb, client, base, other.AccessToken, otherDraft.ID, http.StatusCreated)
 	if item.Author.Username != "e2e_other" {
 		t.Fatalf("作者应为 e2e_other got=%+v", item.Author)
 	}
@@ -811,7 +830,7 @@ func TestVideoEndToEndForeignDraftRejected(t *testing.T) {
 // 测试目标：验证仅视频作者拥有删除权限
 // 预期效果：非作者删除被拒绝，作者本人删除成功
 func TestVideoEndToEndDeleteForbiddenForNonAuthor(t *testing.T) {
-	srv, client := newTestServer(t)
+	srv, client, gdb := newTestServer(t)
 	base := srv.URL
 
 	register(t, client, base, "e2e_author2", "e2e-password-123")
@@ -819,7 +838,8 @@ func TestVideoEndToEndDeleteForbiddenForNonAuthor(t *testing.T) {
 	draft := createDraft(t, client, base, author.AccessToken, "待删除", "", http.StatusCreated)
 	uploadMedia(t, client, base, author.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", draft.ID), "file", "a.mp4", mp4Bytes, http.StatusCreated)
 	uploadMedia(t, client, base, author.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draft.ID), "file", "a.png", pngBytes, http.StatusCreated)
-	item := publishDraft(t, client, base, author.AccessToken, draft.ID, http.StatusCreated)
+	item := publishDraft(t, gdb, client, base, author.AccessToken, draft.ID, http.StatusCreated)
+	completeProcessing(t, gdb, item.ID)
 
 	register(t, client, base, "e2e_intruder", "e2e-password-123")
 	intruder := login(t, client, base, "e2e_intruder", "e2e-password-123")
@@ -832,7 +852,7 @@ func TestVideoEndToEndDeleteForbiddenForNonAuthor(t *testing.T) {
 // 测试目标：验证公开读取和草稿接口对无效参数的边界处理
 // 预期效果：不存在资源、错误分页参数、缺少标题和伪造媒体均返回对应客户端错误状态
 func TestVideoEndToEndBadRequests(t *testing.T) {
-	srv, client := newTestServer(t)
+	srv, client, _ := newTestServer(t)
 	base := srv.URL
 
 	// 公开读取使用错误参数，预期返回未找到或请求无效状态

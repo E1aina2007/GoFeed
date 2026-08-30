@@ -235,7 +235,8 @@ func TestRepositoryGetByIDZero(t *testing.T) {
 // 测试目标：验证草稿媒体归属、完整性和发布状态转换均由仓储原子约束
 // 预期效果：跨作者或重复绑定被拒绝，不完整草稿不能发布，完整草稿写入实际发布时间
 func TestRepositoryDraftMediaAndPublish(t *testing.T) {
-	repo := NewRepository(testutil.DB(t))
+	db := testutil.DB(t)
+	repo := NewRepository(db)
 	ctx := context.Background()
 	draft := &Video{AuthorID: 1, Title: "草稿", Status: VideoStatusDraft}
 	if err := repo.Create(ctx, draft); err != nil {
@@ -264,11 +265,24 @@ func TestRepositoryDraftMediaAndPublish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("发布草稿失败: %v", err)
 	}
-	if published.Status != VideoStatusPublished || published.PublishedAt == nil || published.PlayURL != videoFile.PublicURL || published.CoverURL != coverFile.PublicURL {
+	if published.Status != VideoStatusProcessing || published.PublishedAt == nil || published.PlayURL != videoFile.PublicURL || published.CoverURL != coverFile.PublicURL {
 		t.Fatalf("发布结果错误 got=%+v", published)
+	}
+	// 发布事务应原子写入待派发处理事件
+	var events []OutboxEvent
+	if err := db.Where("video_id = ?", draft.ID).Find(&events).Error; err != nil {
+		t.Fatalf("读取 outbox 事件失败: %v", err)
+	}
+	if len(events) != 1 || events[0].EventType != VideoProcessEventType || events[0].Status != OutboxEventStatusPending ||
+		events[0].EventID == "" || events[0].Attempt != 0 || events[0].DispatchedAt != nil {
+		t.Fatalf("outbox 事件写入错误 got=%+v", events)
 	}
 	if err := repo.UpdateDraftMedia(ctx, draft.ID, 1, MediaCover, coverFile, "封面.png"); !errors.Is(err, ErrDraftNotWritable) {
 		t.Fatalf("发布后写入媒体未被拒绝 error=%v", err)
+	}
+	// processing 状态下重复发布应被条件更新拒绝
+	if _, err := repo.UpdateDraftPublication(ctx, draft.ID, 1); !errors.Is(err, ErrDraftNotWritable) {
+		t.Fatalf("重复发布未被拒绝 error=%v", err)
 	}
 }
 

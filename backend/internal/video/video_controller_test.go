@@ -404,7 +404,7 @@ func TestHandlerPublishDraft(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("响应解析失败 error=%v", err)
 	}
-	if body.Video.ID != 1 || repo.drafts[1].Status != VideoStatusPublished {
+	if body.Video.ID != 1 || repo.drafts[1].Status != VideoStatusProcessing {
 		t.Fatalf("响应视频或草稿状态错误 body=%#v draft=%#v", body.Video, repo.drafts[1])
 	}
 	if body.Video.PlayOriginalName != "服务器视频.mp4" {

@@ -38,7 +38,7 @@ func refreshSession(t *testing.T, client *http.Client, base, refreshToken string
 // 测试目标：验证刷新令牌轮换不会使同一会话的访问令牌提前失效
 // 预期效果：旧刷新令牌不能重放，新刷新令牌可继续轮换，轮换前后访问令牌均可使用
 func TestSessionRefreshRotation(t *testing.T) {
-	srv, client := newTestServer(t)
+	srv, client, _ := newTestServer(t)
 	base := srv.URL
 
 	register(t, client, base, "refresh_user", "refresh-password-123")
@@ -62,7 +62,7 @@ func TestSessionRefreshRotation(t *testing.T) {
 // 测试目标：验证退出登录仅撤销当前会话而不会影响同用户其他会话
 // 预期效果：已退出会话不可访问，另一会话保持可用，重复退出被拒绝
 func TestSessionLogoutIsolation(t *testing.T) {
-	srv, client := newTestServer(t)
+	srv, client, _ := newTestServer(t)
 	base := srv.URL
 
 	register(t, client, base, "logout_user", "logout-password-123")
@@ -83,7 +83,7 @@ func TestSessionLogoutIsolation(t *testing.T) {
 // 测试目标：验证修改密码会撤销该用户的全部现有会话
 // 预期效果：两个访问令牌均失效，旧密码不能登录而新密码可以登录
 func TestSessionPasswordChangeRevokesAll(t *testing.T) {
-	srv, client := newTestServer(t)
+	srv, client, _ := newTestServer(t)
 	base := srv.URL
 
 	register(t, client, base, "pw_user", "old-password-123")
@@ -110,7 +110,7 @@ func TestSessionPasswordChangeRevokesAll(t *testing.T) {
 // 测试目标：验证注销账号会撤销会话并禁止后续身份访问
 // 预期效果：原访问令牌和密码登录均失效，公开读取已删除用户返回未找到状态
 func TestSessionDeleteUserRevokesAll(t *testing.T) {
-	srv, client := newTestServer(t)
+	srv, client, _ := newTestServer(t)
 	base := srv.URL
 
 	register(t, client, base, "del_user", "del-password-123")
@@ -131,7 +131,7 @@ func TestSessionDeleteUserRevokesAll(t *testing.T) {
 // 测试目标：验证用户认证接口对重复数据、非法输入和冲突操作的边界处理
 // 预期效果：各场景返回冲突、请求无效或禁止状态，软删除用户名仍不可重新注册
 func TestUserAuthBoundaries(t *testing.T) {
-	srv, client := newTestServer(t)
+	srv, client, _ := newTestServer(t)
 	base := srv.URL
 
 	// 重复注册，预期返回冲突状态
