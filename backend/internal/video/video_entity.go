@@ -41,14 +41,41 @@ type Video struct {
 	PlayPurgedAt    *time.Time `json:"-"`
 	CoverPurgedAt   *time.Time `json:"-"`
 
-	// PublishedAt is nil until a draft is actually published.
-	PublishedAt   *time.Time `gorm:"index:idx_videos_published_id,priority:1,sort:desc;index:idx_videos_author_published,priority:2,sort:desc" json:"published_at"`
-	LikesCount    int64      `gorm:"not null;default:0" json:"likes_count"`
-	CommentsCount int64      `gorm:"not null;default:0" json:"comments_count"`
+	// PublishedAt 在发布请求时刻写入，公开排序语义以此为事实源；
+	// processing 状态行不满足公开不变量，worker 校验通过后才转为 published 可见
+	PublishedAt    *time.Time `gorm:"index:idx_videos_published_id,priority:1,sort:desc;index:idx_videos_author_published,priority:2,sort:desc" json:"published_at"`
+	RejectedReason string     `gorm:"type:varchar(255);not null;default:''" json:"-"`
 
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
+}
+
+// outbox 事件状态
+const (
+	OutboxEventStatusPending    = "pending"
+	OutboxEventStatusDispatched = "dispatched"
+)
+
+// VideoProcessEventType 表示发布后进入异步媒体处理的事件类型
+const VideoProcessEventType = "video.process"
+
+// OutboxEvent 记录发布事务产生的待派发处理事件
+// relay 以 (status, id) 轮询 pending 事件，confirm 成功后标记 dispatched
+type OutboxEvent struct {
+	ID           uint   `gorm:"primaryKey"`
+	EventID      string `gorm:"type:char(36);not null;uniqueIndex:uq_video_outbox_events_event_id"`
+	VideoID      uint   `gorm:"not null;index:idx_video_outbox_events_video"`
+	EventType    string `gorm:"type:varchar(64);not null"`
+	Status       string `gorm:"type:varchar(16);not null;default:'pending'"`
+	Attempt      int    `gorm:"not null;default:0"`
+	CreatedAt    time.Time
+	DispatchedAt *time.Time
+}
+
+// TableName 固定 outbox 事件表名，避免默认命名规则映射到错误数据表
+func (OutboxEvent) TableName() string {
+	return "video_outbox_events"
 }
 
 // DraftPurgeClaim 是一个 worker 获得草稿清扫租约后的当前媒体快照

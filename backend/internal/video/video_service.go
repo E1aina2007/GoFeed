@@ -165,7 +165,8 @@ func (s *Service) UpdateDraftMedia(ctx context.Context, draftID, ownerID uint, k
 	return s.repository.UpdateDraftMedia(ctx, draftID, ownerID, kind, saved, originalName)
 }
 
-// UpdateDraftPublication 只允许将当前用户完整的 draft 状态视频转换为 published
+// UpdateDraftPublication 只允许将当前用户完整的 draft 状态视频进入异步处理
+// 响应保持 VideoItem 形状：组装不经过公开过滤器，媒体完整性已由发布事务校验
 func (s *Service) UpdateDraftPublication(ctx context.Context, draftID, authorID uint) (VideoItem, error) {
 	if draftID == 0 || authorID == 0 {
 		return VideoItem{}, ErrInvalidVideoID
@@ -178,7 +179,7 @@ func (s *Service) UpdateDraftPublication(ctx context.Context, draftID, authorID 
 	if err != nil {
 		return VideoItem{}, err
 	}
-	return s.toVideoItem(ctx, video)
+	return s.publishedItem(ctx, video)
 }
 
 // DiscardDraft 将当前作者的草稿排入异步清扫
@@ -411,6 +412,29 @@ func (s *Service) toVideoItem(ctx context.Context, video *Video) (VideoItem, err
 	return item, nil
 }
 
+// publishedItem 组装发布请求的响应条目，跳过公开视频过滤器
+// 处理中的行不满足公开不变量，但发布者本人需要立即拿到发布快照
+func (s *Service) publishedItem(ctx context.Context, video *Video) (VideoItem, error) {
+	if video == nil {
+		return VideoItem{}, ErrVideoNotFound
+	}
+	if s.authorReader == nil {
+		return VideoItem{}, ErrAuthorReaderUnavailable
+	}
+
+	author, err := s.authorReader.GetPublicAuthor(ctx, video.AuthorID)
+	if err != nil {
+		return VideoItem{}, err
+	}
+	engagements, err := s.engagements(ctx, []Video{*video})
+	if err != nil {
+		return VideoItem{}, err
+	}
+	item := videoItem(*video, author)
+	applyEngagement(&item, engagements[video.ID])
+	return item, nil
+}
+
 // filterPublicVideos 丢弃不满足公开响应契约的实体
 // 公开列表宁可少返回一项，也不能把缺媒体或缺发布时间的记录暴露给客户端
 func filterPublicVideos(videos []Video) []Video {
@@ -438,10 +462,8 @@ func isPublicVideo(video Video) bool {
 }
 
 func (s *Service) engagements(ctx context.Context, videos []Video) (map[uint]EngagementCounts, error) {
+	// 计数值以互动关系表聚合为唯一事实源，实体计数值列已删除，未聚合到的视频保持零值
 	counts := make(map[uint]EngagementCounts, len(videos))
-	for _, item := range videos {
-		counts[item.ID] = EngagementCounts{LikesCount: item.LikesCount, CommentsCount: item.CommentsCount}
-	}
 	if s.engagementReader == nil || len(videos) == 0 {
 		return counts, nil
 	}
@@ -480,8 +502,6 @@ func videoItem(video Video, author Author) VideoItem {
 		CoverFileName:     video.CoverFileName,
 		CoverOriginalName: video.CoverOriginalName,
 		PublishedAt:       valueOrZero(video.PublishedAt),
-		LikesCount:        video.LikesCount,
-		CommentsCount:     video.CommentsCount,
 		Author:            author,
 	}
 }

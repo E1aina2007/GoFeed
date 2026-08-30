@@ -42,18 +42,27 @@ func TestModelsAlignWithMigrations(t *testing.T) {
 				"id", "username", "password", "avatar_url", "bio", "deleted_at",
 			},
 		},
-		{
-			model: &video.Video{},
-			table: "videos",
-			columns: []string{
-				"id", "author_id", "title", "description", "play_url",
-				"play_file_name", "play_original_name", "cover_url",
-				"cover_file_name", "cover_original_name", "status", "purge_token",
-				"purge_lease_until", "play_purged_at", "cover_purged_at",
-				"published_at", "likes_count", "comments_count",
-				"created_at", "updated_at", "deleted_at",
+			{
+				model: &video.Video{},
+				table: "videos",
+				columns: []string{
+					"id", "author_id", "title", "description", "play_url",
+					"play_file_name", "play_original_name", "cover_url",
+					"cover_file_name", "cover_original_name", "status",
+					"rejected_reason", "purge_token",
+					"purge_lease_until", "play_purged_at", "cover_purged_at",
+					"published_at",
+					"created_at", "updated_at", "deleted_at",
+				},
 			},
-		},
+			{
+				model: &video.OutboxEvent{},
+				table: "video_outbox_events",
+				columns: []string{
+					"id", "event_id", "video_id", "event_type", "status",
+					"attempt", "created_at", "dispatched_at",
+				},
+			},
 		{
 			model: &auth.AuthSession{},
 			table: "auth_sessions",
