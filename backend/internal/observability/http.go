@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gofeed/internal/db"
+
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -52,12 +54,14 @@ func RequestID(c *gin.Context) string {
 	return ""
 }
 
-// RequestLogger 为每个请求补充关联 ID，并在请求结束时记录稳定字段
+// RequestLogger 为每个请求补充关联 ID 与数据库查询计数器，并在请求结束时记录稳定字段
 func RequestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID := requestIDFromHeader(c.GetHeader(RequestIDHeader))
 		c.Set(requestIDKey, requestID)
 		c.Header(RequestIDHeader, requestID)
+		// 查询计数器由本中间件安装，仓储语句经上下文自动累计，完成后随日志输出
+		c.Request = c.Request.WithContext(db.WithQueryCounter(c.Request.Context()))
 
 		started := time.Now()
 		c.Next()
@@ -72,13 +76,14 @@ func RequestLogger() gin.HandlerFunc {
 			event = "http_request_error"
 		}
 		log.Printf(
-			"%s request_id=%q method=%q route=%q status=%d duration_ms=%d",
+			"%s request_id=%q method=%q route=%q status=%d duration_ms=%d db_queries=%d",
 			event,
 			requestID,
 			c.Request.Method,
 			route,
 			c.Writer.Status(),
 			time.Since(started).Milliseconds(),
+			db.QueryCount(c.Request.Context()),
 		)
 	}
 }

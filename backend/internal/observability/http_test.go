@@ -211,3 +211,26 @@ func TestDatabaseReadinessHandlesNilDatabase(t *testing.T) {
 		t.Fatal("空数据库连接应返回错误")
 	}
 }
+
+// 测试目标：验证请求完成日志输出数据库查询计数字段
+// 预期效果：无数据库访问的请求在日志中携带 db_queries=0，字段随日志稳定存在
+func TestRequestLoggerRecordsQueryCountField(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(RequestLogger())
+	router.GET("/health", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
+	output := captureLog(t, func() {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
+		if response.Code != http.StatusNoContent {
+			t.Errorf("响应状态错误 got=%d", response.Code)
+		}
+	})
+
+	if !strings.Contains(output, "db_queries=0") {
+		t.Fatalf("请求日志缺少查询计数字段 output=%q", output)
+	}
+}
