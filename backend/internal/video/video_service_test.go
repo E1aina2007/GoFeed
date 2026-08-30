@@ -188,11 +188,14 @@ func (r *fakeVideoReader) DeletePublishedVideo(_ context.Context, id, authorID u
 }
 
 // 测试目标：模拟作者资料读取依赖
-// 预期效果：返回预设作者资料并记录每位作者的查询次数
+// 预期效果：返回预设作者资料并记录单条与批量查询行为
 type fakeAuthorReader struct {
-	authors map[uint]Author
-	err     error
-	calls   map[uint]int
+	authors    map[uint]Author
+	err        error
+	calls      map[uint]int
+	batchErr   error
+	batchIDs   [][]uint
+	batchCalls int
 }
 
 // 测试目标：模拟公开作者资料读取
@@ -208,20 +211,40 @@ func (r *fakeAuthorReader) GetPublicAuthor(_ context.Context, id uint) (Author, 
 	return r.authors[id], nil
 }
 
+// 测试目标：模拟批量公开作者资料读取
+// 预期效果：返回请求标识对应的作者映射，缺失标识补占位资料
+func (r *fakeAuthorReader) GetPublicAuthors(_ context.Context, ids []uint) (map[uint]Author, error) {
+	r.batchCalls++
+	r.batchIDs = append(r.batchIDs, ids)
+	if r.batchErr != nil {
+		return nil, r.batchErr
+	}
+	result := make(map[uint]Author, len(ids))
+	for _, id := range ids {
+		if author, ok := r.authors[id]; ok {
+			result[id] = author
+			continue
+		}
+		result[id] = Author{ID: id, Username: deletedUsername}
+	}
+	return result, nil
+}
+
 // 测试目标：验证服务层组装已发布视频详情和作者资料
 // 预期效果：返回完整视频字段及正确作者资料
 func TestServiceGetPublished(t *testing.T) {
 	// 1 准备一条已发布视频和对应作者资料
 	// 2 调用服务层详情查询
-	// 3 验证视频字段和作者资料被正确组装
+	// 3 验证视频字段和作者资料被正确组装，且只发生一次单条作者读取
 	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
+	authors := &fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}}
 	service := NewService(
 		&fakeVideoReader{getVideo: &Video{
 			ID: 1, AuthorID: 2, Title: "title", Status: VideoStatusPublished,
 			PlayURL: "play", PlayFileName: "clip.mp4", PlayOriginalName: "我的 clip.mp4",
 			CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "封面.png", PublishedAt: timePtr(publishedAt),
 		}},
-		&fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}},
+		authors,
 	)
 
 	item, err := service.GetPublished(context.Background(), 1)
@@ -234,6 +257,9 @@ func TestServiceGetPublished(t *testing.T) {
 	if item.PlayFileName != "clip.mp4" || item.PlayOriginalName != "我的 clip.mp4" ||
 		item.CoverFileName != "cover.png" || item.CoverOriginalName != "封面.png" {
 		t.Fatalf("媒体文件名未透出 got=%#v", item)
+	}
+	if authors.calls[2] != 1 || authors.batchCalls != 0 {
+		t.Fatalf("详情应只调用单条作者读取 got calls=%v batchCalls=%d", authors.calls, authors.batchCalls)
 	}
 }
 
@@ -272,8 +298,15 @@ func TestServiceListPublishedUsesExtraRecordForCursor(t *testing.T) {
 		cursor.ID != 2 || !cursor.PublishedAt.Equal(publishedAt.Add(-time.Second)) {
 		t.Fatalf("下一页游标错误 got cursor=%#v error=%v want id=2 publishedAt=%s", cursor, err, publishedAt.Add(-time.Second))
 	}
-	if authors.calls[2] != 1 {
-		t.Fatalf("作者资料重复查询 got calls=%d want calls=1", authors.calls[2])
+	// 截断后只有作者 2 的视频进入响应，作者读取应收敛为一次批量查询
+	if authors.batchCalls != 1 || len(authors.batchIDs) != 1 || len(authors.batchIDs[0]) != 1 || authors.batchIDs[0][0] != 2 {
+		t.Fatalf("作者批量读取错误 got batchCalls=%d batchIDs=%v want 一次查询 [[2]]", authors.batchCalls, authors.batchIDs)
+	}
+	if len(authors.calls) != 0 {
+		t.Fatalf("列表不应触发单条作者读取 got=%v", authors.calls)
+	}
+	if response.Items[0].Author.Username != "first" || response.Items[1].Author.Username != "first" {
+		t.Fatalf("列表作者资料错误 got=%+v", response.Items)
 	}
 }
 
@@ -557,5 +590,89 @@ func TestServiceListMinePassesExtraRecordForCursor(t *testing.T) {
 	cursor, err := decodeCursor(response.NextCursor)
 	if err != nil || cursor.Version != currentCursorVersion || cursor.Kind != CursorKindMine || cursor.AuthorID != 2 {
 		t.Fatalf("我的视频游标范围错误 got cursor=%#v error=%v", cursor, err)
+	}
+}
+
+// 测试目标：验证列表对重复作者只做一次批量读取且不改变视频顺序
+// 预期效果：批量标识按首次出现顺序去重，每个列表项按原顺序携带作者资料
+func TestServiceListReadsAuthorsOnceInOriginalOrder(t *testing.T) {
+	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
+	newVideo := func(id, authorID uint) Video {
+		return Video{
+			ID: id, AuthorID: authorID, Status: VideoStatusPublished,
+			PlayURL: "play", PlayFileName: "play.mp4", PlayOriginalName: "play.mp4",
+			CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "cover.png",
+			PublishedAt: timePtr(publishedAt),
+		}
+	}
+	repository := &fakeVideoReader{listVideos: []Video{
+		newVideo(1, 5), newVideo(2, 3), newVideo(3, 5), newVideo(4, 3),
+	}}
+	authors := &fakeAuthorReader{authors: map[uint]Author{
+		5: {ID: 5, Username: "fifth"},
+		3: {ID: 3, Username: "third"},
+	}}
+	service := NewService(repository, authors)
+
+	response, err := service.GetPublishedVideoList(context.Background(), 0, "", 10)
+	if err != nil {
+		t.Fatalf("查询视频列表失败 error=%v", err)
+	}
+	if authors.batchCalls != 1 || len(authors.batchIDs[0]) != 2 || authors.batchIDs[0][0] != 5 || authors.batchIDs[0][1] != 3 {
+		t.Fatalf("重复作者应收敛为一次去重批量读取 got batchCalls=%d batchIDs=%v", authors.batchCalls, authors.batchIDs)
+	}
+	if len(authors.calls) != 0 {
+		t.Fatalf("列表不应触发单条作者读取 got=%v", authors.calls)
+	}
+	wantOrder := []struct {
+		id       uint
+		authorID uint
+		username string
+	}{{1, 5, "fifth"}, {2, 3, "third"}, {3, 5, "fifth"}, {4, 3, "third"}}
+	for i, want := range wantOrder {
+		item := response.Items[i]
+		if item.ID != want.id || item.Author.ID != want.authorID || item.Author.Username != want.username {
+			t.Fatalf("第 %d 项组装错误 got=%+v want id=%d author=%d(%s)", i, item, want.id, want.authorID, want.username)
+		}
+	}
+}
+
+// 测试目标：验证作者依赖缺失时列表与详情的降级语义
+// 预期效果：空列表正常返回，非空列表返回作者读取不可用错误
+func TestServiceListAuthorReaderUnavailable(t *testing.T) {
+	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
+	published := Video{
+		ID: 1, AuthorID: 2, Status: VideoStatusPublished,
+		PlayURL: "play", PlayFileName: "play.mp4", PlayOriginalName: "play.mp4",
+		CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "cover.png",
+		PublishedAt: timePtr(publishedAt),
+	}
+	service := NewService(&fakeVideoReader{listVideos: []Video{published}}, nil)
+	if _, err := service.GetPublishedVideoList(context.Background(), 0, "", 10); !errors.Is(err, ErrAuthorReaderUnavailable) {
+		t.Fatalf("非空列表缺少作者依赖应返回不可用错误 got=%v", err)
+	}
+
+	emptyService := NewService(&fakeVideoReader{}, nil)
+	response, err := emptyService.GetPublishedVideoList(context.Background(), 0, "", 10)
+	if err != nil || len(response.Items) != 0 {
+		t.Fatalf("空列表不应触发作者依赖错误 got=%+v error=%v", response, err)
+	}
+}
+
+// 测试目标：验证列表批量作者读取失败时整体失败
+// 预期效果：批量查询错误原样透传且不返回半组装响应
+func TestServiceListPropagatesBatchAuthorError(t *testing.T) {
+	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
+	repository := &fakeVideoReader{listVideos: []Video{{
+		ID: 1, AuthorID: 2, Status: VideoStatusPublished,
+		PlayURL: "play", PlayFileName: "play.mp4", PlayOriginalName: "play.mp4",
+		CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "cover.png",
+		PublishedAt: timePtr(publishedAt),
+	}}}
+	authors := &fakeAuthorReader{batchErr: errors.New("author database unavailable")}
+	service := NewService(repository, authors)
+
+	if _, err := service.GetPublishedVideoList(context.Background(), 0, "", 10); err == nil {
+		t.Fatal("批量作者读取失败应返回错误")
 	}
 }

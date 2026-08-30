@@ -196,3 +196,33 @@ func TestRepositoryUpdatePasswordRejectsStaleHash(t *testing.T) {
 		t.Fatalf("密码被过期哈希覆盖，got=%q", user.Password)
 	}
 }
+
+// 测试目标：验证批量用户读取一次返回活跃用户的公开列
+// 预期效果：软删除用户和缺失标识不出现在结果中，密码列不被投影
+func TestRepositoryGetByIDs(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	active := seedUser(t, db, "batch-active")
+	deleted := seedUser(t, db, "batch-deleted")
+	setDeletedAt(t, db, deleted, time.Now())
+	if err := repo.UpdateAvatar(ctx, active, "https://example.test/batch.png"); err != nil {
+		t.Fatalf("设置头像: %v", err)
+	}
+
+	users, err := repo.GetByIDs(ctx, []uint{active, deleted, 999999})
+	if err != nil {
+		t.Fatalf("批量读取用户: %v", err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("批量读取应只返回活跃用户 got=%d", len(users))
+	}
+	got := users[0]
+	if got.ID != active || got.Username != "batch-active" || got.AvatarURL != "https://example.test/batch.png" {
+		t.Fatalf("公开列映射错误 got=%+v", got)
+	}
+	if got.Password != "" || got.Bio != "" {
+		t.Fatalf("批量读取不应投影非公开列 got=%+v", got)
+	}
+}

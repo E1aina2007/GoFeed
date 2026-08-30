@@ -69,6 +69,8 @@ type VideoRepository interface {
 
 type AuthorReader interface {
 	GetPublicAuthor(ctx context.Context, id uint) (Author, error)
+	// GetPublicAuthors 供列表路径一次批量读取，避免逐作者查询
+	GetPublicAuthors(ctx context.Context, ids []uint) (map[uint]Author, error)
 }
 
 // EngagementReader 是公开视频响应所需的互动统计能力
@@ -333,22 +335,13 @@ func (s *Service) buildListResponse(ctx context.Context, videos []Video, limit i
 	if err != nil {
 		return ListResponse{}, err
 	}
+	authors, err := s.listAuthors(ctx, videos)
+	if err != nil {
+		return ListResponse{}, err
+	}
 	items := make([]VideoItem, 0, len(videos))
-	authors := make(map[uint]Author)
 	for i := range videos {
-		author, ok := authors[videos[i].AuthorID]
-		if !ok {
-			if s.authorReader == nil {
-				return ListResponse{}, ErrAuthorReaderUnavailable
-			}
-			var err error
-			author, err = s.authorReader.GetPublicAuthor(ctx, videos[i].AuthorID)
-			if err != nil {
-				return ListResponse{}, err
-			}
-			authors[videos[i].AuthorID] = author
-		}
-		item := videoItem(videos[i], author)
+		item := videoItem(videos[i], authors[videos[i].AuthorID])
 		applyEngagement(&item, engagements[videos[i].ID])
 		items = append(items, item)
 	}
@@ -372,6 +365,28 @@ func (s *Service) buildListResponse(ctx context.Context, videos []Video, limit i
 		response.NextCursor = next
 	}
 	return response, nil
+}
+
+// listAuthors 对截断后的最终列表执行一次批量作者读取
+// 重复作者只读取一次；作者依赖缺失且列表非空时返回不可用错误
+func (s *Service) listAuthors(ctx context.Context, videos []Video) (map[uint]Author, error) {
+	if len(videos) == 0 {
+		return map[uint]Author{}, nil
+	}
+	if s.authorReader == nil {
+		return nil, ErrAuthorReaderUnavailable
+	}
+	ids := make([]uint, 0, len(videos))
+	seen := make(map[uint]struct{}, len(videos))
+	for i := range videos {
+		id := videos[i].AuthorID
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return s.authorReader.GetPublicAuthors(ctx, ids)
 }
 
 func (s *Service) toVideoItem(ctx context.Context, video *Video) (VideoItem, error) {

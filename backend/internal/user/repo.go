@@ -69,6 +69,19 @@ func (r *Repository) GetByID(ctx context.Context, id uint) (*User, error) {
 	return &user, nil
 }
 
+// GetByIDs 按主键一次批量读取用户，只投影公开资料所需的列
+// GORM 默认软删除作用域使已注销用户不出现在结果中
+func (r *Repository) GetByIDs(ctx context.Context, ids []uint) ([]*User, error) {
+	var users []*User
+	if err := r.db.WithContext(ctx).
+		Select("id", "username", "avatar_url").
+		Where("id IN ?", ids).
+		Find(&users).Error; err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
 func (r *Repository) GetByUsername(ctx context.Context, username string) (*User, error) {
 	var account User
 	if err := r.db.WithContext(ctx).
