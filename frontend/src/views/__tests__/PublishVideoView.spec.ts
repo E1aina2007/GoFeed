@@ -7,6 +7,7 @@ import {
   createDraft,
   discardDraft,
   getDraft,
+  getPublishedVideo,
   publishDraft,
   uploadCover,
   uploadVideo,
@@ -26,6 +27,7 @@ vi.mock('@/features/video/api', () => ({
   createDraft: vi.fn<typeof createDraft>(),
   discardDraft: vi.fn<typeof discardDraft>(),
   getDraft: vi.fn<typeof getDraft>(),
+  getPublishedVideo: vi.fn<typeof getPublishedVideo>(),
   publishDraft: vi.fn<typeof publishDraft>(),
   uploadCover: vi.fn<typeof uploadCover>(),
   uploadVideo: vi.fn<typeof uploadVideo>(),
@@ -265,6 +267,89 @@ describe('PublishVideoView', () => {
     )
     expect(publishDraft).toHaveBeenCalledWith(7)
     expect(routerReplace).toHaveBeenCalledWith({ name: 'feed', query: { published: '100' } })
+  })
+
+  function mockResolvedUploads() {
+    vi.mocked(createDraft).mockResolvedValue({ draft: draft() })
+    vi.mocked(uploadVideo).mockResolvedValue({
+      draft_id: 7,
+      play_url: '/static/videos/42/clip.mp4',
+      play_file_name: 'clip.mp4',
+      play_original_name: '服务端视频.mp4',
+    })
+    vi.mocked(uploadCover).mockResolvedValue({
+      draft_id: 7,
+      cover_url: '/static/covers/42/cover.png',
+      cover_file_name: 'cover.png',
+      cover_original_name: '服务端封面.png',
+    })
+  }
+
+  it('confirms an ambiguous publish through the public detail when the response is 503', async () => {
+    mockResolvedUploads()
+    vi.mocked(publishDraft).mockRejectedValue(
+      new ApiError(503, 'engagement stats temporarily unavailable'),
+    )
+    vi.mocked(getPublishedVideo).mockResolvedValue({ video: publishedVideo(7) })
+
+    const { wrapper } = await mountWithSelectedMedia()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(publishDraft).toHaveBeenCalledTimes(1)
+    expect(getPublishedVideo).toHaveBeenCalledWith(7)
+    expect(routerReplace).toHaveBeenCalledWith({ name: 'feed', query: { published: '7' } })
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(wrapper.find('.draft-actions').exists()).toBe(false)
+  })
+
+  it('keeps the draft retryable when the detail check rules out a committed publish', async () => {
+    mockResolvedUploads()
+    vi.mocked(publishDraft).mockRejectedValue(
+      new ApiError(503, 'engagement stats temporarily unavailable'),
+    )
+    vi.mocked(getPublishedVideo).mockRejectedValue(new ApiError(404, 'video not found'))
+
+    const { wrapper } = await mountWithSelectedMedia()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(publishDraft).toHaveBeenCalledTimes(1)
+    expect(getPublishedVideo).toHaveBeenCalledWith(7)
+    expect(wrapper.get('[role="alert"]').text()).toBe('服务暂时不可用，草稿已保留，请稍后重试')
+    expect(wrapper.find('.draft-actions').exists()).toBe(true)
+  })
+
+  it('reports an unconfirmed publish without inviting resubmission when the check also fails', async () => {
+    mockResolvedUploads()
+    vi.mocked(publishDraft).mockRejectedValue(
+      new ApiError(503, 'engagement stats temporarily unavailable'),
+    )
+    vi.mocked(getPublishedVideo).mockRejectedValue(
+      new ApiError(503, 'engagement stats temporarily unavailable'),
+    )
+
+    const { wrapper } = await mountWithSelectedMedia()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(publishDraft).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[role="alert"]').text()).toBe(
+      '发布结果暂时无法确认，请稍后在“我的视频”查看，请勿重复提交',
+    )
+    expect(routerReplace).not.toHaveBeenCalled()
+  })
+
+  it('does not consult the public detail for publish failures other than 503', async () => {
+    mockResolvedUploads()
+    vi.mocked(publishDraft).mockRejectedValue(new ApiError(500, 'video operation failed'))
+
+    const { wrapper } = await mountWithSelectedMedia()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(getPublishedVideo).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="alert"]').text()).toBe('服务暂时不可用，草稿已保留，请稍后重试')
   })
 
   it.each(uploadFailureCases)(

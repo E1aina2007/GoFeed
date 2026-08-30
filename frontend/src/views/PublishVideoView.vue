@@ -6,10 +6,12 @@ import {
   createDraft,
   discardDraft,
   getDraft,
+  getPublishedVideo,
   publishDraft,
   uploadCover,
   uploadVideo,
   type DraftItem,
+  type VideoItem,
 } from '@/features/video/api'
 import { ApiError } from '@/lib/api'
 import { useConfirmStore } from '@/stores/confirm'
@@ -474,6 +476,35 @@ async function cancelPublishing() {
   await router.replace({ name: 'feed' })
 }
 
+// 发布接口返回 503 时发布事务可能已提交，只是响应组装失败
+// 按契约改查公开详情确认结果，而不是重复提交发布
+async function reconcileUnconfirmedPublish(draftID: number, originalError: unknown) {
+  if (!(originalError instanceof ApiError) || originalError.status !== 503) {
+    return false
+  }
+
+  currentStage.value = '正在确认发布结果'
+  let confirmed: VideoItem
+  try {
+    confirmed = (await getPublishedVideo(draftID)).video
+  } catch (confirmError) {
+    if (
+      confirmError instanceof ApiError
+      && (confirmError.status === 400 || confirmError.status === 404)
+    ) {
+      return false
+    }
+    errorMessage.value = '发布结果暂时无法确认，请稍后在“我的视频”查看，请勿重复提交'
+    toast.error(errorMessage.value)
+    return true
+  }
+
+  clearActiveDraft()
+  toast.success('视频已发布，正在返回 Feed')
+  await router.replace({ name: 'feed', query: { published: String(confirmed.id) } })
+  return true
+}
+
 async function submit() {
   errorMessage.value = validationError()
   if (errorMessage.value || !videoFile.value || !coverFile.value) {
@@ -515,10 +546,18 @@ async function submit() {
     currentOperation.value = 'publish'
     currentStage.value = '正在发布视频'
     uploadProgress.value = 1
-    const response = await publishDraft(currentDraftID)
+    let publishedVideo: VideoItem
+    try {
+      publishedVideo = (await publishDraft(currentDraftID)).video
+    } catch (error) {
+      if (await reconcileUnconfirmedPublish(currentDraftID, error)) {
+        return
+      }
+      throw error
+    }
     clearActiveDraft()
     toast.success('视频已发布，正在返回 Feed')
-    await router.replace({ name: 'feed', query: { published: String(response.video.id) } })
+    await router.replace({ name: 'feed', query: { published: String(publishedVideo.id) } })
   } catch (error) {
     errorMessage.value = messageForPublishingError(error)
     toast.error(errorMessage.value)
