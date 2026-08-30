@@ -50,6 +50,8 @@
 | 互动统计故障语义 | 已完成 | `fb867c8` | 互动统计查询失败时列表、详情、我的视频与发布响应统一返回 503 并整体失败 |
 | 可观测性与查询预算 | 已完成 | `69a08c1` | 请求内查询计数随完成日志输出 `db_queries`，公开列表与详情 e2e 断言 ≤4 条语句 |
 | 并发与异常测试收尾 | 已完成 | `d185645` | 同刻排序、分页变更、注销作者占位、统计失败 503、注入错误与 GET 幂等矩阵落地 |
+| R1 状态机与 outbox 迁移 | 已完成 | `c2134ac` | 发布事务 draft→processing 并原子写入 outbox 事件；冗余计数值列已删除 |
+| R2 relay/worker | 已完成 | `d2294a2` | confirm 派发 outbox 事件，消费端校验媒体完成 processing → published/rejected 流转 |
 
 ### 已确认的系统边界
 
@@ -64,11 +66,12 @@
 - 请求内数据库查询由 `internal/db` 的 GORM 语句回调计数，`observability.RequestLogger` 在完成日志输出 `db_queries`；公开列表与详情的预算为 4 条语句，由真实 MySQL e2e 断言守护
 - 慢查询阈值 200ms 由 `internal/db` 显式配置，预期内的记录不存在不再按错误级别刷日志
 - 视频状态机为 `draft → processing → published | rejected`：发布事务原子完成 `draft → processing`、写入发布时刻与 outbox 事件，worker 校验通过后 CAS 为 `published`；`rejected` 可由作者丢弃进入 `purging`（R3 接入清扫）
-- 发布接口响应保持 `201 + VideoItem` 形状；`processing` 行在公开列表、详情与 `GET /mine` 中不可见，R2 落地前 e2e 以测试夹具模拟 worker 完成态
+- 发布接口响应保持 `201 + VideoItem` 形状；`processing` 行在公开列表、详情与 `GET /mine` 中不可见，worker 校验通过后自动转为可见
 - 仓库迁移文件的最高版本为 `000006`；真实数据库版本仍需按任务现场核对 `schema_migrations`，已应用迁移不得修改，后续必须新增递增版本
-- `backend/cmd/worker/main.go` 当前只连接数据库并等待退出信号，尚未消费 RabbitMQ 任务
-- API 和 sweeper 使用 `./.run/uploads`；Compose 中 worker 当前未挂载 `backend_uploads`，异步媒体处理前必须先修正共享存储
-- Redis/RabbitMQ 目前不参与 API 启动或 `/ready`，本地开发默认仍是本机 MySQL 加直接运行 Go/Vue
+- worker 进程内运行 relay 与 consumer：relay 轮询 pending 事件（`FOR UPDATE SKIP LOCKED`）并以 publisher confirm 派发到 `gofeed.events`/`video.process`，成功后标记 dispatched；consumer 手动 ack，媒体校验失败直接 `rejected`（确定性失败），基础设施故障按指数退避与 `x-retry-attempt` 头重发三次后进死信
+- 消息载荷只含 schema 版本、event_id、video_id 与媒体相对路径；处理队列声明 `x-dead-letter-exchange=gofeed.dlx`，死信队列 `video.process.dead` 绑定固定路由键
+- API 与 sweeper 使用 `./.run/uploads`，worker 经 Compose 的 `backend_uploads` 共享卷访问同一存储；本地直连运行时 worker 使用相同相对路径
+- RabbitMQ 参与 worker 闭环且 worker 启动要求其可达；API 侧不建立 MQ 连接，`/ready` 不新增依赖；Redis 仍无客户端连接
 
 ## 模块开发流程
 
@@ -147,7 +150,7 @@ git commit --only -m "<type>: <简短中文摘要>" -- <本模块路径>
 RabbitMQ 首个业务闭环建议只负责视频异步处理，不搬用现有草稿清扫租约。拆为三个模块：
 
 1. **状态机与 outbox 迁移（已完成，`c2134ac`）**：`000006` 新增 `video_outbox_events` 表（`event_id` 唯一、`(status, id)` 轮询索引）与 `videos.rejected_reason` 列，删除派生的计数值列；发布事务在同一事务内完成媒体完整性校验、`draft → processing` CAS、发布时刻与 outbox 事件写入
-2. **relay/worker**：发布持久化消息，消息只携带视频 ID、对象路径、事件 ID 和版本，不携带文件内容；worker 使用手动 ack、有限重试和死信队列，重复消费幂等，状态更新使用条件更新/CAS，仅允许 `processing → published` 或 `processing → rejected`
+2. **relay/worker（已完成，`d2294a2`）**：`internal/mq` 提供连接、拓扑与 confirm 发布器；relay 轮询 outbox（SKIP LOCKED）派发并标记 dispatched；consumer 手动 ack 校验媒体后 CAS `processing → published`，媒体缺陷直接 `rejected` 并记录原因，基础设施故障按指数退避重发三次后进死信；启动期 MySQL 与 RabbitMQ 连接按指数退避重试；Compose worker 补挂载 `backend_uploads`
 3. **API 与前端异步状态**：先确定发布接口是返回 `202` 还是保留同步语义，再提供状态查询和失败响应；更新 `API.md` 后实现前端的处理中、成功和拒绝状态。API、worker 和 sweeper 必须访问同一份媒体存储，Compose worker 必须挂载 `backend_uploads`
 
 必须测试事务回滚、relay 崩溃、worker 重启、重复消息、达到重试上限、死信、媒体缺失、状态不可逆和消息/数据库不一致。不要把“能连接 RabbitMQ”当作业务闭环完成。
@@ -164,7 +167,7 @@ Redis 不成为用户、视频、草稿或清扫状态的权威来源；当前�
 - 本地磁盘存储只适合单机或共享卷部署；异步 worker、API、sweeper 必须明确共享卷或对象存储契约
 - 用户列表目前没有分页，数据量增长后会影响响应体和查询成本
 - `observe.pprof` 在配置示例中存在，但当前配置加载器不读取；启用时要使用独立、仅回环监听的 `ServeMux` 和独立关闭生命周期
-- 阶段一模块（M1-M6）已全部完成；R1 状态机与 outbox 迁移已落地，下一步进入 R2 relay/worker（`internal/mq` 连接与拓扑、outbox 派发与消费闭环）
+- 阶段一模块（M1-M6）已全部完成；R1 状态机与 outbox 迁移、R2 relay/worker 已落地，下一步进入 R3 API 与前端异步状态（发布 202 契约、状态查询端点、rejected 清扫接入）
 - 手写 GORM 列名尚未达到完整编译期类型安全；`gorm.io/gen` 延后到读取模式稳定后评估，避免当前引入生成代码和持久化层大范围改写
 - 草稿 `purging` 是不可逆状态；涉及 `000004` 回滚时必须停止 API 与所有 sweeper，确认不存在不兼容行后再执行 down migration，不能用故意失败的 SQL 阻止回滚
 
@@ -193,7 +196,8 @@ go test -race -count=1 ./...
 - 可观测性与查询预算：`go vet ./...`、`go test ./... -count=1`、`go test -race -count=1 ./...` 均已在真实 MySQL 下通过；覆盖计数回调按语句递增、重复注册幂等、多上下文独立、完成日志携带 `db_queries`，以及公开 Feed 首页与详情 ≤4 条语句的预算断言；代码已提交为 `69a08c1`，预算断言 e2e 已提交为 `914f343`
 - 并发与异常测试收尾：`go vet ./...`、`go test ./... -count=1`、`go test -race -count=1 ./...` 均已在真实 MySQL 下通过；表级故障注入夹具覆盖同刻发布排序翻页、分页期间新增/软删除、注销作者占位、统计失败 503（无零计数半组装响应）、注入错误干净路径与 GET 幂等；代码已提交为 `d185645`
 - R1 状态机与 outbox 迁移：`go vet ./...`、`go test ./... -count=1`、`go test -race -count=1 ./...` 均已在真实 MySQL 下通过；覆盖 `000006` 迁移与模型对齐、发布事务 CAS 与 outbox 原子写入、重复发布拒绝、outbox 失败整体回滚、processing 期间公开不可见；代码已提交为 `c2134ac`，发布事务改造与回归已提交为 `8342fa2`
-- 阶段一完成：M1-M6 均通过契约评审、真实 MySQL 回归与竞态验证；R1 已落地，下一模块为 R2 relay/worker，新增 `internal/mq` 连接与拓扑、outbox 轮询派发与媒体校验消费闭环
+- R2 relay/worker：`go vet ./...`、`go test ./... -count=1`、`go test -race -count=1 ./...` 均已在真实 MySQL 下通过，`docker compose config --quiet` 通过；单测覆盖拓扑声明、confirm 发布、派发标记、发布失败保持 pending、孤立事件跳过、媒体校验发布/拒绝、重复消息幂等、重试退避与计数头、上下文取消重投、死信动作，以及 worker 启动期连接退避；真实 RabbitMQ 集成用例（派发闭环、死信、真实队列重发）在本机因 Docker 守护进程未运行而跳过，CI 的 rabbitmq service 将实际执行
+- 阶段一完成：M1-M6 均通过契约评审、真实 MySQL 回归与竞态验证；R1、R2 已落地，下一模块为 R3 API 与前端异步状态，先更新 `API.md` 再动前端
 
 ### 前端
 
@@ -215,7 +219,7 @@ pnpm.cmd run test:e2e -- --project=chromium --project="Mobile Chrome"
 - 先执行未应用迁移，再按以下顺序做基础验收：
   1. `/health` 返回 `200`；MySQL 可用时 `/ready` 返回 `200`；前端 `/api` 与 `/static` 代理可用
   2. 注册、登录、刷新令牌和退出；未登录访问受保护页面会跳转登录
-  3. 上传视频和封面并发布，Feed 能展示封面、标题和作者入口（R1 后发布先进入 `processing`，需 R2 worker 或手工完成状态流转后可见）
+  3. 上传视频和封面并发布，Feed 能展示封面、标题和作者入口（R1 后发布先进入 `processing`；R2 已落地，本地启动 rabbitmq 服务并运行 worker 后自动流转为可见）
   4. Feed 首屏、游标分页、到底、空状态和失败重试可用，视频按纵向短视频流播放
   5. 详情、作者主页、用户列表和我的视频可访问；删除自己的视频后列表与提示正确更新
   6. 账户设置中的用户名、资料、密码和注销操作反馈正确
