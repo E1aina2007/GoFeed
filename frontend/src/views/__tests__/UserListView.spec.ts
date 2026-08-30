@@ -51,12 +51,12 @@ describe('UserListView', () => {
 
   it('shows the error message and recovers through the retry button', async () => {
     vi.mocked(listUsers)
-      .mockRejectedValueOnce(new ApiError(500, '用户服务暂不可用'))
+      .mockRejectedValueOnce(new ApiError(500, 'user operation failed'))
       .mockResolvedValueOnce({ users: [{ id: 3, username: 'cora' }] })
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.get('[role="alert"]').text()).toContain('用户服务暂不可用')
+    expect(wrapper.get('[role="alert"]').text()).toContain('服务暂时不可用，请稍后重试')
     await wrapper.get('.secondary-action').trigger('click')
     await flushPromises()
 

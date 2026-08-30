@@ -100,7 +100,7 @@ describe('usePublishedFeed', () => {
     vi.useFakeTimers()
     const listMock = vi.mocked(listPublishedVideos)
     listMock
-      .mockRejectedValueOnce(new ApiError(503, '服务暂不可用'))
+      .mockRejectedValueOnce(new ApiError(503, 'engagement stats temporarily unavailable'))
       .mockResolvedValueOnce(response([video(3)], 'next-page'))
     const feed = usePublishedFeed()
 
@@ -119,7 +119,7 @@ describe('usePublishedFeed', () => {
   it('stops retrying after the bounded recovery attempts are exhausted', async () => {
     vi.useFakeTimers()
     const listMock = vi.mocked(listPublishedVideos)
-    listMock.mockRejectedValue(new ApiError(503, '服务暂不可用'))
+    listMock.mockRejectedValue(new ApiError(503, 'engagement stats temporarily unavailable'))
     const feed = usePublishedFeed()
 
     const loading = feed.loadFirstPage()
@@ -128,7 +128,7 @@ describe('usePublishedFeed', () => {
     await loading
 
     expect(listMock).toHaveBeenCalledTimes(3)
-    expect(feed.errorMessage.value).toBe('服务暂不可用')
+    expect(feed.errorMessage.value).toBe('服务暂时不可用，请稍后重试')
     expect(feed.isInitialLoading.value).toBe(false)
     feed.dispose()
   })
@@ -138,7 +138,7 @@ describe('usePublishedFeed', () => {
     const listMock = vi.mocked(listPublishedVideos)
     listMock
       .mockResolvedValueOnce(response([video(7, '首屏标题')], 'next-page'))
-      .mockRejectedValueOnce(new ApiError(503, '服务暂不可用'))
+      .mockRejectedValueOnce(new ApiError(503, 'engagement stats temporarily unavailable'))
       .mockResolvedValueOnce(response([video(7, '更新后的标题'), video(8)]))
     const feed = usePublishedFeed()
 
@@ -158,7 +158,7 @@ describe('usePublishedFeed', () => {
   it('cancels a scheduled retry when the feed is disposed', async () => {
     vi.useFakeTimers()
     const listMock = vi.mocked(listPublishedVideos)
-    listMock.mockRejectedValueOnce(new ApiError(503, '服务暂不可用'))
+    listMock.mockRejectedValueOnce(new ApiError(503, 'engagement stats temporarily unavailable'))
     const feed = usePublishedFeed()
 
     const loading = feed.loadFirstPage()
@@ -185,10 +185,10 @@ describe('usePublishedFeed', () => {
     expect(feed.errorMessage.value).toBe('')
     expect(feed.videos.value).toEqual([])
 
-    listMock.mockRejectedValueOnce(new ApiError(400, '请求参数无效'))
+    listMock.mockRejectedValueOnce(new ApiError(400, 'invalid cursor'))
     await feed.loadFirstPage()
 
-    expect(feed.errorMessage.value).toBe('请求参数无效')
+    expect(feed.errorMessage.value).toBe('分页状态已失效，请重新加载')
     expect(feed.isInitialLoading.value).toBe(false)
     feed.dispose()
   })

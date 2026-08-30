@@ -70,12 +70,12 @@ describe('MyVideosView', () => {
 
   it('shows the error state and recovers through the retry button', async () => {
     vi.mocked(listMyVideos)
-      .mockRejectedValueOnce(new ApiError(500, '服务暂不可用'))
+      .mockRejectedValueOnce(new ApiError(500, 'video operation failed'))
       .mockResolvedValueOnce({ items: [videoItem(1, '第一条')] })
     const { wrapper } = mountView()
     await flushPromises()
 
-    expect(wrapper.get('[role="alert"]').text()).toContain('服务暂不可用')
+    expect(wrapper.get('[role="alert"]').text()).toContain('服务暂时不可用，请稍后重试')
     await wrapper.get('.secondary-action').trigger('click')
     await flushPromises()
 
@@ -121,7 +121,7 @@ describe('MyVideosView', () => {
 
   it('keeps the video and shows the error when deletion fails', async () => {
     vi.mocked(listMyVideos).mockResolvedValue({ items: [videoItem(1, '第一条')] })
-    vi.mocked(deleteVideo).mockRejectedValue(new ApiError(500, '删除失败'))
+    vi.mocked(deleteVideo).mockRejectedValue(new ApiError(500, 'video operation failed'))
     const { confirmStore, wrapper } = mountView()
     await flushPromises()
 
@@ -131,7 +131,7 @@ describe('MyVideosView', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('第一条')
-    expect(wrapper.get('.inline-error').text()).toBe('删除失败')
+    expect(wrapper.get('.inline-error').text()).toBe('服务暂时不可用，请稍后重试')
     wrapper.unmount()
   })
 })

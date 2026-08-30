@@ -106,11 +106,11 @@ describe('UserProfileView', () => {
   })
 
   it('shows the error state and recovers through the retry button', async () => {
-    vi.mocked(getUserProfile).mockRejectedValue(new ApiError(404, '用户不存在或已注销'))
+    vi.mocked(getUserProfile).mockRejectedValue(new ApiError(404, 'user not found'))
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.get('[role="alert"]').text()).toContain('用户不存在或已注销')
+    expect(wrapper.get('[role="alert"]').text()).toContain('内容不存在或已被删除')
     vi.mocked(getUserProfile).mockResolvedValue(profileResponse())
     vi.mocked(listPublishedVideos).mockResolvedValue({ items: [videoItem(1, '第一条')] })
     await wrapper.get('.secondary-action').trigger('click')

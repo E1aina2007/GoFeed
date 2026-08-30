@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { currentUser, isAuthenticated } from '@/features/auth/session'
-import { ApiError } from '@/lib/api'
+import { apiUserMessage } from '@/lib/api'
 import { useToastStore } from '@/stores/toast'
 
 import { createFollow, getFollowState, removeFollow, type FollowState } from './api'
@@ -84,8 +84,7 @@ async function toggleFollow() {
       toast.info('已取消关注')
     }
   } catch (error) {
-    const message = error instanceof ApiError ? error.message : '关注操作失败，请稍后重试'
-    toast.error(message)
+    toast.error(apiUserMessage(error, '关注操作失败，请稍后重试'))
   } finally {
     isPending.value = false
   }

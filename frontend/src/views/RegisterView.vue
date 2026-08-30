@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { register } from '@/features/auth/session'
-import { ApiError } from '@/lib/api'
+import { apiUserMessage } from '@/lib/api'
 import { useToastStore } from '@/stores/toast'
 
 const route = useRoute()
@@ -44,7 +44,10 @@ async function submit() {
     })
     toast.success('注册成功，请登录')
   } catch (error) {
-    errorMessage.value = error instanceof ApiError ? error.message : '注册失败，请检查网络后重试'
+    errorMessage.value = apiUserMessage(error, '注册失败，请检查网络后重试', {
+      400: '用户名或密码不符合要求',
+      409: '用户名已被占用',
+    })
     toast.error(errorMessage.value)
   } finally {
     isSubmitting.value = false

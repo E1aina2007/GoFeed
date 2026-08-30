@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { isAuthenticated } from '@/features/auth/session'
-import { ApiError } from '@/lib/api'
+import { apiUserMessage } from '@/lib/api'
 import { useToastStore } from '@/stores/toast'
 
 import { createLike, getLikeState, removeLike } from './api'
@@ -78,8 +78,7 @@ async function toggleLike() {
     const state = liked.value ? await removeLike(props.videoId) : await createLike(props.videoId)
     updateVideoLikeState(props.videoId, state)
   } catch (error) {
-    const message = error instanceof ApiError ? error.message : '点赞操作失败，请稍后重试'
-    toast.error(message)
+    toast.error(apiUserMessage(error, '点赞操作失败，请稍后重试'))
   } finally {
     isPending.value = false
   }

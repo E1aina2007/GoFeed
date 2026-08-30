@@ -6,7 +6,7 @@ import CommentSection from '@/features/social/CommentSection.vue'
 import LikeButton from '@/features/social/LikeButton.vue'
 import { getVideoEngagement, type VideoEngagement } from '@/features/social/engagement'
 import { getPublishedVideo, type VideoItem } from '@/features/video/api'
-import { ApiError } from '@/lib/api'
+import { apiUserMessage } from '@/lib/api'
 
 const route = useRoute()
 const video = ref<VideoItem>()
@@ -65,7 +65,7 @@ async function load() {
   } catch (error) {
     video.value = undefined
     engagement.value = undefined
-    errorMessage.value = error instanceof ApiError ? error.message : '视频加载失败，请稍后重试'
+    errorMessage.value = apiUserMessage(error, '视频加载失败，请稍后重试')
   } finally {
     isLoading.value = false
   }

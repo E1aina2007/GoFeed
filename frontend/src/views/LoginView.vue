@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { RouterLink } from 'vue-router'
 
 import { login } from '@/features/auth/session'
-import { ApiError } from '@/lib/api'
+import { apiUserMessage } from '@/lib/api'
 import { useToastStore } from '@/stores/toast'
 
 const route = useRoute()
@@ -46,7 +46,9 @@ async function submit() {
     toast.success('登录成功')
     await router.replace(redirectPath())
   } catch (error) {
-    errorMessage.value = error instanceof ApiError ? error.message : '登录失败，请检查网络后重试'
+    errorMessage.value = apiUserMessage(error, '登录失败，请检查网络后重试', {
+      401: '用户名或密码错误',
+    })
     toast.error(errorMessage.value)
   } finally {
     isSubmitting.value = false

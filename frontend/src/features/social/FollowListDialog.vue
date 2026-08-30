@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 
-import { ApiError } from '@/lib/api'
+import { apiUserMessage } from '@/lib/api'
 import { useDialogA11y } from '@/lib/dialog'
 
 import { getFollowerList, getFollowingList, type FollowListItem } from './api'
@@ -32,7 +32,7 @@ const title = computed(() => (props.mode === 'followers' ? '粉丝' : '关注'))
 const hasMore = computed(() => Boolean(nextCursor.value))
 
 function apiMessage(error: unknown) {
-  return error instanceof ApiError ? error.message : '列表加载失败，请稍后重试'
+  return apiUserMessage(error, '列表加载失败，请稍后重试')
 }
 
 function formatDate(value: string) {

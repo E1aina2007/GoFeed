@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import VideoListItem from '@/components/VideoListItem.vue'
 import { deleteVideo, listMyVideos, type VideoItem } from '@/features/video/api'
-import { ApiError } from '@/lib/api'
+import { apiUserMessage } from '@/lib/api'
 import { useConfirmStore } from '@/stores/confirm'
 import { useToastStore } from '@/stores/toast'
 
@@ -18,7 +18,7 @@ const actionMessage = ref('')
 const hasMore = computed(() => Boolean(nextCursor.value))
 
 function apiMessage(error: unknown, fallback: string) {
-  return error instanceof ApiError ? error.message : fallback
+  return apiUserMessage(error, fallback)
 }
 
 async function loadFirstPage() {

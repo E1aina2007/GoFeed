@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 
-import { ApiError } from '@/lib/api'
+import { ApiError, apiUserMessage } from '@/lib/api'
 
 import { listPublishedVideos, type VideoItem, type VideoListResponse } from './api'
 
@@ -42,7 +42,9 @@ function waitForRetry(signal: AbortSignal, delay: number) {
 }
 
 function requestErrorMessage(error: unknown) {
-  return error instanceof ApiError ? error.message : '视频加载失败，请检查网络后重试'
+  return apiUserMessage(error, '视频加载失败，请检查网络后重试', {
+    400: '分页状态已失效，请重新加载',
+  })
 }
 
 function mergeVideos(current: VideoItem[], incoming: VideoItem[]) {

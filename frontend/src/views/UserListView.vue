@@ -3,7 +3,7 @@ import { onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { listUsers, type PublicUser } from '@/features/user/api'
-import { ApiError } from '@/lib/api'
+import { apiUserMessage } from '@/lib/api'
 
 const users = ref<PublicUser[]>([])
 const isLoading = ref(true)
@@ -15,7 +15,7 @@ async function load() {
   try {
     users.value = (await listUsers()).users
   } catch (error) {
-    errorMessage.value = error instanceof ApiError ? error.message : '用户列表加载失败，请稍后重试'
+    errorMessage.value = apiUserMessage(error, '用户列表加载失败，请稍后重试')
   } finally {
     isLoading.value = false
   }

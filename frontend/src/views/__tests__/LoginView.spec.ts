@@ -75,7 +75,7 @@ describe('LoginView', () => {
   })
 
   it('keeps the server error visible when login fails', async () => {
-    vi.mocked(login).mockRejectedValue(new ApiError(401, '用户名或密码错误'))
+    vi.mocked(login).mockRejectedValue(new ApiError(401, 'invalid username or password'))
     const wrapper = mountView()
     await submitWith(wrapper, 'alice', 'password-123')
 

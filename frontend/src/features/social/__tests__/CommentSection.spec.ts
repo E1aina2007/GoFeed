@@ -124,7 +124,7 @@ describe('CommentSection', () => {
   it('shows the list error and retries the failed request', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse({ error: '评论服务暂不可用' }, 500))
+      .mockResolvedValueOnce(jsonResponse({ error: 'social operation failed' }, 500))
       .mockResolvedValueOnce(
         jsonResponse({
           items: [
@@ -142,7 +142,7 @@ describe('CommentSection', () => {
 
     const { wrapper } = await mountSection(82, 1)
     await flushPromises()
-    expect(wrapper.text()).toContain('评论服务暂不可用')
+    expect(wrapper.text()).toContain('服务暂时不可用，请稍后重试')
 
     await wrapper.get('.secondary-action').trigger('click')
     await flushPromises()

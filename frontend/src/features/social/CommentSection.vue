@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { currentUser, isAuthenticated } from '@/features/auth/session'
-import { ApiError } from '@/lib/api'
+import { apiUserMessage } from '@/lib/api'
 import { useConfirmStore } from '@/stores/confirm'
 import { useToastStore } from '@/stores/toast'
 
@@ -39,7 +39,7 @@ function syncEngagement() {
 }
 
 function errorMessage(error: unknown, fallback: string) {
-  return error instanceof ApiError ? error.message : fallback
+  return apiUserMessage(error, fallback)
 }
 
 function ownsComment(comment: CommentItem) {

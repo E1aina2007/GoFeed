@@ -71,7 +71,7 @@ describe('RegisterView', () => {
   })
 
   it('keeps the server error visible when registration fails', async () => {
-    vi.mocked(register).mockRejectedValue(new ApiError(400, '用户名已被占用'))
+    vi.mocked(register).mockRejectedValue(new ApiError(409, 'username already exists'))
     const wrapper = mountView()
     await submitWith(wrapper, 'alice', 'password-123')
 

@@ -8,7 +8,7 @@ import FollowListDialog from '@/features/social/FollowListDialog.vue'
 import type { FollowState } from '@/features/social/api'
 import { listPublishedVideos, type VideoItem } from '@/features/video/api'
 import { getUserProfile, type UserProfile } from '@/features/user/api'
-import { ApiError } from '@/lib/api'
+import { apiUserMessage } from '@/lib/api'
 
 const route = useRoute()
 const profile = ref<UserProfile>()
@@ -27,7 +27,7 @@ function userID() {
 }
 
 function apiMessage(error: unknown) {
-  return error instanceof ApiError ? error.message : '用户主页加载失败，请稍后重试'
+  return apiUserMessage(error, '用户主页加载失败，请稍后重试')
 }
 
 async function load() {

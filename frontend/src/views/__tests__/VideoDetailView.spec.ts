@@ -76,12 +76,12 @@ describe('VideoDetailView', () => {
 
   it('shows the server error and recovers through the retry button', async () => {
     vi.mocked(getPublishedVideo)
-      .mockRejectedValueOnce(new ApiError(404, '视频不存在或未公开'))
+      .mockRejectedValueOnce(new ApiError(404, 'video not found'))
       .mockResolvedValueOnce(videoResponse())
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.get('[role="alert"]').text()).toContain('视频不存在或未公开')
+    expect(wrapper.get('[role="alert"]').text()).toContain('内容不存在或已被删除')
     await wrapper.get('.secondary-action').trigger('click')
     await flushPromises()
 

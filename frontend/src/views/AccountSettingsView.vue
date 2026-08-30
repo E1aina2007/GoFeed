@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 
 import { clearSession, currentUser } from '@/features/auth/session'
 import { deleteAccount, updateName, updatePassword, updateProfile, uploadAvatar } from '@/features/user/api'
-import { ApiError } from '@/lib/api'
+import { apiUserMessage } from '@/lib/api'
 import { useConfirmStore } from '@/stores/confirm'
 import { useToastStore } from '@/stores/toast'
 
@@ -69,7 +69,11 @@ function selectAvatar(event: Event) {
 }
 
 function messageFor(error: unknown, fallback: string) {
-  return error instanceof ApiError ? error.message : fallback
+  return apiUserMessage(error, fallback, {
+    403: '当前密码不正确',
+    409: '用户名已被占用',
+    413: '头像文件不能超过 10 MiB',
+  })
 }
 
 async function saveName() {
