@@ -1,6 +1,3 @@
-// Package worker 组装视频异步处理闭环：relay 轮询 outbox 派发事件，
-// consumer 校验共享存储下的媒体并完成 processing → published/rejected 流转
-// 本包组合 video 仓储与 mq 传输，业务包不反向依赖本包
 package worker
 
 import (
