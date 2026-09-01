@@ -6,12 +6,12 @@ import {
   createDraft,
   discardDraft,
   getDraft,
-  getPublishedVideo,
+  getVideoStatus,
   publishDraft,
   uploadCover,
   uploadVideo,
   type DraftItem,
-  type VideoItem,
+  type VideoProcessingStatus,
 } from '@/features/video/api'
 import { ApiError } from '@/lib/api'
 import { useConfirmStore } from '@/stores/confirm'
@@ -21,6 +21,8 @@ const maxVideoSize = 200 * 1024 * 1024
 const maxCoverSize = 10 * 1024 * 1024
 const videoExtension = /\.(mp4|webm|mov)$/i
 const coverExtension = /\.(jpg|jpeg|png|webp)$/i
+const processingPollDelay = 500
+const processingPollAttempts = 60
 
 type PublishingOperation =
   'create-draft' | 'upload-video' | 'upload-cover' | 'publish' | 'discard-draft'
@@ -46,6 +48,9 @@ const activeUploadController = ref<AbortController>()
 const isCancellingUpload = ref(false)
 const cancellationRequested = ref(false)
 const currentOperation = ref<PublishingOperation>()
+const statusPollController = ref<AbortController>()
+let statusPollTimer: ReturnType<typeof setTimeout> | undefined
+let statusPollGeneration = 0
 
 const progressLabel = computed(() => `${Math.round(uploadProgress.value * 100)}%`)
 const isBusy = computed(() => isSubmitting.value || isDiscarding.value)
@@ -198,6 +203,7 @@ function selectCover(event: Event) {
 }
 
 onBeforeUnmount(() => {
+  stopStatusPolling()
   releaseVideoPreview()
   releaseCoverPreview()
 })
@@ -227,6 +233,12 @@ function validationError() {
   if (activeDraft.value?.status === 'purging') {
     return '草稿已进入清扫，无法继续上传'
   }
+  if (activeDraft.value?.status === 'processing') {
+    return '视频正在处理中，请稍候'
+  }
+  if (activeDraft.value?.status === 'rejected') {
+    return '视频处理失败，请先放弃当前草稿后重试'
+  }
   if (activeDraftNeedsDiscard.value) {
     return '当前草稿内容已变更，请先放弃当前草稿'
   }
@@ -241,6 +253,125 @@ function isAbortError(error: unknown) {
   return (
     typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError'
   )
+}
+
+function isRetryableStatusError(error: unknown) {
+  if (!(error instanceof ApiError)) {
+    return true
+  }
+  return error.status === 0 || error.status === 408 || error.status === 429 || error.status >= 500
+}
+
+function isAmbiguousPublishError(error: unknown) {
+  return isRetryableStatusError(error)
+}
+
+function isVideoProcessingStatus(value: unknown): value is VideoProcessingStatus {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+  const candidate = value as Record<string, unknown>
+  return (
+    (candidate.status === 'processing'
+      || candidate.status === 'published'
+      || candidate.status === 'rejected')
+    && (candidate.published_at === null || typeof candidate.published_at === 'string')
+    && (candidate.rejected_at === null || typeof candidate.rejected_at === 'string')
+    && typeof candidate.rejected_reason === 'string'
+  )
+}
+
+function stopStatusPolling() {
+  statusPollGeneration += 1
+  statusPollController.value?.abort()
+  statusPollController.value = undefined
+  if (statusPollTimer !== undefined) {
+    clearTimeout(statusPollTimer)
+    statusPollTimer = undefined
+  }
+}
+
+function waitForStatusPoll(signal: AbortSignal, delay: number) {
+  return new Promise<void>((resolve) => {
+    let settled = false
+    function finish() {
+      if (settled) {
+        return
+      }
+      settled = true
+      if (timer !== undefined) {
+        clearTimeout(timer)
+      }
+      if (statusPollTimer === timer) {
+        statusPollTimer = undefined
+      }
+      signal.removeEventListener('abort', finish)
+      resolve()
+    }
+
+    const timer = setTimeout(finish, delay)
+    statusPollTimer = timer
+    signal.addEventListener('abort', finish, { once: true })
+    if (signal.aborted) {
+      finish()
+    }
+  })
+}
+
+function ownsStatusPoll(controller: AbortController, generation: number) {
+  return (
+    statusPollController.value === controller
+    && statusPollGeneration === generation
+    && !controller.signal.aborted
+  )
+}
+
+async function pollVideoStatus(videoID: number): Promise<VideoProcessingStatus | undefined> {
+  stopStatusPolling()
+  const controller = new AbortController()
+  const generation = statusPollGeneration
+  statusPollController.value = controller
+
+  try {
+    for (let attempt = 0; attempt < processingPollAttempts; attempt += 1) {
+      if (!ownsStatusPoll(controller, generation)) {
+        return undefined
+      }
+
+      try {
+        const status = await getVideoStatus(videoID, controller.signal)
+        if (!ownsStatusPoll(controller, generation)) {
+          return undefined
+        }
+        if (!isVideoProcessingStatus(status)) {
+          throw new ApiError(502, 'invalid video status response')
+        }
+        if (status.status !== 'processing') {
+          return status
+        }
+      } catch (error) {
+        if (!ownsStatusPoll(controller, generation) || isAbortError(error)) {
+          return undefined
+        }
+        if (!isRetryableStatusError(error) || attempt === processingPollAttempts - 1) {
+          throw error
+        }
+      }
+
+      currentStage.value = '正在处理视频'
+      await waitForStatusPoll(controller.signal, processingPollDelay)
+    }
+
+    throw new ApiError(504, 'video processing timed out')
+  } finally {
+    if (statusPollController.value === controller) {
+      statusPollController.value = undefined
+      if (statusPollTimer !== undefined) {
+        clearTimeout(statusPollTimer)
+        statusPollTimer = undefined
+      }
+    }
+  }
 }
 
 function mediaTooLargeMessage(operation: PublishingOperation | undefined) {
@@ -470,23 +601,67 @@ async function cancelPublishing() {
   if (isBusy.value) {
     return
   }
+  if (activeDraft.value?.status === 'processing') {
+    toast.info('视频正在处理中，已提交的任务不会被取消')
+    await router.replace({ name: 'feed' })
+    return
+  }
   if (!(await discardCurrentDraft())) {
     return
   }
   await router.replace({ name: 'feed' })
 }
 
-// 发布接口返回 503 时发布事务可能已提交，只是响应组装失败
-// 按契约改查公开详情确认结果，而不是重复提交发布
-async function reconcileUnconfirmedPublish(draftID: number, originalError: unknown) {
-  if (!(originalError instanceof ApiError) || originalError.status !== 503) {
+function pendingPublishMessage() {
+  return '发布已受理，处理结果暂未确认，请稍后在“我的视频”查看，请勿重复提交'
+}
+
+function showPendingPublish() {
+  errorMessage.value = pendingPublishMessage()
+  toast.info(errorMessage.value)
+}
+
+function showRejectedPublish(status: VideoProcessingStatus) {
+  if (activeDraft.value) {
+    activeDraft.value = { ...activeDraft.value, status: 'rejected' }
+  }
+  const reason = status.rejected_reason.trim()
+  errorMessage.value = reason ? `视频处理失败：${reason}` : '视频处理失败，请重新上传'
+  toast.error(errorMessage.value)
+}
+
+async function finishPublishedPublish(videoID: number) {
+  await router.replace({ name: 'feed', query: { published: String(videoID) } })
+  clearActiveDraft()
+  toast.success('视频已发布，正在返回 Feed')
+}
+
+async function applyVideoProcessingStatus(videoID: number, status: VideoProcessingStatus) {
+  if (status.status === 'rejected') {
+    showRejectedPublish(status)
+    return true
+  }
+  if (status.status !== 'published') {
+    return false
+  }
+
+  await finishPublishedPublish(videoID)
+  return true
+}
+
+// 发布请求出现暂态错误时，事务可能已经提交；查询作者状态确认，禁止重复发布
+async function reconcileUnconfirmedPublish(videoID: number, originalError: unknown) {
+  if (!isAmbiguousPublishError(originalError)) {
     return false
   }
 
   currentStage.value = '正在确认发布结果'
-  let confirmed: VideoItem
   try {
-    confirmed = (await getPublishedVideo(draftID)).video
+    const status = await pollVideoStatus(videoID)
+    if (!status) {
+      return true
+    }
+    return await applyVideoProcessingStatus(videoID, status)
   } catch (confirmError) {
     if (
       confirmError instanceof ApiError
@@ -494,15 +669,9 @@ async function reconcileUnconfirmedPublish(draftID: number, originalError: unkno
     ) {
       return false
     }
-    errorMessage.value = '发布结果暂时无法确认，请稍后在“我的视频”查看，请勿重复提交'
-    toast.error(errorMessage.value)
+    showPendingPublish()
     return true
   }
-
-  clearActiveDraft()
-  toast.success('视频已发布，正在返回 Feed')
-  await router.replace({ name: 'feed', query: { published: String(confirmed.id) } })
-  return true
 }
 
 async function submit() {
@@ -546,18 +715,35 @@ async function submit() {
     currentOperation.value = 'publish'
     currentStage.value = '正在发布视频'
     uploadProgress.value = 1
-    let publishedVideo: VideoItem
+    let submittedDraft: DraftItem
     try {
-      publishedVideo = (await publishDraft(currentDraftID)).video
+      const response = await publishDraft(currentDraftID)
+      if (!response?.draft || response.draft.id !== currentDraftID) {
+        throw new ApiError(502, 'invalid publish response')
+      }
+      submittedDraft = response.draft
     } catch (error) {
       if (await reconcileUnconfirmedPublish(currentDraftID, error)) {
         return
       }
       throw error
     }
-    clearActiveDraft()
-    toast.success('视频已发布，正在返回 Feed')
-    await router.replace({ name: 'feed', query: { published: String(publishedVideo.id) } })
+    setActiveDraft(submittedDraft)
+
+    let processingStatus: VideoProcessingStatus | undefined
+    try {
+      processingStatus = await pollVideoStatus(currentDraftID)
+    } catch (error) {
+      if (isAmbiguousPublishError(error)) {
+        showPendingPublish()
+        return
+      }
+      throw error
+    }
+    if (!processingStatus) {
+      return
+    }
+    await applyVideoProcessingStatus(currentDraftID, processingStatus)
   } catch (error) {
     errorMessage.value = messageForPublishingError(error)
     toast.error(errorMessage.value)
@@ -667,7 +853,7 @@ async function submit() {
 
       <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
 
-      <div v-if="activeDraft" class="draft-actions">
+      <div v-if="activeDraft && activeDraft.status !== 'processing'" class="draft-actions">
         <button
           class="discard-action"
           type="button"

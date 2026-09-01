@@ -7,14 +7,16 @@ import {
   createDraft,
   discardDraft,
   getDraft,
-  getPublishedVideo,
+  getVideoStatus,
   publishDraft,
   uploadCover,
   uploadVideo,
   type DraftItem,
+  type VideoProcessingStatus,
 } from '@/features/video/api'
 import { ApiError } from '@/lib/api'
 import { useConfirmStore } from '@/stores/confirm'
+import { useToastStore } from '@/stores/toast'
 import PublishVideoView from '../PublishVideoView.vue'
 
 const routerReplace = vi.hoisted(() => vi.fn<Router['replace']>())
@@ -27,7 +29,7 @@ vi.mock('@/features/video/api', () => ({
   createDraft: vi.fn<typeof createDraft>(),
   discardDraft: vi.fn<typeof discardDraft>(),
   getDraft: vi.fn<typeof getDraft>(),
-  getPublishedVideo: vi.fn<typeof getPublishedVideo>(),
+  getVideoStatus: vi.fn<typeof getVideoStatus>(),
   publishDraft: vi.fn<typeof publishDraft>(),
   uploadCover: vi.fn<typeof uploadCover>(),
   uploadVideo: vi.fn<typeof uploadVideo>(),
@@ -47,21 +49,16 @@ function draft(overrides: Partial<DraftItem> = {}): DraftItem {
   }
 }
 
-function publishedVideo(id = 100) {
+function processingStatus(
+  status: VideoProcessingStatus['status'] = 'published',
+  overrides: Partial<VideoProcessingStatus> = {},
+): VideoProcessingStatus {
   return {
-    id,
-    title: '春日散步',
-    description: '',
-    play_url: '/static/videos/42/clip.mp4',
-    play_file_name: 'clip.mp4',
-    play_original_name: '服务端视频.mp4',
-    cover_url: '/static/covers/42/cover.png',
-    cover_file_name: 'cover.png',
-    cover_original_name: '服务端封面.png',
-    published_at: '2026-08-22T08:01:00Z',
-    likes_count: 0,
-    comments_count: 0,
-    author: { id: 42, username: 'alice', avatar_url: '' },
+    status,
+    published_at: status === 'published' ? '2026-08-22T08:01:00Z' : null,
+    rejected_at: status === 'rejected' ? '2026-08-22T08:02:00Z' : null,
+    rejected_reason: status === 'rejected' ? '媒体校验失败' : '',
+    ...overrides,
   }
 }
 
@@ -122,6 +119,7 @@ const uploadFailureCases: Array<[string, ApiError, string]> = [
 describe('PublishVideoView', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+    vi.mocked(getVideoStatus).mockResolvedValue(processingStatus())
   })
 
   afterEach(() => {
@@ -217,7 +215,7 @@ describe('PublishVideoView', () => {
     expect(createObjectURL).not.toHaveBeenCalled()
   })
 
-  it('creates a draft, binds both media files, then publishes it', async () => {
+  it('creates a draft, binds both media files, then waits for published status', async () => {
     vi.mocked(createDraft).mockResolvedValue({
       draft: draft(),
     })
@@ -234,11 +232,13 @@ describe('PublishVideoView', () => {
       cover_original_name: '服务端封面.png',
     })
     vi.mocked(publishDraft).mockResolvedValue({
-      video: publishedVideo(),
+      draft: draft({ status: 'processing', has_video: true, has_cover: true }),
     })
 
+    const pinia = createPinia()
+    const toastStore = useToastStore(pinia)
     const wrapper = mount(PublishVideoView, {
-      global: { plugins: [createPinia()], stubs: { RouterLink: true } },
+      global: { plugins: [pinia], stubs: { RouterLink: true } },
     })
     const fields = wrapper.findAll('input')
     const video = new File(['video'], 'local.mp4', { type: 'video/mp4' })
@@ -266,7 +266,10 @@ describe('PublishVideoView', () => {
       expect.any(AbortSignal),
     )
     expect(publishDraft).toHaveBeenCalledWith(7)
-    expect(routerReplace).toHaveBeenCalledWith({ name: 'feed', query: { published: '100' } })
+    expect(getVideoStatus).toHaveBeenCalledWith(7, expect.any(AbortSignal))
+    expect(routerReplace).toHaveBeenCalledWith({ name: 'feed', query: { published: '7' } })
+    expect(toastStore.toasts.filter((item) => item.type === 'success')).toHaveLength(1)
+    expect(toastStore.toasts.filter((item) => item.type === 'error')).toHaveLength(0)
   })
 
   function mockResolvedUploads() {
@@ -285,48 +288,48 @@ describe('PublishVideoView', () => {
     })
   }
 
-  it('confirms an ambiguous publish through the public detail when the response is 503', async () => {
+  it('confirms an ambiguous publish through the processing status endpoint', async () => {
     mockResolvedUploads()
     vi.mocked(publishDraft).mockRejectedValue(
       new ApiError(503, 'engagement stats temporarily unavailable'),
     )
-    vi.mocked(getPublishedVideo).mockResolvedValue({ video: publishedVideo(7) })
+    vi.mocked(getVideoStatus).mockResolvedValue(processingStatus())
 
     const { wrapper } = await mountWithSelectedMedia()
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
     expect(publishDraft).toHaveBeenCalledTimes(1)
-    expect(getPublishedVideo).toHaveBeenCalledWith(7)
+    expect(getVideoStatus).toHaveBeenCalledWith(7, expect.any(AbortSignal))
     expect(routerReplace).toHaveBeenCalledWith({ name: 'feed', query: { published: '7' } })
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
     expect(wrapper.find('.draft-actions').exists()).toBe(false)
   })
 
-  it('keeps the draft retryable when the detail check rules out a committed publish', async () => {
+  it('keeps the draft retryable when the status check rules out a committed publish', async () => {
     mockResolvedUploads()
     vi.mocked(publishDraft).mockRejectedValue(
       new ApiError(503, 'engagement stats temporarily unavailable'),
     )
-    vi.mocked(getPublishedVideo).mockRejectedValue(new ApiError(404, 'video not found'))
+    vi.mocked(getVideoStatus).mockRejectedValue(new ApiError(404, 'video not found'))
 
     const { wrapper } = await mountWithSelectedMedia()
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
     expect(publishDraft).toHaveBeenCalledTimes(1)
-    expect(getPublishedVideo).toHaveBeenCalledWith(7)
+    expect(getVideoStatus).toHaveBeenCalledWith(7, expect.any(AbortSignal))
     expect(wrapper.get('[role="alert"]').text()).toBe('服务暂时不可用，草稿已保留，请稍后重试')
     expect(wrapper.find('.draft-actions').exists()).toBe(true)
   })
 
-  it('reports an unconfirmed publish without inviting resubmission when the check also fails', async () => {
+  it('shows the worker rejection and keeps the draft available for cleanup', async () => {
     mockResolvedUploads()
-    vi.mocked(publishDraft).mockRejectedValue(
-      new ApiError(503, 'engagement stats temporarily unavailable'),
-    )
-    vi.mocked(getPublishedVideo).mockRejectedValue(
-      new ApiError(503, 'engagement stats temporarily unavailable'),
+    vi.mocked(publishDraft).mockResolvedValue({
+      draft: draft({ status: 'processing', has_video: true, has_cover: true }),
+    })
+    vi.mocked(getVideoStatus).mockResolvedValue(
+      processingStatus('rejected', { rejected_reason: '视频编码损坏' }),
     )
 
     const { wrapper } = await mountWithSelectedMedia()
@@ -334,22 +337,22 @@ describe('PublishVideoView', () => {
     await flushPromises()
 
     expect(publishDraft).toHaveBeenCalledTimes(1)
-    expect(wrapper.get('[role="alert"]').text()).toBe(
-      '发布结果暂时无法确认，请稍后在“我的视频”查看，请勿重复提交',
-    )
+    expect(getVideoStatus).toHaveBeenCalledWith(7, expect.any(AbortSignal))
+    expect(wrapper.get('[role="alert"]').text()).toBe('视频处理失败：视频编码损坏')
     expect(routerReplace).not.toHaveBeenCalled()
+    expect(wrapper.find('.draft-actions').exists()).toBe(true)
   })
 
-  it('does not consult the public detail for publish failures other than 503', async () => {
+  it('does not consult processing status for non-ambiguous publish failures', async () => {
     mockResolvedUploads()
-    vi.mocked(publishDraft).mockRejectedValue(new ApiError(500, 'video operation failed'))
+    vi.mocked(publishDraft).mockRejectedValue(new ApiError(409, 'draft is incomplete'))
 
     const { wrapper } = await mountWithSelectedMedia()
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
-    expect(getPublishedVideo).not.toHaveBeenCalled()
-    expect(wrapper.get('[role="alert"]').text()).toBe('服务暂时不可用，草稿已保留，请稍后重试')
+    expect(getVideoStatus).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="alert"]').text()).toBe('草稿尚未完整或状态已变化，请检查后重试')
   })
 
   it.each(uploadFailureCases)(
@@ -486,7 +489,9 @@ describe('PublishVideoView', () => {
       cover_file_name: 'cover.png',
       cover_original_name: '服务端封面.png',
     })
-    vi.mocked(publishDraft).mockResolvedValue({ video: publishedVideo() })
+    vi.mocked(publishDraft).mockResolvedValue({
+      draft: draft({ status: 'processing', has_video: true, has_cover: true }),
+    })
 
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -541,7 +546,9 @@ describe('PublishVideoView', () => {
       cover_file_name: 'cover.png',
       cover_original_name: '服务端封面.png',
     })
-    vi.mocked(publishDraft).mockResolvedValue({ video: publishedVideo() })
+    vi.mocked(publishDraft).mockResolvedValue({
+      draft: draft({ status: 'processing', has_video: true, has_cover: true }),
+    })
 
     const wrapper = mount(PublishVideoView, {
       global: { plugins: [createPinia()], stubs: { RouterLink: true } },
@@ -567,7 +574,7 @@ describe('PublishVideoView', () => {
       expect.any(AbortSignal),
     )
     expect(publishDraft).toHaveBeenCalledWith(7)
-    expect(routerReplace).toHaveBeenCalledWith({ name: 'feed', query: { published: '100' } })
+    expect(routerReplace).toHaveBeenCalledWith({ name: 'feed', query: { published: '7' } })
   })
 
   it('keeps the upload error when the server confirms media is still missing', async () => {

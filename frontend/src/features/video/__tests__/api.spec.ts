@@ -8,6 +8,7 @@ import {
   deleteVideo,
   getDraft,
   getPublishedVideo,
+  getVideoStatus,
   listMyVideos,
   listPublishedVideos,
   publishDraft,
@@ -467,9 +468,22 @@ describe('listPublishedVideos', () => {
         ),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ video: { id: 100 } }), {
-          headers: { 'content-type': 'application/json' },
-        }),
+        new Response(
+          JSON.stringify({
+            draft: {
+              id: 7,
+              title: '我的第一条视频',
+              description: '视频介绍',
+              status: 'processing',
+              has_video: true,
+              has_cover: true,
+            },
+          }),
+          {
+            status: 202,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
       )
     vi.stubGlobal('fetch', fetchMock)
     await login({ username: 'alice', password: 'password-123' })
@@ -480,7 +494,9 @@ describe('listPublishedVideos', () => {
         description: '视频介绍',
       }),
     ).resolves.toMatchObject({ draft: { id: 7, status: 'draft' } })
-    await publishDraft(7)
+    await expect(publishDraft(7)).resolves.toMatchObject({
+      draft: { id: 7, status: 'processing' },
+    })
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
@@ -503,5 +519,60 @@ describe('listPublishedVideos', () => {
     const requestInit = fetchMock.mock.calls[2]?.[1]
     expect(requestInit?.body).toBeUndefined()
     expect(new Headers(requestInit?.headers).get('Authorization')).toBe('Bearer access-token')
+  })
+
+  it('queries the authenticated video processing status with cancellation support', async () => {
+    const session = {
+      access_token: 'access-token',
+      refresh_token: 'refresh-token',
+      expires_at: '2026-08-26T08:00:00Z',
+      user: { id: 42, username: 'alice' },
+    }
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(session), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status: 'published',
+            published_at: '2026-08-26T08:01:00Z',
+            rejected_at: null,
+            rejected_reason: '',
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await login({ username: 'alice', password: 'password-123' })
+    const controller = new AbortController()
+    await expect(getVideoStatus(7, controller.signal)).resolves.toEqual({
+      status: 'published',
+      published_at: '2026-08-26T08:01:00Z',
+      rejected_at: null,
+      rejected_reason: '',
+    })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/video/auth/7/status',
+      expect.objectContaining({ signal: controller.signal }),
+    )
+    const requestInit = fetchMock.mock.calls[1]?.[1]
+    expect(new Headers(requestInit?.headers).get('Authorization')).toBe('Bearer access-token')
+  })
+
+  it('rejects invalid video IDs before querying processing status', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+    vi.stubGlobal('fetch', fetchMock)
+
+    for (const videoID of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      await expect(getVideoStatus(videoID)).rejects.toEqual(new ApiError(400, '视频 ID 无效'))
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

@@ -57,7 +57,7 @@ export type DraftItem = {
   id: number
   title: string
   description: string
-  status: 'draft' | 'purging'
+  status: 'draft' | 'processing' | 'published' | 'rejected' | 'purging'
   has_video: boolean
   has_cover: boolean
   play_original_name?: string
@@ -70,8 +70,15 @@ type DraftResponse = {
   draft: DraftItem
 }
 
-type PublishDraftResponse = {
-  video: VideoItem
+export type VideoProcessingStatus = {
+  status: 'processing' | 'published' | 'rejected'
+  published_at: string | null
+  rejected_at: string | null
+  rejected_reason: string
+}
+
+export type PublishDraftResponse = {
+  draft: DraftItem
 }
 
 export function listPublishedVideos({
@@ -315,6 +322,18 @@ export function publishDraft(draftID: number) {
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },
+    }),
+  )
+}
+
+export function getVideoStatus(videoID: number, signal?: AbortSignal) {
+  if (!validDraftID(videoID)) {
+    return Promise.reject(new ApiError(400, '视频 ID 无效'))
+  }
+  return withAuthenticatedSession((accessToken) =>
+    request<VideoProcessingStatus>(`/api/video/auth/${videoID}/status`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal,
     }),
   )
 }
