@@ -90,19 +90,42 @@ func registerFaultInjection(t *testing.T, gdb *gorm.DB) *faultInjection {
 	t.Helper()
 	faults := &faultInjection{}
 	callback := func(tx *gorm.DB) { faults.inject(tx) }
-	for _, registration := range []struct {
+	registrations := []struct {
+		name     string
 		register func() error
+		remove   func() error
 	}{
-		{func() error {
-			return gdb.Callback().Query().Before("gorm:query").Register("gofeed:worker_fault_query", callback)
-		}},
-		{func() error {
-			return gdb.Callback().Create().Before("gorm:create").Register("gofeed:worker_fault_create", callback)
-		}},
-		{func() error {
-			return gdb.Callback().Update().Before("gorm:update").Register("gofeed:worker_fault_update", callback)
-		}},
-	} {
+		{
+			name: "gofeed:worker_fault_query",
+			register: func() error {
+				return gdb.Callback().Query().Before("gorm:query").Register("gofeed:worker_fault_query", callback)
+			},
+			remove: func() error { return gdb.Callback().Query().Remove("gofeed:worker_fault_query") },
+		},
+		{
+			name: "gofeed:worker_fault_create",
+			register: func() error {
+				return gdb.Callback().Create().Before("gorm:create").Register("gofeed:worker_fault_create", callback)
+			},
+			remove: func() error { return gdb.Callback().Create().Remove("gofeed:worker_fault_create") },
+		},
+		{
+			name: "gofeed:worker_fault_update",
+			register: func() error {
+				return gdb.Callback().Update().Before("gorm:update").Register("gofeed:worker_fault_update", callback)
+			},
+			remove: func() error { return gdb.Callback().Update().Remove("gofeed:worker_fault_update") },
+		},
+	}
+	t.Cleanup(func() {
+		faults.disarm()
+		for _, registration := range registrations {
+			if err := registration.remove(); err != nil {
+				t.Errorf("移除故障回调 %s 失败: %v", registration.name, err)
+			}
+		}
+	})
+	for _, registration := range registrations {
 		if err := registration.register(); err != nil {
 			t.Fatalf("注册故障回调失败: %v", err)
 		}

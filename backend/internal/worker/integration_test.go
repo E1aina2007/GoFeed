@@ -76,7 +76,9 @@ func consumeDelivery(t *testing.T, conn *mq.Connection, queue string) amqp.Deliv
 	if err != nil {
 		t.Fatalf("创建消费信道失败: %v", err)
 	}
-	defer channel.Close()
+	// 测试目标：保持消费信道直到调用方完成消息确认
+	// 预期效果：返回的 Delivery 仍可执行 Ack 或 Nack
+	t.Cleanup(func() { _ = channel.Close() })
 	deliveries, err := channel.Consume(queue, "", false, false, false, false, nil)
 	if err != nil {
 		t.Fatalf("注册消费失败: %v", err)
@@ -130,6 +132,9 @@ func TestProcessingClosureIntegration(t *testing.T) {
 	if err := consumer.process(context.Background(), msg); err != nil {
 		t.Fatalf("消费处理失败: %v", err)
 	}
+	if err := delivery.Ack(false); err != nil {
+		t.Fatalf("确认处理消息失败: %v", err)
+	}
 	var updated video.Video
 	if err := db.First(&updated, row.ID).Error; err != nil {
 		t.Fatalf("读取视频失败: %v", err)
@@ -167,6 +172,9 @@ func TestDeadLetterIntegration(t *testing.T) {
 	}
 	if msg.EventID != "evt-stale" {
 		t.Fatalf("死信内容错误 got=%+v", msg)
+	}
+	if err := dead.Ack(false); err != nil {
+		t.Fatalf("确认死信消息失败: %v", err)
 	}
 }
 
