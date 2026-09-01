@@ -44,8 +44,9 @@
 | GET | `/api/video/auth/drafts/:id` | 是 | 查询当前草稿状态 |
 | POST | `/api/video/auth/drafts/:id/play` | 是 | 上传草稿视频文件 |
 | POST | `/api/video/auth/drafts/:id/cover` | 是 | 上传草稿封面图片 |
-| POST | `/api/video/auth/drafts/:id/publish` | 是 | 发布完整草稿 |
-| DELETE | `/api/video/auth/drafts/:id` | 是 | 丢弃草稿并排入异步清扫 |
+| POST | `/api/video/auth/drafts/:id/publish` | 是 | 发布完整草稿（异步，返回 processing） |
+| DELETE | `/api/video/auth/drafts/:id` | 是 | 丢弃 draft/rejected 视频并排入异步清扫 |
+| GET | `/api/video/auth/:id/status` | 是 | 查询视频异步处理状态 |
 | GET | `/api/video/auth/mine` | 是 | 查询我的视频 |
 | GET | `/api/video/auth/:id/like` | 是 | 查询我是否点赞指定视频 |
 | PUT | `/api/video/auth/:id/like` | 是 | 点赞指定视频 |
@@ -604,7 +605,7 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 
 草稿没有 `published_at`，也没有客户端可填写的媒体字段。`has_video` 和 `has_cover` 分别表示对应媒体是否已由服务端成功绑定到草稿，客户端可用它们在上传响应丢失后恢复后续流程。
 
-草稿保留期由 `RETENTION_VIDEO_DRAFT_HOURS` 控制。保留期届满后，后台 sweeper 会在下一轮将未发布草稿转入不可逆的 `purging` 状态；进入该状态后不能继续上传或发布。
+草稿保留期由 `RETENTION_VIDEO_DRAFT_HOURS` 控制。保留期届满后，后台 sweeper 会在下一轮将未发布草稿转入不可逆的 `purging` 状态；进入该状态后不能继续上传或发布。处理失败的视频从 `rejected_at` 起使用同一保留时长，届满后也会进入 `purging`。
 
 常见失败：`400` 请求体或标题、简介不合法，`401` 未认证。
 
@@ -640,7 +641,7 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 
 `DELETE /api/video/auth/drafts/:id`
 
-路径参数 `id` 必须是当前用户处于 `draft` 状态的草稿标识。服务端在单个事务中将草稿转换为 `purging`，不会在 HTTP 请求内直接删除媒体文件；后台 sweeper 会使用既有租约和检查点完成可重试清扫。
+路径参数 `id` 必须是当前用户处于 `draft` 或 `rejected` 状态的视频标识。服务端在单个事务中将记录转换为 `purging`，不会在 HTTP 请求内直接删除媒体文件；后台 sweeper 会使用既有租约和检查点完成可重试清扫。`rejected` 视频也可以主动丢弃，不需要等待保留期届满。
 
 成功响应：`202 Accepted`
 
@@ -661,9 +662,9 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 }
 ```
 
-`202` 只表示服务端已持久化接受清扫，不代表媒体已物理删除。若客户端在收到响应前断开，可对仍处于 `purging` 的同一草稿重复调用该接口，响应仍为 `202`；草稿被 sweeper 最终硬删除后再次请求会返回 `404`。
+`202` 只表示服务端已持久化接受清扫，不代表媒体已物理删除。若客户端在收到响应前断开，可对仍处于 `purging` 的同一记录重复调用该接口，响应仍为 `202`；记录被 sweeper 最终硬删除后再次请求会返回 `404`。
 
-常见失败：`400` 路径参数不合法，`401` 未认证，`403` 草稿不属于当前用户，`404` 草稿不存在或已被清扫，`409` 视频已发布或草稿不再可进入清扫。
+常见失败：`400` 路径参数不合法，`401` 未认证，`403` 视频不属于当前用户，`404` 视频不存在或已被清扫，`409` 视频已发布或不再可进入清扫。
 
 ### 上传草稿视频文件
 
@@ -721,11 +722,36 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 
 `POST /api/video/auth/drafts/:id/publish`
 
-路径参数 `id` 必须是当前用户完整的 `draft` 草稿。该接口没有请求体；客户端不能提交 `play_url`、`cover_url`、物理文件名或原始文件名。服务端在单个事务中验证两类媒体都已绑定，再写入实际 `published_at` 并转换为 `published`。
+路径参数 `id` 必须是当前用户完整的 `draft` 草稿。该接口没有请求体；客户端不能提交 `play_url`、`cover_url`、物理文件名或原始文件名。服务端在单个事务中验证两类媒体都已绑定，写入实际 `published_at`，将草稿转换为 `processing` 并原子写入异步处理事件。
 
-成功响应：`201 Created`，响应体为 `{"video": <VideoItem>}`。
+发布是异步语义：`processing` 期间视频在公开列表、详情与“我的视频”中不可见，worker 完成媒体校验后自动转为 `published`；校验失败则转为 `rejected`。处理结果通过 `GET /api/video/auth/:id/status` 查询。
 
-常见失败：`400` 提交了请求体或路径参数不合法，`401` 未认证，`403` 草稿不属于当前用户，`404` 草稿不存在，`409` 草稿未完成或不再可发布。响应组装所需的互动统计暂不可用时返回 `503 Service Unavailable`；此时发布事务可能已经成功，客户端应通过 `GET /api/video/:id` 确认状态，而不是重复提交发布。
+成功响应：`202 Accepted`，响应体为 `{"draft": <DraftItem>}`，其中 `status` 为 `processing`。
+
+常见失败：`400` 提交了请求体或路径参数不合法，`401` 未认证，`403` 草稿不属于当前用户，`404` 草稿不存在，`409` 草稿未完成或不再可发布。
+
+### 查询视频处理状态
+
+`GET /api/video/auth/:id/status`
+
+路径参数 `id` 必须是当前用户已提交处理的视频标识；处于 `draft` 或 `purging` 状态、不属于当前用户或不存在的视频统一返回 `404`，避免探测他人资源。
+
+成功响应：`200 OK`
+
+```json
+{
+  "status": "processing",
+  "published_at": "2026-08-21T08:00:00Z",
+  "rejected_at": null,
+  "rejected_reason": ""
+}
+```
+
+响应字段位于顶层，四个字段始终返回；尚未发生的时间使用 `null`，没有拒绝原因时使用空字符串。
+
+`status` 为 `processing` 或 `published` 时返回 `published_at`（发布请求时刻）；`rejected` 时返回 `rejected_at` 与 `rejected_reason`。
+
+常见失败：`400` `id` 不合法，`401` 未认证，`404` 视频不存在、不属于当前用户或尚未提交处理。
 
 ### 查询我的视频
 

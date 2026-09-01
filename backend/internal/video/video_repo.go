@@ -118,8 +118,8 @@ func (r *Repository) UpdateDraftPublication(ctx context.Context, draftID, author
 	return &processing, nil
 }
 
-// UpdateDraftDiscard 原子将当前作者的可写草稿转入不可逆清扫状态
-// 已处于 purging 的草稿视为已接受清理，支持客户端因响应丢失而重试
+// UpdateDraftDiscard 原子将当前作者的草稿或拒绝视频转入不可逆清扫状态
+// 已处于 purging 的记录视为已接受清理，支持客户端因响应丢失而重试
 func (r *Repository) UpdateDraftDiscard(ctx context.Context, draftID, authorID uint) (*Video, error) {
 	if draftID == 0 || authorID == 0 {
 		return nil, ErrInvalidVideoID
@@ -135,7 +135,7 @@ func (r *Repository) UpdateDraftDiscard(ctx context.Context, draftID, authorID u
 		}
 
 		switch draft.Status {
-		case VideoStatusDraft:
+		case VideoStatusDraft, VideoStatusRejected:
 			draft.Status = VideoStatusPurging
 			draft.PurgeToken = nil
 			draft.PurgeLeaseUntil = nil
@@ -248,8 +248,8 @@ func (r *Repository) GetAuthorVideoList(ctx context.Context, authorID uint, curs
 	return videos, nil
 }
 
-// GetRecoverableDraftPurgeList 返回租约已失效的清扫中草稿 ID
-// purging 是不可逆状态，因此无需再次检查草稿创建时间；它们优先作为重试候选
+// GetRecoverableDraftPurgeList 返回租约已失效的清扫中草稿或拒绝视频 ID
+// purging 是不可逆状态，因此无需再次检查原始保留时间；它们优先作为重试候选
 func (r *Repository) GetRecoverableDraftPurgeList(ctx context.Context, limit int) ([]uint, error) {
 	if limit <= 0 {
 		return []uint{}, nil
@@ -265,7 +265,7 @@ func (r *Repository) GetRecoverableDraftPurgeList(ctx context.Context, limit int
 	return ids, err
 }
 
-// GetExpiredDraftPurgeList 返回保留期届满、尚未进入清扫状态的草稿 ID
+// GetExpiredDraftPurgeList 返回保留期届满、尚未进入清扫状态的草稿或拒绝视频 ID
 func (r *Repository) GetExpiredDraftPurgeList(ctx context.Context, cutoff time.Time, limit int) ([]uint, error) {
 	if limit <= 0 {
 		return []uint{}, nil
@@ -274,8 +274,14 @@ func (r *Repository) GetExpiredDraftPurgeList(ctx context.Context, cutoff time.T
 	var ids []uint
 	err := r.db.WithContext(ctx).Model(&Video{}).
 		Where("deleted_at IS NULL").
-		Where("status = ? AND created_at <= ?", VideoStatusDraft, cutoff).
-		Order("created_at ASC, id ASC").
+		Where(
+			"(status = ? AND created_at <= ?) OR (status = ? AND rejected_at IS NOT NULL AND rejected_at <= ?)",
+			VideoStatusDraft,
+			cutoff,
+			VideoStatusRejected,
+			cutoff,
+		).
+		Order("COALESCE(rejected_at, created_at) ASC, id ASC").
 		Limit(limit).
 		Pluck("id", &ids).Error
 	return ids, err
@@ -297,8 +303,10 @@ func (r *Repository) UpdateDraftPurgeClaim(ctx context.Context, id uint, cutoff 
 		result := tx.Model(&Video{}).
 			Where("id = ? AND deleted_at IS NULL", id).
 			Where(
-				"(status = ? AND created_at <= ?) OR (status = ? AND (purge_lease_until IS NULL OR purge_lease_until <= NOW(3)))",
+				"(status = ? AND created_at <= ?) OR (status = ? AND rejected_at IS NOT NULL AND rejected_at <= ?) OR (status = ? AND (purge_lease_until IS NULL OR purge_lease_until <= NOW(3)))",
 				VideoStatusDraft,
+				cutoff,
+				VideoStatusRejected,
 				cutoff,
 				VideoStatusPurging,
 			).

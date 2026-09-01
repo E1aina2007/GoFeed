@@ -42,27 +42,27 @@ func TestModelsAlignWithMigrations(t *testing.T) {
 				"id", "username", "password", "avatar_url", "bio", "deleted_at",
 			},
 		},
-			{
-				model: &video.Video{},
-				table: "videos",
-				columns: []string{
-					"id", "author_id", "title", "description", "play_url",
-					"play_file_name", "play_original_name", "cover_url",
-					"cover_file_name", "cover_original_name", "status",
-					"rejected_reason", "purge_token",
-					"purge_lease_until", "play_purged_at", "cover_purged_at",
-					"published_at",
-					"created_at", "updated_at", "deleted_at",
-				},
+		{
+			model: &video.Video{},
+			table: "videos",
+			columns: []string{
+				"id", "author_id", "title", "description", "play_url",
+				"play_file_name", "play_original_name", "cover_url",
+				"cover_file_name", "cover_original_name", "status",
+				"rejected_reason", "rejected_at", "purge_token",
+				"purge_lease_until", "play_purged_at", "cover_purged_at",
+				"published_at",
+				"created_at", "updated_at", "deleted_at",
 			},
-			{
-				model: &video.OutboxEvent{},
-				table: "video_outbox_events",
-				columns: []string{
-					"id", "event_id", "video_id", "event_type", "status",
-					"attempt", "created_at", "dispatched_at",
-				},
+		},
+		{
+			model: &video.OutboxEvent{},
+			table: "video_outbox_events",
+			columns: []string{
+				"id", "event_id", "video_id", "event_type", "status",
+				"attempt", "created_at", "dispatched_at",
 			},
+		},
 		{
 			model: &auth.AuthSession{},
 			table: "auth_sessions",
@@ -155,7 +155,7 @@ func TestVideoMigrationNullableColumns(t *testing.T) {
 		FROM information_schema.COLUMNS
 		WHERE TABLE_SCHEMA = DATABASE()
 		  AND TABLE_NAME = 'videos'
-		  AND COLUMN_NAME IN ('published_at', 'play_url', 'cover_url', 'purge_token', 'purge_lease_until', 'play_purged_at', 'cover_purged_at')
+		  AND COLUMN_NAME IN ('published_at', 'play_url', 'cover_url', 'rejected_at', 'purge_token', 'purge_lease_until', 'play_purged_at', 'cover_purged_at')
 	`).Scan(&actual).Error; err != nil {
 		t.Fatalf("读取 videos 列元数据失败: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestVideoMigrationNullableColumns(t *testing.T) {
 	for _, column := range actual {
 		byName[column.ColumnName] = column
 	}
-	for _, name := range []string{"published_at", "purge_token", "purge_lease_until", "play_purged_at", "cover_purged_at"} {
+	for _, name := range []string{"published_at", "rejected_at", "purge_token", "purge_lease_until", "play_purged_at", "cover_purged_at"} {
 		column, ok := byName[name]
 		if !ok || column.IsNullable != "YES" || column.ColumnDefault != nil {
 			t.Errorf("列 %s 应为无默认值的可空列 got=%+v", name, column)
@@ -183,7 +183,7 @@ func TestVideoMigrationNullableColumns(t *testing.T) {
 		FROM information_schema.STATISTICS
 		WHERE TABLE_SCHEMA = DATABASE()
 		  AND TABLE_NAME = 'videos'
-		  AND INDEX_NAME IN ('idx_videos_draft_created', 'idx_videos_purging_lease')
+		  AND INDEX_NAME IN ('idx_videos_draft_created', 'idx_videos_purging_lease', 'idx_videos_rejected_purge')
 	`).Scan(&indexes).Error; err != nil {
 		t.Fatalf("读取 videos 索引元数据失败: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestVideoMigrationNullableColumns(t *testing.T) {
 	for _, index := range indexes {
 		present[index] = true
 	}
-	for _, name := range []string{"idx_videos_draft_created", "idx_videos_purging_lease"} {
+	for _, name := range []string{"idx_videos_draft_created", "idx_videos_purging_lease", "idx_videos_rejected_purge"} {
 		if !present[name] {
 			t.Errorf("草稿清扫迁移缺少索引 %s，实际索引=%v", name, indexes)
 		}
@@ -243,11 +243,59 @@ func TestDraftPurgeMigrationAdoptsLegacyDeletedDraft(t *testing.T) {
 	}
 }
 
-func draftPurgeCompatibilityUpdate(content string) string {
+// 测试目标：验证 000008 会为缺少 rejected_at 的历史拒绝视频回填时间基准
+// 预期效果：回填值使用 updated_at，使旧记录也能进入有限保留期清扫
+func TestRejectedPurgeMigrationBackfillsLegacyTimestamp(t *testing.T) {
+	db := DB(t)
+	legacy := &video.Video{
+		AuthorID:       1,
+		Title:          "legacy rejected video",
+		Status:         video.VideoStatusRejected,
+		RejectedReason: "历史拒绝",
+	}
+	if err := db.Create(legacy).Error; err != nil {
+		t.Fatalf("创建历史 rejected 视频失败: %v", err)
+	}
+	updatedAt := time.Now().Add(-2 * time.Hour)
+	if err := db.Exec("UPDATE videos SET updated_at = ?, rejected_at = NULL WHERE id = ?", updatedAt, legacy.ID).Error; err != nil {
+		t.Fatalf("准备缺少 rejected_at 的历史记录失败: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(migrationsDir(), "000008_rejected_purge_index.up.sql"))
+	if err != nil {
+		t.Fatalf("读取 000008 迁移失败: %v", err)
+	}
+	updateSQL := migrationUpdateStatement(string(content))
+	if updateSQL == "" {
+		t.Fatal("000008 迁移缺少 rejected_at 回填语句")
+	}
+	if err := db.Exec(updateSQL).Error; err != nil {
+		t.Fatalf("执行 rejected_at 回填失败: %v", err)
+	}
+
+	var got videoTimestamp
+	if err := db.Raw("SELECT rejected_at, updated_at FROM videos WHERE id = ?", legacy.ID).Scan(&got).Error; err != nil {
+		t.Fatalf("读取回填后的历史记录失败: %v", err)
+	}
+	if got.RejectedAt == nil || !got.RejectedAt.Equal(got.UpdatedAt) {
+		t.Fatalf("rejected_at 回填错误 got=%+v want updated_at=%v", got, got.UpdatedAt)
+	}
+}
+
+type videoTimestamp struct {
+	RejectedAt *time.Time `gorm:"column:rejected_at"`
+	UpdatedAt  time.Time  `gorm:"column:updated_at"`
+}
+
+func migrationUpdateStatement(content string) string {
 	for _, statement := range strings.Split(content, ";") {
 		if index := strings.Index(statement, "UPDATE videos"); index >= 0 {
 			return strings.TrimSpace(statement[index:])
 		}
 	}
 	return ""
+}
+
+func draftPurgeCompatibilityUpdate(content string) string {
+	return migrationUpdateStatement(content)
 }

@@ -1,6 +1,6 @@
 # GoFeed 开发流程与路线
 
-> 更新日期：2026-08-30
+> 更新日期：2026-09-01
 >
 > 功能快照基线：`0d40001`（`docs: 更新Feed可靠性进度`；文档提交本身不计入功能状态）
 
@@ -52,6 +52,8 @@
 | 并发与异常测试收尾 | 已完成 | `d185645` | 同刻排序、分页变更、注销作者占位、统计失败 503、注入错误与 GET 幂等矩阵落地 |
 | R1 状态机与 outbox 迁移 | 已完成 | `c2134ac` | 发布事务 draft→processing 并原子写入 outbox 事件；冗余计数值列已删除 |
 | R2 relay/worker | 已完成 | `d2294a2` | confirm 派发 outbox 事件，消费端校验媒体完成 processing → published/rejected 流转 |
+| R3-A API 异步状态 | 本次完成，待 review | 工作树（未提交） | 发布返回 202 + DraftItem，新增作者状态查询，processing/rejected 结果字段固定 |
+| R3-B rejected 生命周期 | 本次完成，待 review | 工作树（未提交） | rejected 可主动丢弃；按 rejected_at 自动进入 purging；000008 回填并增加清扫索引 |
 
 ### 已确认的系统边界
 
@@ -65,9 +67,9 @@
 - 互动统计读取已支持按视频 ID 批量查询；查询失败时读路径 fail-closed 返回 `503`（`ErrEngagementUnavailable`），零计数只允许来自真实聚合结果；`videos.likes_count`、`videos.comments_count` 两列已在 `000006` 删除，互动关系表聚合是计数的唯一事实源
 - 请求内数据库查询由 `internal/db` 的 GORM 语句回调计数，`observability.RequestLogger` 在完成日志输出 `db_queries`；公开列表与详情的预算为 4 条语句，由真实 MySQL e2e 断言守护
 - 慢查询阈值 200ms 由 `internal/db` 显式配置，预期内的记录不存在不再按错误级别刷日志
-- 视频状态机为 `draft → processing → published | rejected`：发布事务原子完成 `draft → processing`、写入发布时刻与 outbox 事件，worker 校验通过后 CAS 为 `published`；`rejected` 可由作者丢弃进入 `purging`（R3 接入清扫）
-- 发布接口响应保持 `201 + VideoItem` 形状；`processing` 行在公开列表、详情与 `GET /mine` 中不可见，worker 校验通过后自动转为可见
-- 仓库迁移文件的最高版本为 `000006`；真实数据库版本仍需按任务现场核对 `schema_migrations`，已应用迁移不得修改，后续必须新增递增版本
+- 视频状态机为 `draft → processing → published | rejected`：发布事务原子完成 `draft → processing`、写入发布时刻与 outbox 事件，worker 校验通过后 CAS 为 `published`；作者可查询 `processing`/`published`/`rejected`，`rejected` 可主动丢弃或在 `rejected_at + RETENTION_VIDEO_DRAFT_HOURS` 到期后由 sweeper 转入 `purging`
+- 发布接口响应为 `202 + {"draft": DraftItem}`；`processing` 行在公开列表、详情与 `GET /mine` 中不可见，worker 校验通过后自动转为可见
+- 仓库迁移文件的最高版本为 `000008`；本次现场真实库检查为 `schema_migrations(version=7, dirty=0)`、无 `rejected` 行，000008 尚未应用；已应用迁移不得修改，后续必须新增递增版本
 - worker 进程内运行 relay 与 consumer：relay 轮询 pending 事件（`FOR UPDATE SKIP LOCKED`）并以 publisher confirm 派发到 `gofeed.events`/`video.process`，成功后标记 dispatched；consumer 手动 ack，媒体校验失败直接 `rejected`（确定性失败），基础设施故障按指数退避与 `x-retry-attempt` 头重发三次后进死信
 - 消息载荷只含 schema 版本、event_id、video_id 与媒体相对路径；处理队列声明 `x-dead-letter-exchange=gofeed.dlx`，死信队列 `video.process.dead` 绑定固定路由键
 - API 与 sweeper 使用 `./.run/uploads`，worker 经 Compose 的 `backend_uploads` 共享卷访问同一存储；本地直连运行时 worker 使用相同相对路径
@@ -147,11 +149,12 @@ git commit --only -m "<type>: <简短中文摘要>" -- <本模块路径>
 
 ### 阶段二：RabbitMQ 视频处理闭环（当前）
 
-RabbitMQ 首个业务闭环建议只负责视频异步处理，不搬用现有草稿清扫租约。拆为三个模块：
+RabbitMQ 首个业务闭环建议只负责视频异步处理，不搬用现有草稿清扫租约；R3 再复用清扫租约处理 rejected 生命周期。拆为四个交付模块：
 
 1. **状态机与 outbox 迁移（已完成，`c2134ac`）**：`000006` 新增 `video_outbox_events` 表（`event_id` 唯一、`(status, id)` 轮询索引）与 `videos.rejected_reason` 列，删除派生的计数值列；发布事务在同一事务内完成媒体完整性校验、`draft → processing` CAS、发布时刻与 outbox 事件写入
 2. **relay/worker（已完成，`d2294a2`）**：`internal/mq` 提供连接、拓扑与 confirm 发布器；relay 轮询 outbox（SKIP LOCKED）派发并标记 dispatched；consumer 手动 ack 校验媒体后 CAS `processing → published`，媒体缺陷直接 `rejected` 并记录原因，基础设施故障按指数退避重发三次后进死信；启动期 MySQL 与 RabbitMQ 连接按指数退避重试；Compose worker 补挂载 `backend_uploads`
-3. **API 与前端异步状态**：先确定发布接口是返回 `202` 还是保留同步语义，再提供状态查询和失败响应；更新 `API.md` 后实现前端的处理中、成功和拒绝状态。API、worker 和 sweeper 必须访问同一份媒体存储，Compose worker 必须挂载 `backend_uploads`
+3. **R3-A API 异步状态（本次完成，待 review）**：发布接口返回 `202 + {draft: DraftItem}`；新增作者状态查询端点，顶层固定返回 `status`、`published_at`、`rejected_at`、`rejected_reason`；公开读取继续隐藏 processing/rejected
+4. **R3-B rejected 生命周期（本次完成，待 review）**：`DELETE /api/video/auth/drafts/:id` 接受 `draft`/`rejected`；`GetExpiredDraftPurgeList` 和 claim 按各自时间基准筛选，`000007` 保持不变，`000008` 回填历史 `rejected_at` 并增加 `(status, rejected_at, id)` 索引。前端状态展示仍作为后续页面模块
 
 必须测试事务回滚、relay 崩溃、worker 重启、重复消息、达到重试上限、死信、媒体缺失、状态不可逆和消息/数据库不一致。不要把“能连接 RabbitMQ”当作业务闭环完成。
 
@@ -167,7 +170,7 @@ Redis 不成为用户、视频、草稿或清扫状态的权威来源；当前�
 - 本地磁盘存储只适合单机或共享卷部署；异步 worker、API、sweeper 必须明确共享卷或对象存储契约
 - 用户列表目前没有分页，数据量增长后会影响响应体和查询成本
 - `observe.pprof` 在配置示例中存在，但当前配置加载器不读取；启用时要使用独立、仅回环监听的 `ServeMux` 和独立关闭生命周期
-- 阶段一模块（M1-M6）已全部完成；R1 状态机与 outbox 迁移、R2 relay/worker 已落地，下一步进入 R3 API 与前端异步状态（发布 202 契约、状态查询端点、rejected 清扫接入）
+- 阶段一模块（M1-M6）已全部完成；R1、R2 已落地，R3-A/R3-B 后端契约与 rejected 清扫已在当前工作树完成，待 review 后再进入前端异步状态展示
 - 手写 GORM 列名尚未达到完整编译期类型安全；`gorm.io/gen` 延后到读取模式稳定后评估，避免当前引入生成代码和持久化层大范围改写
 - 草稿 `purging` 是不可逆状态；涉及 `000004` 回滚时必须停止 API 与所有 sweeper，确认不存在不兼容行后再执行 down migration，不能用故意失败的 SQL 阻止回滚
 
@@ -197,7 +200,8 @@ go test -race -count=1 ./...
 - 并发与异常测试收尾：`go vet ./...`、`go test ./... -count=1`、`go test -race -count=1 ./...` 均已在真实 MySQL 下通过；表级故障注入夹具覆盖同刻发布排序翻页、分页期间新增/软删除、注销作者占位、统计失败 503（无零计数半组装响应）、注入错误干净路径与 GET 幂等；代码已提交为 `d185645`
 - R1 状态机与 outbox 迁移：`go vet ./...`、`go test ./... -count=1`、`go test -race -count=1 ./...` 均已在真实 MySQL 下通过；覆盖 `000006` 迁移与模型对齐、发布事务 CAS 与 outbox 原子写入、重复发布拒绝、outbox 失败整体回滚、processing 期间公开不可见；代码已提交为 `c2134ac`，发布事务改造与回归已提交为 `8342fa2`
 - R2 relay/worker：`go vet ./...`、`go test ./... -count=1`、`go test -race -count=1 ./...` 均已在真实 MySQL 下通过，`docker compose config --quiet` 通过；单测覆盖拓扑声明、confirm 发布、派发标记、发布失败保持 pending、孤立事件跳过、媒体校验发布/拒绝、重复消息幂等、重试退避与计数头、上下文取消重投、死信动作，以及 worker 启动期连接退避；真实 RabbitMQ 集成用例（派发闭环、死信、真实队列重发）在本机因 Docker 守护进程未运行而跳过，CI 的 rabbitmq service 将实际执行
-- 阶段一完成：M1-M6 均通过契约评审、真实 MySQL 回归与竞态验证；R1、R2 已落地，下一模块为 R3 API 与前端异步状态，先更新 `API.md` 再动前端
+- R3-A/R3-B（本次工作树，待 review）：已覆盖 `202 + DraftItem`、状态查询顶层字段、rejected 主动丢弃、按 `rejected_at` 到期候选、租约 claim、000008 回填与索引；真实 MySQL 下 `go test ./... -count=1`、`go vet ./...`、`go test -race -count=1 ./...` 均通过，`git diff --check` 通过；RabbitMQ 真实集成未计入本次通过结论（需隔离 broker/relay 前置），前端状态展示作为后续独立模块
+- 阶段一完成：M1-M6 均通过契约评审、真实 MySQL 回归与竞态验证；R1、R2 已落地，R3 后端两个模块已完成待 review，下一步是前端异步状态展示
 
 ### 前端
 

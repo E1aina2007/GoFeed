@@ -157,6 +157,34 @@ func TestDraftPurgeJobRunRetriesOnlyUnfinishedMedia(t *testing.T) {
 	}
 }
 
+// 测试目标：验证仓储提供的到期 rejected 候选会复用草稿清扫主流程
+// 预期效果：清扫器不区分来源状态，仍按租约、媒体检查点和硬删除顺序完成回收
+func TestDraftPurgeJobRunPurgesRejectedCandidate(t *testing.T) {
+	playURL := "/static/videos/1/20260810/rejected.mp4"
+	coverURL := "/static/covers/1/20260810/rejected.png"
+	purger := &fakeDraftPurger{
+		expired: []uint{1},
+		claims: map[uint]*video.DraftPurgeClaim{
+			1: {DraftID: 1, PlayURL: playURL, CoverURL: coverURL},
+		},
+		hardOK: map[uint]bool{1: true},
+	}
+	remover := &fakeMediaRemover{}
+	job := NewDraftPurgeJob(purger, remover, 24*time.Hour, 15*time.Minute)
+	job.newToken = func() (string, error) { return "rejected-token", nil }
+
+	purged, err := job.Run(context.Background())
+	if err != nil || purged != 1 {
+		t.Fatalf("rejected 候选清扫失败 purged=%d err=%v", purged, err)
+	}
+	if got, want := remover.urls, []string{playURL, coverURL}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("rejected 媒体删除顺序错误 got=%v want=%v", got, want)
+	}
+	if got, want := purger.hardDeleted, []uint{1}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("rejected 候选未硬删除 got=%v want=%v", got, want)
+	}
+}
+
 // 测试目标：验证已完成槽位不会重复删除，丢失租约后停止处理该草稿
 // 预期效果：不会删除已标记视频，租约失效时不会删除封面或硬删除记录
 func TestDraftPurgeJobRunSkipsCompletedMediaAndLostLease(t *testing.T) {

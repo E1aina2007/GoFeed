@@ -115,6 +115,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		protectedVideos.POST("/drafts/:id/publish", videoCtl.UpdateDraftPublication)
 		protectedVideos.DELETE("/drafts/:id", videoCtl.DiscardDraft)
 		protectedVideos.GET("/mine", videoCtl.GetMyVideoList)
+		protectedVideos.GET("/:id/status", videoCtl.GetVideoStatus)
 		protectedVideos.GET("/:id/like", socialCtl.GetLikeState)
 		protectedVideos.PUT("/:id/like", socialCtl.CreateLike)
 		protectedVideos.DELETE("/:id/like", socialCtl.RemoveLike)

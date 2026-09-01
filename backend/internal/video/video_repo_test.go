@@ -289,7 +289,8 @@ func TestRepositoryDraftMediaAndPublish(t *testing.T) {
 // 测试目标：验证仓储原子将草稿转入可由 sweeper 接管的 purging 状态
 // 预期效果：重试保持幂等，清扫前不删除媒体，其他作者和已发布视频不能触发转换
 func TestRepositoryDiscardDraft(t *testing.T) {
-	repo := NewRepository(testutil.DB(t))
+	db := testutil.DB(t)
+	repo := NewRepository(db)
 	ctx := context.Background()
 	draft := newVideoFixture(1, "待丢弃草稿", VideoStatusDraft, baseTime)
 	draft.PublishedAt = nil
@@ -321,6 +322,112 @@ func TestRepositoryDiscardDraft(t *testing.T) {
 	published := seedVideo(t, repo, 1, "已发布", VideoStatusPublished, baseTime)
 	if _, err := repo.UpdateDraftDiscard(ctx, published.ID, 1); !errors.Is(err, ErrDraftNotWritable) {
 		t.Fatalf("已发布视频不应进入草稿清扫 error=%v", err)
+	}
+
+	rejectedAt := time.Now().Add(-time.Minute)
+	rejected := newVideoFixture(1, "被拒绝视频", VideoStatusRejected, baseTime)
+	rejected.RejectedReason = "媒体缺失"
+	rejected.RejectedAt = &rejectedAt
+	if err := repo.Create(ctx, rejected); err != nil {
+		t.Fatalf("创建 rejected 视频失败: %v", err)
+	}
+	rejectedPurgeToken := "cccccccccccccccccccccccccccccccc"
+	rejectedLease := time.Now().Add(time.Hour)
+	rejected.PlayPurgedAt = &rejectedLease
+	rejected.CoverPurgedAt = &rejectedLease
+	rejected.PurgeToken = &rejectedPurgeToken
+	rejected.PurgeLeaseUntil = &rejectedLease
+	if err := db.Model(&Video{}).Where("id = ?", rejected.ID).Updates(map[string]any{
+		"purge_token":       rejectedPurgeToken,
+		"purge_lease_until": rejectedLease,
+		"play_purged_at":    rejectedLease,
+		"cover_purged_at":   rejectedLease,
+	}).Error; err != nil {
+		t.Fatalf("准备 rejected 清扫字段失败: %v", err)
+	}
+	discardedRejected, err := repo.UpdateDraftDiscard(ctx, rejected.ID, 1)
+	if err != nil {
+		t.Fatalf("主动丢弃 rejected 视频失败: %v", err)
+	}
+	if discardedRejected.Status != VideoStatusPurging || discardedRejected.PurgeToken != nil || discardedRejected.PurgeLeaseUntil != nil || discardedRejected.PlayPurgedAt != nil || discardedRejected.CoverPurgedAt != nil {
+		t.Fatalf("rejected 丢弃后的清扫状态错误 got=%#v", discardedRejected)
+	}
+	if repeated, err := repo.UpdateDraftDiscard(ctx, rejected.ID, 1); err != nil || repeated.Status != VideoStatusPurging {
+		t.Fatalf("重复丢弃 rejected 视频应保持成功 video=%#v error=%v", repeated, err)
+	}
+}
+
+// 测试目标：验证 rejected 的自动清扫以 rejected_at 为保留期基准并支持租约认领
+// 预期效果：到期和边界记录可认领，未到期或缺少 rejected_at 的记录不会提前清扫
+func TestRepositoryRejectedPurgeCandidatesAndClaim(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+	now := time.Now()
+	cutoff := now.Add(-time.Hour)
+
+	expired := newVideoFixture(1, "expired rejected", VideoStatusRejected, baseTime)
+	boundary := newVideoFixture(1, "boundary rejected", VideoStatusRejected, baseTime)
+	active := newVideoFixture(1, "active rejected", VideoStatusRejected, baseTime)
+	legacy := newVideoFixture(1, "legacy rejected", VideoStatusRejected, cutoff.Add(-time.Hour))
+	draft := newVideoFixture(1, "expired draft", VideoStatusDraft, baseTime)
+	for _, item := range []*Video{expired, boundary, active, legacy, draft} {
+		item.PublishedAt = nil
+		if item.Status == VideoStatusRejected {
+			item.RejectedReason = "媒体校验失败"
+		}
+		if err := repo.Create(ctx, item); err != nil {
+			t.Fatalf("创建清扫候选 %q 失败: %v", item.Title, err)
+		}
+	}
+	if err := db.Exec("UPDATE videos SET rejected_at = ?, created_at = ? WHERE id = ?", cutoff.Add(-time.Minute), now.Add(time.Hour), expired.ID).Error; err != nil {
+		t.Fatalf("设置过期 rejected 时间失败: %v", err)
+	}
+	if err := db.Exec("UPDATE videos SET rejected_at = ? WHERE id = ?", cutoff, boundary.ID).Error; err != nil {
+		t.Fatalf("设置边界 rejected 时间失败: %v", err)
+	}
+	if err := db.Exec("UPDATE videos SET rejected_at = ? WHERE id = ?", cutoff.Add(time.Minute), active.ID).Error; err != nil {
+		t.Fatalf("设置活跃 rejected 时间失败: %v", err)
+	}
+	if err := db.Exec("UPDATE videos SET rejected_at = NULL, created_at = ? WHERE id = ?", cutoff.Add(-time.Hour), legacy.ID).Error; err != nil {
+		t.Fatalf("设置旧 rejected 时间失败: %v", err)
+	}
+	var boundaryCutoff time.Time
+	if err := db.Raw("SELECT rejected_at FROM videos WHERE id = ?", boundary.ID).Scan(&boundaryCutoff).Error; err != nil {
+		t.Fatalf("读取数据库截断后的 rejected 边界失败: %v", err)
+	}
+	if err := db.Exec("UPDATE videos SET created_at = ? WHERE id = ?", cutoff.Add(-time.Minute), draft.ID).Error; err != nil {
+		t.Fatalf("设置过期草稿创建时间失败: %v", err)
+	}
+
+	ids, err := repo.GetExpiredDraftPurgeList(ctx, boundaryCutoff, 20)
+	if err != nil {
+		t.Fatalf("查询 rejected 清扫候选失败: %v", err)
+	}
+	got := make(map[uint]bool, len(ids))
+	for _, id := range ids {
+		got[id] = true
+	}
+	for _, id := range []uint{expired.ID, boundary.ID, draft.ID} {
+		if !got[id] {
+			t.Errorf("应返回到期候选 id=%d ids=%v", id, ids)
+		}
+	}
+	for _, id := range []uint{active.ID, legacy.ID} {
+		if got[id] {
+			t.Errorf("不应返回未到期或缺少 rejected_at 的候选 id=%d ids=%v", id, ids)
+		}
+	}
+
+	claim, ok, err := repo.UpdateDraftPurgeClaim(ctx, expired.ID, boundaryCutoff, "dddddddddddddddddddddddddddddddd", time.Minute)
+	if err != nil || !ok || claim == nil || claim.Token != "dddddddddddddddddddddddddddddddd" {
+		t.Fatalf("到期 rejected 认领失败 claim=%+v ok=%t err=%v", claim, ok, err)
+	}
+	if _, ok, err := repo.UpdateDraftPurgeClaim(ctx, active.ID, boundaryCutoff, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", time.Minute); err != nil || ok {
+		t.Fatalf("未到期 rejected 不应认领 ok=%t err=%v", ok, err)
+	}
+	if _, ok, err := repo.UpdateDraftPurgeClaim(ctx, legacy.ID, boundaryCutoff, "ffffffffffffffffffffffffffffffff", time.Minute); err != nil || ok {
+		t.Fatalf("缺少 rejected_at 的旧记录不应认领 ok=%t err=%v", ok, err)
 	}
 }
 

@@ -203,7 +203,29 @@ func (ctl *Controller) UpdateDraftPublication(c *gin.Context) {
 		handleVideoError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"video": item})
+	// 发布是异步语义：202 表示处理已受理，结果经状态查询端点获取
+	c.JSON(http.StatusAccepted, gin.H{"draft": item})
+}
+
+// GetVideoStatus 处理 GET /api/video/auth/:id/status
+func (ctl *Controller) GetVideoStatus(c *gin.Context) {
+	userID, ok := jwt.UserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		return
+	}
+	videoID, err := parsePathID(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	status, err := ctl.srv.GetVideoStatus(c.Request.Context(), videoID, userID)
+	if err != nil {
+		handleVideoError(c, err)
+		return
+	}
+	// 状态响应使用顶层固定字段，客户端无需区分额外包装层
+	c.JSON(http.StatusOK, status)
 }
 
 // DiscardDraft 处理 DELETE /api/video/auth/drafts/:id

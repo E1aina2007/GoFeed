@@ -20,7 +20,7 @@ func prepareCompleteDraft(t *testing.T, client *http.Client, base, token, title 
 }
 
 // 测试目标：验证发布事务将草稿原子转入 processing 并写入待派发 outbox 事件
-// 预期效果：响应保持 VideoItem 形状，数据库状态与事件字段满足 relay 派发契约
+// 预期效果：响应返回 processing 草稿形体，数据库状态与事件字段满足 relay 派发契约
 func TestPublishEntersProcessingWithOutboxEvent(t *testing.T) {
 	srv, client, _, gdb := newResilienceTestServer(t)
 	base := srv.URL
@@ -28,9 +28,9 @@ func TestPublishEntersProcessingWithOutboxEvent(t *testing.T) {
 	sess := login(t, client, base, "outbox_author", "outbox-password-123")
 
 	draft := prepareCompleteDraft(t, client, base, sess.AccessToken, "outbox 视频")
-	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusCreated)
-	if item.ID == 0 || item.Author.Username != "outbox_author" {
-		t.Fatalf("发布响应应保持 VideoItem 形状 got=%+v", item)
+	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusAccepted)
+	if item.ID == 0 || item.Status != videoModel.VideoStatusProcessing {
+		t.Fatalf("发布响应应为处理中草稿 got=%+v", item)
 	}
 
 	var row videoModel.Video
@@ -50,6 +50,12 @@ func TestPublishEntersProcessingWithOutboxEvent(t *testing.T) {
 		events[0].Attempt != 0 || events[0].DispatchedAt != nil {
 		t.Fatalf("outbox 事件字段错误 got=%+v", events)
 	}
+
+	var status videoModel.VideoProcessingStatus
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/auth/%d/status", base, item.ID), sess.AccessToken, nil, http.StatusOK, &status)
+	if status.Status != videoModel.VideoStatusProcessing || status.PublishedAt == nil || status.RejectedAt != nil || status.RejectedReason != "" {
+		t.Fatalf("处理中状态响应错误 got=%+v", status)
+	}
 }
 
 // 测试目标：验证 processing 视频对外不可见，模拟处理完成后恢复公开可见
@@ -61,7 +67,7 @@ func TestProcessingVideoInvisibleUntilCompleted(t *testing.T) {
 	sess := login(t, client, base, "processing_author", "processing-password-123")
 
 	draft := prepareCompleteDraft(t, client, base, sess.AccessToken, "处理中视频")
-	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusCreated)
+	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusAccepted)
 
 	var list struct {
 		Items []videoItem `json:"items"`
@@ -123,7 +129,7 @@ func TestPublishRollsBackWhenOutboxFails(t *testing.T) {
 		t.Fatalf("回滚后不应残留事件 got=%+v", events)
 	}
 
-	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusCreated)
+	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusAccepted)
 	if item.ID == 0 {
 		t.Fatalf("解除注入后重试发布应成功 got=%+v", item)
 	}

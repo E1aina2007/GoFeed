@@ -125,8 +125,8 @@ func (r *fakeVideoReader) UpdateDraftPublication(_ context.Context, draftID, aut
 	return draft, nil
 }
 
-// 测试目标：模拟草稿丢弃状态转换
-// 预期效果：仅作者的 draft 可进入 purging 且重试保持幂等
+// 测试目标：模拟草稿或拒绝视频丢弃状态转换
+// 预期效果：仅作者的 draft/rejected 可进入 purging 且重试保持幂等
 func (r *fakeVideoReader) UpdateDraftDiscard(_ context.Context, draftID, authorID uint) (*Video, error) {
 	r.discardedID = draftID
 	r.discardedAuthorID = authorID
@@ -141,7 +141,7 @@ func (r *fakeVideoReader) UpdateDraftDiscard(_ context.Context, draftID, authorI
 		return nil, ErrNotAuthor
 	}
 	switch draft.Status {
-	case VideoStatusDraft:
+	case VideoStatusDraft, VideoStatusRejected:
 		draft.Status = VideoStatusPurging
 		draft.PurgeToken = nil
 		draft.PurgeLeaseUntil = nil
@@ -472,6 +472,34 @@ func TestServiceDiscardDraft(t *testing.T) {
 	}
 }
 
+// 测试目标：验证被 worker 拒绝的视频可以由作者主动排入清扫
+// 预期效果：rejected 转为 purging，旧租约和媒体检查点被清空且重复请求幂等
+func TestServiceDiscardRejectedVideo(t *testing.T) {
+	lease := time.Now().Add(time.Hour)
+	token := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	rejectedAt := time.Now().Add(-time.Minute)
+	rejected := &Video{
+		ID: 9, AuthorID: 2, Status: VideoStatusRejected,
+		PlayURL: "/static/videos/2/20260810/rejected.mp4", PlayFileName: "rejected.mp4", PlayOriginalName: "失败视频.mp4",
+		CoverURL: "/static/covers/2/20260810/rejected.png", CoverFileName: "rejected.png", CoverOriginalName: "失败封面.png",
+		RejectedReason: "媒体缺失", RejectedAt: &rejectedAt,
+		PurgeToken: &token, PurgeLeaseUntil: &lease, PlayPurgedAt: &lease, CoverPurgedAt: &lease,
+	}
+	repository := &fakeVideoReader{drafts: map[uint]*Video{9: rejected}}
+	service := NewService(repository, &fakeAuthorReader{})
+
+	item, err := service.DiscardDraft(context.Background(), 9, 2)
+	if err != nil {
+		t.Fatalf("丢弃 rejected 视频失败 error=%v", err)
+	}
+	if item.Status != VideoStatusPurging || !item.HasVideo || !item.HasCover || rejected.PurgeToken != nil || rejected.PurgeLeaseUntil != nil || rejected.PlayPurgedAt != nil || rejected.CoverPurgedAt != nil {
+		t.Fatalf("rejected 丢弃状态错误 item=%#v video=%#v", item, rejected)
+	}
+	if item, err := service.DiscardDraft(context.Background(), 9, 2); err != nil || item.Status != VideoStatusPurging {
+		t.Fatalf("重复丢弃 rejected 视频应保持成功 item=%#v error=%v", item, err)
+	}
+}
+
 // 测试目标：验证草稿媒体只能由服务端保存结果绑定
 // 预期效果：绑定后写入保存结果的地址和名称，跨用户草稿被拒绝
 func TestServiceAttachDraftMedia(t *testing.T) {
@@ -510,8 +538,9 @@ func TestServicePublishDraft(t *testing.T) {
 	if complete.Status != VideoStatusProcessing || complete.PublishedAt == nil || complete.PublishedAt.IsZero() || item.PlayOriginalName != "我的视频.mp4" {
 		t.Fatalf("草稿发布结果错误 draft=%#v item=%#v", complete, item)
 	}
-	if item.ID != 7 || item.Author.Username != "author" {
-		t.Fatalf("发布响应应携带处理中的发布快照 got=%#v", item)
+	// 发布响应保持草稿形体，状态为 processing，不再携带作者与互动数据
+	if item.ID != 7 || item.Status != VideoStatusProcessing || !item.HasVideo || !item.HasCover {
+		t.Fatalf("发布响应应为 processing 草稿快照 got=%#v", item)
 	}
 	_, err = service.UpdateDraftPublication(context.Background(), 8, 2)
 	if !errors.Is(err, ErrDraftIncomplete) {
@@ -723,27 +752,37 @@ func TestServiceEngagementFailureMarksUnavailable(t *testing.T) {
 	}
 }
 
-// 测试目标：验证发布响应组装遇统计失败时保持不可用语义
-// 预期效果：发布事务已完成后统计读取失败返回哨兵错误，提示客户端改查公开详情
-func TestServicePublishResponseMarksEngagementUnavailable(t *testing.T) {
-	complete := &Video{
-		ID: 7, AuthorID: 2, Status: VideoStatusDraft,
-		PlayURL: "/static/videos/2/20260810/a.mp4", PlayFileName: "a.mp4", PlayOriginalName: "我的视频.mp4",
-		CoverURL: "/static/covers/2/20260810/c.png", CoverFileName: "c.png", CoverOriginalName: "封面.png",
-	}
-	repository := &fakeVideoReader{drafts: map[uint]*Video{7: complete}}
-	service := NewService(
-		repository,
-		&fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "u"}}},
-		&fakeEngagementReader{err: errors.New("engagement database unavailable")},
-	)
+// 测试目标：验证状态查询按作者视角返回异步处理结果
+// 预期效果：processing/published/rejected 均可查询，draft、purging、他人视频与不存在视频统一按不存在处理
+func TestServiceGetVideoStatus(t *testing.T) {
+	publishedAt := time.Date(2026, time.August, 30, 8, 0, 0, 0, time.UTC)
+	rejectedAt := publishedAt.Add(time.Minute)
+	repository := &fakeVideoReader{drafts: map[uint]*Video{
+		1: {ID: 1, AuthorID: 2, Status: VideoStatusProcessing, PublishedAt: &publishedAt},
+		2: {ID: 2, AuthorID: 2, Status: VideoStatusPublished, PublishedAt: &publishedAt},
+		3: {ID: 3, AuthorID: 2, Status: VideoStatusRejected, RejectedReason: "媒体缺失", RejectedAt: &rejectedAt},
+		4: {ID: 4, AuthorID: 2, Status: VideoStatusDraft},
+		5: {ID: 5, AuthorID: 2, Status: VideoStatusPurging},
+		6: {ID: 6, AuthorID: 3, Status: VideoStatusPublished, PublishedAt: &publishedAt},
+	}}
+	service := NewService(repository, &fakeAuthorReader{})
 
-	_, err := service.UpdateDraftPublication(context.Background(), 7, 2)
-	if !errors.Is(err, ErrEngagementUnavailable) {
-		t.Fatalf("发布响应统计失败应返回不可用错误 got=%v", err)
+	status, err := service.GetVideoStatus(context.Background(), 1, 2)
+	if err != nil || status.Status != VideoStatusProcessing || status.PublishedAt == nil {
+		t.Fatalf("processing 状态查询错误 got=%+v error=%v", status, err)
 	}
-	if complete.Status != VideoStatusProcessing || complete.PublishedAt == nil {
-		t.Fatalf("发布状态转换应已发生 got=%#v", complete)
+	status, err = service.GetVideoStatus(context.Background(), 2, 2)
+	if err != nil || status.Status != VideoStatusPublished || status.RejectedReason != "" {
+		t.Fatalf("published 状态查询错误 got=%+v error=%v", status, err)
+	}
+	status, err = service.GetVideoStatus(context.Background(), 3, 2)
+	if err != nil || status.Status != VideoStatusRejected || status.RejectedReason != "媒体缺失" || status.RejectedAt == nil {
+		t.Fatalf("rejected 状态查询错误 got=%+v error=%v", status, err)
+	}
+	for _, videoID := range []uint{4, 5, 6, 99} {
+		if _, err := service.GetVideoStatus(context.Background(), videoID, 2); !errors.Is(err, ErrVideoNotFound) {
+			t.Fatalf("视频 %d 应按不存在处理 got error=%v", videoID, err)
+		}
 	}
 }
 

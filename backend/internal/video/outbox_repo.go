@@ -84,13 +84,14 @@ func (r *Repository) CompleteVideoProcessing(ctx context.Context, videoID uint) 
 	return result.RowsAffected > 0, nil
 }
 
-// RejectVideoProcessing 将处理中的视频标记为拒绝并记录原因；返回是否发生状态变更
+// RejectVideoProcessing 将处理中的视频标记为拒绝并记录原因与时间；返回是否发生状态变更
 func (r *Repository) RejectVideoProcessing(ctx context.Context, videoID uint, reason string) (bool, error) {
 	result := r.db.WithContext(ctx).Model(&Video{}).
 		Where("id = ? AND status = ?", videoID, VideoStatusProcessing).
 		Updates(map[string]any{
 			"status":          VideoStatusRejected,
 			"rejected_reason": reason,
+			"rejected_at":     time.Now(),
 		})
 	if result.Error != nil {
 		return false, result.Error

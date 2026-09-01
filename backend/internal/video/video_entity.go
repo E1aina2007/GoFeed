@@ -18,7 +18,7 @@ const (
 
 // Video 保存视频发布数据
 type Video struct {
-	ID          uint   `gorm:"primaryKey;index:idx_videos_published_id,priority:2,sort:desc" json:"id"`
+	ID          uint   `gorm:"primaryKey;index:idx_videos_published_id,priority:2,sort:desc;index:idx_videos_rejected_purge,priority:3" json:"id"`
 	AuthorID    uint   `gorm:"not null;index:idx_videos_author_published,priority:1" json:"author_id"`
 	Title       string `gorm:"type:varchar(255);not null" json:"title"`
 	Description string `gorm:"type:varchar(1000);not null;default:''" json:"description"`
@@ -31,7 +31,7 @@ type Video struct {
 	CoverFileName     string `gorm:"type:varchar(255);not null;default:''" json:"cover_file_name"`
 	CoverOriginalName string `gorm:"type:varchar(255);not null;default:''" json:"cover_original_name"`
 
-	Status string `gorm:"type:varchar(16);not null;index;default:'published'" json:"status"`
+	Status string `gorm:"type:varchar(16);not null;index;index:idx_videos_rejected_purge,priority:1;default:'published'" json:"status"`
 
 	// 清扫字段只服务于草稿回收，不暴露到任何视频 API
 	// PurgeToken 与 PurgeLeaseUntil 共同组成多 sweeper 间的围栏租约；
@@ -45,6 +45,7 @@ type Video struct {
 	// processing 状态行不满足公开不变量，worker 校验通过后才转为 published 可见
 	PublishedAt    *time.Time `gorm:"index:idx_videos_published_id,priority:1,sort:desc;index:idx_videos_author_published,priority:2,sort:desc" json:"published_at"`
 	RejectedReason string     `gorm:"type:varchar(255);not null;default:''" json:"-"`
+	RejectedAt     *time.Time `gorm:"index:idx_videos_rejected_purge,priority:2" json:"-"`
 
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
@@ -78,7 +79,7 @@ func (OutboxEvent) TableName() string {
 	return "video_outbox_events"
 }
 
-// DraftPurgeClaim 是一个 worker 获得草稿清扫租约后的当前媒体快照
+// DraftPurgeClaim 是清扫器获得草稿或拒绝视频租约后的当前媒体快照
 // Token 仅在清扫内部传递，后续所有写操作都必须携带它
 type DraftPurgeClaim struct {
 	DraftID       uint
@@ -161,4 +162,13 @@ type DraftItem struct {
 type ListResponse struct {
 	Items      []VideoItem `json:"items"`
 	NextCursor string      `json:"next_cursor,omitempty"`
+}
+
+// VideoProcessingStatus 表示作者视角的异步处理结果
+// 仅 processing、published、rejected 三种状态可查询
+type VideoProcessingStatus struct {
+	Status         string     `json:"status"`
+	PublishedAt    *time.Time `json:"published_at"`
+	RejectedAt     *time.Time `json:"rejected_at"`
+	RejectedReason string     `json:"rejected_reason"`
 }

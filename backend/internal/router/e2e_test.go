@@ -290,14 +290,14 @@ func createDraft(t *testing.T, client *http.Client, base, token, title, descript
 }
 
 // 测试目标：发布指定草稿
-// 预期效果：接口不接收客户端媒体元数据，发布后行处于 processing 待处理状态
-func publishDraft(t *testing.T, gdb *gorm.DB, client *http.Client, base, token string, draftID uint, wantStatus int) videoItem {
+// 预期效果：发布为异步语义，成功返回 processing 状态的草稿形体
+func publishDraft(t *testing.T, gdb *gorm.DB, client *http.Client, base, token string, draftID uint, wantStatus int) draftItem {
 	t.Helper()
 	var out struct {
-		Video videoItem `json:"video"`
+		Draft draftItem `json:"draft"`
 	}
 	doJSON(t, client, http.MethodPost, fmt.Sprintf("%s/api/video/auth/drafts/%d/publish", base, draftID), token, nil, wantStatus, &out)
-	return out.Video
+	return out.Draft
 }
 
 // 测试目标：模拟 R2 worker 校验通过后 processing → published 的状态流转
@@ -314,12 +314,12 @@ func completeProcessing(t *testing.T, gdb *gorm.DB, videoID uint) {
 
 // 测试目标：构造已上传完整媒体的公开视频
 // 预期效果：发布后模拟处理完成，Feed 回归用例只关注公开读取行为
-func publishCompleteVideo(t *testing.T, gdb *gorm.DB, client *http.Client, base, token, title string) videoItem {
+func publishCompleteVideo(t *testing.T, gdb *gorm.DB, client *http.Client, base, token, title string) draftItem {
 	t.Helper()
 	draft := createDraft(t, client, base, token, title, "", http.StatusCreated)
 	uploadMedia(t, client, base, token, fmt.Sprintf("/api/video/auth/drafts/%d/play", draft.ID), "file", "feed.mp4", mp4Bytes, http.StatusCreated)
 	uploadMedia(t, client, base, token, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draft.ID), "file", "feed.png", pngBytes, http.StatusCreated)
-	item := publishDraft(t, gdb, client, base, token, draft.ID, http.StatusCreated)
+	item := publishDraft(t, gdb, client, base, token, draft.ID, http.StatusAccepted)
 	completeProcessing(t, gdb, item.ID)
 	return item
 }
@@ -366,14 +366,11 @@ func TestVideoEndToEndFlow(t *testing.T) {
 		t.Fatalf("静态文件内容不一致 status=%d body=%v", resp.StatusCode, staticBody)
 	}
 
-	// 发布后读取各接口，预期均返回同一条视频及其作者信息
-	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusCreated)
+	// 发布为异步受理，响应是 processing 草稿形体；媒体相对路径已在上传响应中校验
+	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusAccepted)
 	completeProcessing(t, gdb, item.ID)
-	if item.ID == 0 || item.Title != "第一条视频" || item.Author.Username != username {
-		t.Fatalf("发布响应不正确 got=%+v", item)
-	}
-	if item.PlayURL != video.PlayURL || item.CoverURL != cover.CoverURL {
-		t.Fatalf("发布响应应保存相对路径 got play=%s cover=%s", item.PlayURL, item.CoverURL)
+	if item.ID == 0 || item.Status != videoModel.VideoStatusProcessing {
+		t.Fatalf("发布响应应为处理中草稿 got=%+v", item)
 	}
 
 	var detail struct {
@@ -692,7 +689,7 @@ func TestUserProfileVideoCount(t *testing.T) {
 	draft := createDraft(t, client, base, sess.AccessToken, "用于资料统计的视频", "", http.StatusCreated)
 	uploadMedia(t, client, base, sess.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", draft.ID), "file", "profile.mp4", mp4Bytes, http.StatusCreated)
 	uploadMedia(t, client, base, sess.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draft.ID), "file", "profile.png", pngBytes, http.StatusCreated)
-	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusCreated)
+	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusAccepted)
 	completeProcessing(t, gdb, item.ID)
 
 	doJSON(t, client, http.MethodGet, profileURL, "", nil, http.StatusOK, &profile)
@@ -821,9 +818,9 @@ func TestVideoEndToEndForeignDraftRejected(t *testing.T) {
 	otherDraft := createDraft(t, client, base, other.AccessToken, "自己的视频", "", http.StatusCreated)
 	uploadMedia(t, client, base, other.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", otherDraft.ID), "file", "mine.mp4", mp4Bytes, http.StatusCreated)
 	uploadMedia(t, client, base, other.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", otherDraft.ID), "file", "mine.png", pngBytes, http.StatusCreated)
-	item := publishDraft(t, gdb, client, base, other.AccessToken, otherDraft.ID, http.StatusCreated)
-	if item.Author.Username != "e2e_other" {
-		t.Fatalf("作者应为 e2e_other got=%+v", item.Author)
+	item := publishDraft(t, gdb, client, base, other.AccessToken, otherDraft.ID, http.StatusAccepted)
+	if item.ID == 0 || item.Status != videoModel.VideoStatusProcessing {
+		t.Fatalf("本人草稿应发布成功 got=%+v", item)
 	}
 }
 
@@ -838,7 +835,7 @@ func TestVideoEndToEndDeleteForbiddenForNonAuthor(t *testing.T) {
 	draft := createDraft(t, client, base, author.AccessToken, "待删除", "", http.StatusCreated)
 	uploadMedia(t, client, base, author.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", draft.ID), "file", "a.mp4", mp4Bytes, http.StatusCreated)
 	uploadMedia(t, client, base, author.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draft.ID), "file", "a.png", pngBytes, http.StatusCreated)
-	item := publishDraft(t, gdb, client, base, author.AccessToken, draft.ID, http.StatusCreated)
+	item := publishDraft(t, gdb, client, base, author.AccessToken, draft.ID, http.StatusAccepted)
 	completeProcessing(t, gdb, item.ID)
 
 	register(t, client, base, "e2e_intruder", "e2e-password-123")

@@ -81,10 +81,18 @@ func registerFaultInjection(gdb *gorm.DB) error {
 	for _, registration := range []struct {
 		register func() error
 	}{
-		{func() error { return gdb.Callback().Query().Before("gorm:query").Register("gofeed:test_fault_query", inject) }},
-		{func() error { return gdb.Callback().Create().Before("gorm:create").Register("gofeed:test_fault_create", inject) }},
-		{func() error { return gdb.Callback().Update().Before("gorm:update").Register("gofeed:test_fault_update", inject) }},
-		{func() error { return gdb.Callback().Delete().Before("gorm:delete").Register("gofeed:test_fault_delete", inject) }},
+		{func() error {
+			return gdb.Callback().Query().Before("gorm:query").Register("gofeed:test_fault_query", inject)
+		}},
+		{func() error {
+			return gdb.Callback().Create().Before("gorm:create").Register("gofeed:test_fault_create", inject)
+		}},
+		{func() error {
+			return gdb.Callback().Update().Before("gorm:update").Register("gofeed:test_fault_update", inject)
+		}},
+		{func() error {
+			return gdb.Callback().Delete().Before("gorm:delete").Register("gofeed:test_fault_delete", inject)
+		}},
 		{func() error { return gdb.Callback().Raw().Before("gorm:raw").Register("gofeed:test_fault_raw", inject) }},
 		{func() error { return gdb.Callback().Row().Before("gorm:row").Register("gofeed:test_fault_row", inject) }},
 	} {
@@ -225,7 +233,7 @@ func TestDeletedAuthorPlaceholderInPublicResponses(t *testing.T) {
 		Items []videoItem `json:"items"`
 	}
 	doJSON(t, client, http.MethodGet, base+"/api/video", "", nil, http.StatusOK, &list)
-	if len(list.Items) != 1 || list.Items[0].Author.ID != video.Author.ID || list.Items[0].Author.Username != "已注销用户" {
+	if len(list.Items) != 1 || list.Items[0].Author.ID != sess.UserID || list.Items[0].Author.Username != "已注销用户" {
 		t.Fatalf("列表应返回注销作者占位资料 got=%+v", list.Items)
 	}
 

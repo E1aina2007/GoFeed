@@ -45,6 +45,7 @@ func TestUserRouteGroups(t *testing.T) {
 		"POST /api/video/auth/drafts/:id/publish",
 		"DELETE /api/video/auth/drafts/:id",
 		"GET /api/video/auth/mine",
+		"GET /api/video/auth/:id/status",
 		"GET /api/video/auth/:id/like",
 		"PUT /api/video/auth/:id/like",
 		"DELETE /api/video/auth/:id/like",

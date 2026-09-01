@@ -166,20 +166,21 @@ func (s *Service) UpdateDraftMedia(ctx context.Context, draftID, ownerID uint, k
 }
 
 // UpdateDraftPublication 只允许将当前用户完整的 draft 状态视频进入异步处理
-// 响应保持 VideoItem 形状：组装不经过公开过滤器，媒体完整性已由发布事务校验
-func (s *Service) UpdateDraftPublication(ctx context.Context, draftID, authorID uint) (VideoItem, error) {
+// 发布是异步语义：事务确认后行处于 processing，响应保持草稿形体，
+// 处理结果经状态查询端点获取；媒体完整性已由发布事务校验
+func (s *Service) UpdateDraftPublication(ctx context.Context, draftID, authorID uint) (DraftItem, error) {
 	if draftID == 0 || authorID == 0 {
-		return VideoItem{}, ErrInvalidVideoID
+		return DraftItem{}, ErrInvalidVideoID
 	}
 	if s.repository == nil {
-		return VideoItem{}, ErrRepositoryUnavailable
+		return DraftItem{}, ErrRepositoryUnavailable
 	}
 
 	video, err := s.repository.UpdateDraftPublication(ctx, draftID, authorID)
 	if err != nil {
-		return VideoItem{}, err
+		return DraftItem{}, err
 	}
-	return s.publishedItem(ctx, video)
+	return draftItem(*video), nil
 }
 
 // DiscardDraft 将当前作者的草稿排入异步清扫
@@ -412,27 +413,38 @@ func (s *Service) toVideoItem(ctx context.Context, video *Video) (VideoItem, err
 	return item, nil
 }
 
-// publishedItem 组装发布请求的响应条目，跳过公开视频过滤器
-// 处理中的行不满足公开不变量，但发布者本人需要立即拿到发布快照
-func (s *Service) publishedItem(ctx context.Context, video *Video) (VideoItem, error) {
-	if video == nil {
-		return VideoItem{}, ErrVideoNotFound
+// GetVideoStatus 返回当前用户视频的异步处理状态
+// 处于 draft 或 purging 的视频、他人视频与不存在的视频统一按不存在处理，
+// 避免以该端点探测他人资源或推断非公开状态
+func (s *Service) GetVideoStatus(ctx context.Context, videoID, viewerID uint) (VideoProcessingStatus, error) {
+	if videoID == 0 || viewerID == 0 {
+		return VideoProcessingStatus{}, ErrInvalidVideoID
 	}
-	if s.authorReader == nil {
-		return VideoItem{}, ErrAuthorReaderUnavailable
+	if s.repository == nil {
+		return VideoProcessingStatus{}, ErrRepositoryUnavailable
 	}
 
-	author, err := s.authorReader.GetPublicAuthor(ctx, video.AuthorID)
+	row, err := s.repository.GetByID(ctx, videoID)
 	if err != nil {
-		return VideoItem{}, err
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return VideoProcessingStatus{}, ErrVideoNotFound
+		}
+		return VideoProcessingStatus{}, err
 	}
-	engagements, err := s.engagements(ctx, []Video{*video})
-	if err != nil {
-		return VideoItem{}, err
+	if row.AuthorID != viewerID {
+		return VideoProcessingStatus{}, ErrVideoNotFound
 	}
-	item := videoItem(*video, author)
-	applyEngagement(&item, engagements[video.ID])
-	return item, nil
+	switch row.Status {
+	case VideoStatusProcessing, VideoStatusPublished, VideoStatusRejected:
+		return VideoProcessingStatus{
+			Status:         row.Status,
+			PublishedAt:    row.PublishedAt,
+			RejectedAt:     row.RejectedAt,
+			RejectedReason: row.RejectedReason,
+		}, nil
+	default:
+		return VideoProcessingStatus{}, ErrVideoNotFound
+	}
 }
 
 // filterPublicVideos 丢弃不满足公开响应契约的实体

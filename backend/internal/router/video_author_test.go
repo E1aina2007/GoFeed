@@ -18,7 +18,7 @@ func TestVideoSurvivesAuthorDeletion(t *testing.T) {
 	draft := createDraft(t, client, base, sess.AccessToken, "注销前的视频", "", http.StatusCreated)
 	uploadMedia(t, client, base, sess.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", draft.ID), "file", "a.mp4", mp4Bytes, http.StatusCreated)
 	uploadMedia(t, client, base, sess.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draft.ID), "file", "a.png", pngBytes, http.StatusCreated)
-	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusCreated)
+	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusAccepted)
 	completeProcessing(t, gdb, item.ID)
 
 	// 注销账号并保留软删除记录

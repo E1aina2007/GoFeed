@@ -379,10 +379,9 @@ func TestHandlerUploadRequiresAuth(t *testing.T) {
 }
 
 // 测试目标：验证用户可发布完整的本人草稿
-// 预期效果：发布接口不接收客户端媒体字段，只转换草稿状态
+// 预期效果：发布接口不接收客户端媒体字段，以 202 返回处理中的草稿形体
 func TestHandlerPublishDraft(t *testing.T) {
-	ctl, repo, authors := newTestVideoController(t)
-	authors.authors = map[uint]Author{1: {ID: 1, Username: "me"}}
+	ctl, repo, _ := newTestVideoController(t)
 	repo.drafts = map[uint]*Video{1: {
 		ID: 1, AuthorID: 1, Title: "t", Status: VideoStatusDraft,
 		PlayURL: "/static/videos/1/20260810/a.mp4", PlayFileName: "a.mp4", PlayOriginalName: "服务器视频.mp4",
@@ -395,20 +394,20 @@ func TestHandlerPublishDraft(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/drafts/1/publish", nil))
 
-	if w.Code != http.StatusCreated {
-		t.Fatalf("status got=%d want=201 body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status got=%d want=202 body=%s", w.Code, w.Body.String())
 	}
 	var body struct {
-		Video VideoItem `json:"video"`
+		Draft DraftItem `json:"draft"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("响应解析失败 error=%v", err)
 	}
-	if body.Video.ID != 1 || repo.drafts[1].Status != VideoStatusProcessing {
-		t.Fatalf("响应视频或草稿状态错误 body=%#v draft=%#v", body.Video, repo.drafts[1])
+	if body.Draft.ID != 1 || body.Draft.Status != VideoStatusProcessing || repo.drafts[1].Status != VideoStatusProcessing {
+		t.Fatalf("响应草稿状态错误 body=%#v draft=%#v", body.Draft, repo.drafts[1])
 	}
-	if body.Video.PlayOriginalName != "服务器视频.mp4" {
-		t.Fatalf("发布未使用服务端原始名 got=%q", body.Video.PlayOriginalName)
+	if body.Draft.PlayOriginalName != "服务器视频.mp4" {
+		t.Fatalf("发布未使用服务端原始名 got=%q", body.Draft.PlayOriginalName)
 	}
 }
 
@@ -488,6 +487,74 @@ func TestHandlerPublishRequiresAuth(t *testing.T) {
 	}
 }
 
+// 测试目标：验证作者可以读取异步处理状态的顶层响应
+// 预期效果：processing 状态返回固定字段，空时间和原因以 null/空字符串保留
+func TestHandlerGetVideoStatus(t *testing.T) {
+	ctl, repo, _ := newTestVideoController(t)
+	publishedAt := time.Date(2026, time.September, 1, 8, 0, 0, 0, time.UTC)
+	repo.drafts = map[uint]*Video{
+		1: {ID: 1, AuthorID: 1, Status: VideoStatusProcessing, PublishedAt: &publishedAt},
+	}
+
+	r := gin.New()
+	r.Use(withUserID(1))
+	r.GET("/videos/:id/status", ctl.GetVideoStatus)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/videos/1/status", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status got=%d want=200 body=%s", w.Code, w.Body.String())
+	}
+	var body VideoProcessingStatus
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("响应解析失败 error=%v", err)
+	}
+	if body.Status != VideoStatusProcessing || body.PublishedAt == nil || body.RejectedAt != nil || body.RejectedReason != "" {
+		t.Fatalf("状态响应内容错误 body=%+v", body)
+	}
+	if strings.Contains(w.Body.String(), `"status":{"`) {
+		t.Fatalf("状态响应不应存在嵌套包装 body=%s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"rejected_at":null`) || !strings.Contains(w.Body.String(), `"rejected_reason":""`) {
+		t.Fatalf("状态响应必须保留空字段 body=%s", w.Body.String())
+	}
+}
+
+// 测试目标：验证状态查询的鉴权、参数和资源错误语义
+// 预期效果：未认证返回 401，非法标识返回 400，不存在或非本人资源返回 404
+func TestHandlerGetVideoStatusErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		userID     uint
+		path       string
+		video      *Video
+		wantStatus int
+	}{
+		{name: "unauthorized", path: "/videos/1/status", wantStatus: http.StatusUnauthorized},
+		{name: "invalid id", userID: 1, path: "/videos/nope/status", wantStatus: http.StatusBadRequest},
+		{name: "not found", userID: 1, path: "/videos/1/status", wantStatus: http.StatusNotFound},
+		{name: "foreign", userID: 1, path: "/videos/1/status", video: &Video{ID: 1, AuthorID: 2, Status: VideoStatusProcessing}, wantStatus: http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctl, repo, _ := newTestVideoController(t)
+			if tt.video != nil {
+				repo.drafts = map[uint]*Video{tt.video.ID: tt.video}
+			}
+			r := gin.New()
+			if tt.userID != 0 {
+				r.Use(withUserID(tt.userID))
+			}
+			r.GET("/videos/:id/status", ctl.GetVideoStatus)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status got=%d want=%d body=%s", w.Code, tt.wantStatus, w.Body.String())
+			}
+		})
+	}
+}
+
 // 测试目标：验证丢弃接口将草稿排入异步清扫并支持重复请求
 // 预期效果：响应为已接受状态，媒体保留至 sweeper 根据 purging 状态清理
 func TestHandlerDiscardDraft(t *testing.T) {
@@ -514,6 +581,38 @@ func TestHandlerDiscardDraft(t *testing.T) {
 		}
 		if body.Draft.Status != VideoStatusPurging || !body.Draft.HasVideo || repo.drafts[1].Status != VideoStatusPurging {
 			t.Fatalf("丢弃响应或状态错误 body=%#v draft=%#v", body.Draft, repo.drafts[1])
+		}
+	}
+}
+
+// 测试目标：验证作者可以主动丢弃 rejected 视频并安全重试
+// 预期效果：接口返回 202，记录转为 purging，媒体仍等待 sweeper 清扫
+func TestHandlerDiscardRejectedVideo(t *testing.T) {
+	ctl, repo, _ := newTestVideoController(t)
+	repo.drafts = map[uint]*Video{1: {
+		ID: 1, AuthorID: 1, Status: VideoStatusRejected,
+		PlayURL: "/static/videos/1/20260810/rejected.mp4", PlayFileName: "rejected.mp4", PlayOriginalName: "失败视频.mp4",
+		CoverURL: "/static/covers/1/20260810/rejected.png", CoverFileName: "rejected.png", CoverOriginalName: "失败封面.png",
+		RejectedReason: "媒体缺失",
+	}}
+
+	r := gin.New()
+	r.Use(withUserID(1))
+	r.DELETE("/drafts/:id", ctl.DiscardDraft)
+	for attempt := 0; attempt < 2; attempt++ {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/drafts/1", nil))
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("第 %d 次丢弃 rejected 视频 status got=%d want=202 body=%s", attempt+1, w.Code, w.Body.String())
+		}
+		var body struct {
+			Draft DraftItem `json:"draft"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("响应解析失败 error=%v", err)
+		}
+		if body.Draft.Status != VideoStatusPurging || repo.drafts[1].Status != VideoStatusPurging {
+			t.Fatalf("rejected 丢弃响应或状态错误 body=%#v video=%#v", body.Draft, repo.drafts[1])
 		}
 	}
 }

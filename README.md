@@ -67,7 +67,7 @@ migrate -path ./db/migrations -database "mysql://root:<URL 编码后的密码>@t
 
 密码中包含 `@`、`:`、`/`、`?`、`#` 或 `%` 等 URL 特殊字符时必须先编码。每次新增迁移文件后重新执行同一条 `up` 命令即可；`schema_migrations` 会记录已执行版本，因此只会应用尚未执行的迁移。不要修改已执行的迁移文件，应新增一对递增版本的 `.up.sql` 和 `.down.sql` 文件。
 
-跨越草稿版本向下回滚属于维护操作。先停止所有 API 与 sweeper 实例并确认 sweeper 已完全退出，再执行只读检查；有结果时不要运行 `migrate steps -1`，应先显式发布，或运行草稿清扫完成回收。回滚完成前不得重新启动 API 或 sweeper，避免检查与 DDL 之间出现新的 `purging` 草稿。`golang-migrate` 在 down SQL 失败时会将版本留为 dirty，不能把这一检查写成故意失败的迁移 SQL。
+跨越草稿或拒绝视频版本向下回滚属于维护操作。先停止所有 API、worker 与 sweeper 实例并确认相关进程已完全退出，再执行只读检查；有 `processing`、`rejected` 或 `purging` 行时不要运行 `migrate steps -1`，应先完成业务回收或按迁移前置条件处理。回滚完成前不得重新启动 API、worker 或 sweeper，避免检查与 DDL 之间出现新的状态行。`golang-migrate` 在 down SQL 失败时会将版本留为 dirty，不能把这一检查写成故意失败的迁移 SQL。
 
 ```sql
 SELECT COUNT(*) AS incompatible_rows
@@ -151,9 +151,9 @@ pnpm preview        # 本地预览构建产物
 | JWT 密钥 | `JWT_SECRET` | 存放在 `backend/.env`；不设置时每次启动随机生成，重启后所有 token 失效 |
 | 注销保留天数 | `RETENTION_USER_DELETED_DAYS` | 默认 `7`；注销账号软删除后经过该天数由 sweeper 硬删除 |
 | 视频删除保留天数 | `RETENTION_VIDEO_DELETED_DAYS` | 默认 `7`；视频软删除后经过该天数由 sweeper 删除视频/封面文件并硬删除记录 |
-| 草稿保留时长 | `RETENTION_VIDEO_DRAFT_HOURS` | 默认 `24`；未发布草稿到期后进入不可逆清扫 |
-| 清扫间隔 | `SWEEPER_INTERVAL_MINUTES` | 默认 `60`；sweeper 执行用户、已发布视频和草稿清扫的间隔分钟数 |
-| 草稿清扫租约 | `SWEEPER_DRAFT_PURGE_LEASE_MINUTES` | 默认 `15`；单个草稿的 token 围栏租约，过期后可由其他 sweeper 接管 |
+| 草稿/拒绝视频保留时长 | `RETENTION_VIDEO_DRAFT_HOURS` | 默认 `24`；草稿从创建、rejected 视频从 `rejected_at` 起计算，届满后进入不可逆清扫 |
+| 清扫间隔 | `SWEEPER_INTERVAL_MINUTES` | 默认 `60`；sweeper 执行用户、已发布视频以及草稿/拒绝视频清扫的间隔分钟数 |
+| 草稿清扫租约 | `SWEEPER_DRAFT_PURGE_LEASE_MINUTES` | 默认 `15`；单条草稿或拒绝视频的 token 围栏租约，过期后可由其他 sweeper 接管 |
 | Redis 主机 | `REDIS_HOST` | 本地默认 `localhost`；Docker 容器由 Compose 覆盖为 `redis` |
 | Redis 端口 | `REDIS_PORT` | `6379` |
 | Redis DB | `REDIS_DB` | `0`；仅供后续 Redis 客户端选择逻辑库 |
@@ -208,7 +208,7 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 ## 项目进度
 
-当前主线：发布体验与运维。后端已完成草稿聚合上传、发布、公开列表与详情、我的视频、作者删除、头像上传，并接入会话鉴权；用户主页会统计满足公开数据不变量的已发布视频数量。公开视频查询统一排除软删除、缺少发布时间或任一视频/封面媒体字段的记录，服务层也会对异常实体 fail-closed；视频列表游标已升级为绑定查询范围的 v1 契约，跨范围或旧格式值统一返回 `400`。存储侧将清洗后的物理名与用户指定名分离，并为每次保存附加不可复用对象键；DB 只存相对路径。草稿恢复后端已提供状态查询和主动丢弃：媒体完成情况只通过 `has_video`、`has_cover` 暴露，主动丢弃会将草稿原子转入 `purging`，由 sweeper 用 token 租约逐媒体持久化删除进度，最后硬删除；任何失败都不会把 `purging` 草稿恢复为可写状态。账号和已发布视频删除仍采用软删除 + 7 天宽限期。
+当前主线：发布体验与运维。后端已完成草稿聚合上传、发布、公开列表与详情、我的视频、作者删除、头像上传，并接入会话鉴权；用户主页会统计满足公开数据不变量的已发布视频数量。公开视频查询统一排除软删除、缺少发布时间或任一视频/封面媒体字段的记录，服务层也会对异常实体 fail-closed；视频列表游标已升级为绑定查询范围的 v1 契约，跨范围或旧格式值统一返回 `400`。存储侧将清洗后的物理名与用户指定名分离，并为每次保存附加不可复用对象键；DB 只存相对路径。视频异步发布已提供 `202` 受理响应和作者状态查询；草稿恢复后端已提供主动丢弃，`rejected` 视频也可主动或按 `rejected_at` 到期转入 `purging`，由 sweeper 用 token 租约逐媒体持久化删除进度，最后硬删除；任何失败都不会把 `purging` 记录恢复为可写状态。账号和已发布视频删除仍采用软删除 + 7 天宽限期。
 
 后端 CRUD 方法命名已统一为 `Get`、`Get...List`、`Create`、`Update`，涉及硬删除的操作使用 `Remove`（提交 `240f3fa`）。互动后端已完成点赞、评论、关注的模型、鉴权接口和软删除语义（提交 `589ec78`，评论删除命名修正提交 `6425fe3`）；互动前端已接入 Feed、详情和作者主页（提交 `bfe518b`）。上述模块均已独立回归并分开提交，接口明细以根目录 [`API.md`](./API.md) 和后端注册路由为准。
 
@@ -220,4 +220,4 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 模块按“设计契约 → 实现 → 自动化验证 → 页面验收 → 独立提交 → review 暂停”推进；提交范围和验证细则见上述文档。
 
-当前 **Feed 数据不变量与查询边界** 已完成并提交 `c79100c`，**模型绑定的公开视频查询入口** 已完成并提交 `0842820`，**视频游标契约** 已完成并提交 `61fb00e`，**作者批量补全** 已完成并提交 `4e253f9`，**互动统计故障语义** 已完成并提交 `fb867c8`（互动统计查询失败时列表、详情、我的视频与发布响应统一返回 `503`），**可观测性与查询预算** 已完成并提交 `69a08c1`（请求内查询计数随完成日志输出 `db_queries`，公开列表与详情的 ≤4 条语句预算由真实 MySQL e2e 断言），**并发与异常测试收尾** 已完成并提交 `d185645`（表级故障注入覆盖同刻排序、分页变更、注销作者占位、统计失败 503、注入错误与 GET 幂等）；**阶段一 Feed 服务端可靠性全部完成**，列表作者读取已收敛为一次批量查询。**阶段二 R1 状态机与 outbox 迁移** 已完成并提交 `c2134ac`（发布事务原子完成 `draft → processing` 与 outbox 事件写入，删除派生计数值列），**R2 relay/worker** 已完成并提交 `d2294a2`（`internal/mq` 连接、拓扑与 confirm 发布；relay 轮询派发并标记 dispatched；consumer 手动 ack 校验媒体完成 `processing → published/rejected` 流转，基础设施故障退避重发三次后进死信；Compose worker 补挂载共享媒体卷）；下一步是 **R3 API 与前端异步状态**，先更新 `API.md` 再动前端。查询模式稳定后再评估 `gorm.io/gen` 的生成字段；R3 是首个需要前端跟进的契约点，后续再按指标引入 Redis 定向能力。
+当前 **Feed 数据不变量与查询边界** 已完成并提交 `c79100c`，**模型绑定的公开视频查询入口** 已完成并提交 `0842820`，**视频游标契约** 已完成并提交 `61fb00e`，**作者批量补全** 已完成并提交 `4e253f9`，**互动统计故障语义** 已完成并提交 `fb867c8`（互动统计查询失败时列表、详情、我的视频与发布响应统一返回 `503`），**可观测性与查询预算** 已完成并提交 `69a08c1`（请求内查询计数随完成日志输出 `db_queries`，公开列表与详情的 ≤4 条语句预算由真实 MySQL e2e 断言），**并发与异常测试收尾** 已完成并提交 `d185645`（表级故障注入覆盖同刻排序、分页变更、注销作者占位、统计失败 503、注入错误与 GET 幂等）；**阶段一 Feed 服务端可靠性全部完成**，列表作者读取已收敛为一次批量查询。**阶段二 R1 状态机与 outbox 迁移** 已完成并提交 `c2134ac`（发布事务原子完成 `draft → processing` 与 outbox 事件写入，删除派生计数值列），**R2 relay/worker** 已完成并提交 `d2294a2`（`internal/mq` 连接、拓扑与 confirm 发布；relay 轮询派发并标记 dispatched；consumer 手动 ack 校验媒体完成 `processing → published/rejected` 流转，基础设施故障退避重发三次后进死信；Compose worker 补挂载共享媒体卷）；**R3 后端异步状态与 rejected 生命周期已在当前工作树完成，待 review**（发布返回 `202 + DraftItem`，新增状态查询，`000008` 回填并建立拒绝清扫索引）；前端状态展示作为后续独立模块。查询模式稳定后再评估 `gorm.io/gen` 的生成字段，后续再按指标引入 Redis 定向能力。
