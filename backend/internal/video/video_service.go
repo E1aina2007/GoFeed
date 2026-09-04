@@ -75,7 +75,6 @@ type AuthorReader interface {
 }
 
 // EngagementReader 是公开视频响应所需的互动统计能力
-// 接口定义在消费方，避免 video 包依赖 social 包而产生循环依赖
 type EngagementReader interface {
 	GetEngagementCounts(ctx context.Context, videoIDs []uint) (map[uint]EngagementCounts, error)
 }

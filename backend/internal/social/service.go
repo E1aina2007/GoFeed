@@ -27,8 +27,8 @@ var (
 	ErrSelfFollow            = errors.New("cannot follow self")
 )
 
-// Store 描述互动服务需要的最小持久化能力，便于单元测试隔离 HTTP 和数据库行为
-type Store interface {
+// Repo 描述互动服务需要的最小持久化能力，便于单元测试隔离 HTTP 和数据库行为
+type Repo interface {
 	GetActiveUser(ctx context.Context, id uint) error
 	GetPublishedVideo(ctx context.Context, id uint) error
 	GetPublicUser(ctx context.Context, id uint) (PublicUser, error)
@@ -49,18 +49,18 @@ type Store interface {
 }
 
 type Service struct {
-	store Store
+	repo Repo
 }
 
-func NewService(store Store) *Service {
-	return &Service{store: store}
+func NewService(repo Repo) *Service {
+	return &Service{repo: repo}
 }
 
 func (s *Service) CreateLike(ctx context.Context, videoID, userID uint) (LikeState, error) {
 	if err := s.requireVideoAndUser(ctx, videoID, userID); err != nil {
 		return LikeState{}, err
 	}
-	if _, err := s.store.CreateLike(ctx, videoID, userID); err != nil {
+	if _, err := s.repo.CreateLike(ctx, videoID, userID); err != nil {
 		return LikeState{}, err
 	}
 	return s.getLikeState(ctx, videoID, true)
@@ -70,7 +70,7 @@ func (s *Service) RemoveLike(ctx context.Context, videoID, userID uint) (LikeSta
 	if err := s.requireVideoAndUser(ctx, videoID, userID); err != nil {
 		return LikeState{}, err
 	}
-	if _, err := s.store.RemoveLike(ctx, videoID, userID); err != nil {
+	if _, err := s.repo.RemoveLike(ctx, videoID, userID); err != nil {
 		return LikeState{}, err
 	}
 	return s.getLikeState(ctx, videoID, false)
@@ -80,7 +80,7 @@ func (s *Service) GetLikeState(ctx context.Context, videoID, userID uint) (LikeS
 	if err := s.requireVideoAndUser(ctx, videoID, userID); err != nil {
 		return LikeState{}, err
 	}
-	liked, err := s.store.GetLikeState(ctx, videoID, userID)
+	liked, err := s.repo.GetLikeState(ctx, videoID, userID)
 	if err != nil {
 		return LikeState{}, err
 	}
@@ -88,7 +88,7 @@ func (s *Service) GetLikeState(ctx context.Context, videoID, userID uint) (LikeS
 }
 
 func (s *Service) getLikeState(ctx context.Context, videoID uint, liked bool) (LikeState, error) {
-	count, err := s.store.GetLikeCount(ctx, videoID)
+	count, err := s.repo.GetLikeCount(ctx, videoID)
 	if err != nil {
 		return LikeState{}, err
 	}
@@ -99,7 +99,7 @@ func (s *Service) CreateFollow(ctx context.Context, followerID, followeeID uint)
 	if err := s.requireFollowUsers(ctx, followerID, followeeID); err != nil {
 		return FollowState{}, err
 	}
-	if _, err := s.store.CreateFollow(ctx, followerID, followeeID); err != nil {
+	if _, err := s.repo.CreateFollow(ctx, followerID, followeeID); err != nil {
 		return FollowState{}, err
 	}
 	return s.getFollowState(ctx, followerID, followeeID, true)
@@ -109,7 +109,7 @@ func (s *Service) RemoveFollow(ctx context.Context, followerID, followeeID uint)
 	if err := s.requireFollowUsers(ctx, followerID, followeeID); err != nil {
 		return FollowState{}, err
 	}
-	if _, err := s.store.RemoveFollow(ctx, followerID, followeeID); err != nil {
+	if _, err := s.repo.RemoveFollow(ctx, followerID, followeeID); err != nil {
 		return FollowState{}, err
 	}
 	return s.getFollowState(ctx, followerID, followeeID, false)
@@ -119,7 +119,7 @@ func (s *Service) GetFollowState(ctx context.Context, followerID, followeeID uin
 	if err := s.requireFollowUsers(ctx, followerID, followeeID); err != nil {
 		return FollowState{}, err
 	}
-	following, err := s.store.GetFollowState(ctx, followerID, followeeID)
+	following, err := s.repo.GetFollowState(ctx, followerID, followeeID)
 	if err != nil {
 		return FollowState{}, err
 	}
@@ -127,7 +127,7 @@ func (s *Service) GetFollowState(ctx context.Context, followerID, followeeID uin
 }
 
 func (s *Service) getFollowState(ctx context.Context, followerID, followeeID uint, following bool) (FollowState, error) {
-	count, err := s.store.GetFollowerCount(ctx, followeeID)
+	count, err := s.repo.GetFollowerCount(ctx, followeeID)
 	if err != nil {
 		return FollowState{}, err
 	}
@@ -143,10 +143,10 @@ func (s *Service) CreateComment(ctx context.Context, videoID, authorID uint, con
 		return CommentItem{}, ErrInvalidCommentContent
 	}
 	comment := &Comment{VideoID: videoID, AuthorID: authorID, Content: content}
-	if err := s.store.CreateComment(ctx, comment); err != nil {
+	if err := s.repo.CreateComment(ctx, comment); err != nil {
 		return CommentItem{}, err
 	}
-	author, err := s.store.GetPublicUser(ctx, authorID)
+	author, err := s.repo.GetPublicUser(ctx, authorID)
 	if err != nil {
 		return CommentItem{}, mapUserError(err)
 	}
@@ -160,7 +160,7 @@ func (s *Service) CreateComment(ctx context.Context, videoID, authorID uint, con
 }
 
 func (s *Service) DeleteComment(ctx context.Context, videoID, commentID, authorID uint) error {
-	if s.store == nil {
+	if s.repo == nil {
 		return ErrRepositoryUnavailable
 	}
 	if videoID == 0 {
@@ -175,7 +175,7 @@ func (s *Service) DeleteComment(ctx context.Context, videoID, commentID, authorI
 	if err := s.requireUser(ctx, authorID); err != nil {
 		return err
 	}
-	comment, err := s.store.GetComment(ctx, commentID)
+	comment, err := s.repo.GetComment(ctx, commentID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrCommentNotFound
@@ -188,7 +188,7 @@ func (s *Service) DeleteComment(ctx context.Context, videoID, commentID, authorI
 	if comment.AuthorID != authorID {
 		return ErrCommentNotAuthor
 	}
-	deleted, err := s.store.DeleteComment(ctx, commentID, authorID)
+	deleted, err := s.repo.DeleteComment(ctx, commentID, authorID)
 	if err != nil {
 		return err
 	}
@@ -210,7 +210,7 @@ func (s *Service) GetCommentList(ctx context.Context, videoID uint, rawCursor st
 	if err != nil {
 		return CommentListResponse{}, err
 	}
-	items, err := s.store.GetCommentList(ctx, videoID, cursor, limit+1)
+	items, err := s.repo.GetCommentList(ctx, videoID, cursor, limit+1)
 	if err != nil {
 		return CommentListResponse{}, err
 	}
@@ -230,14 +230,14 @@ func (s *Service) GetFollowerList(ctx context.Context, userID uint, rawCursor st
 	if err := s.requireUser(ctx, userID); err != nil {
 		return FollowListResponse{}, err
 	}
-	return s.getFollowUserList(ctx, userID, rawCursor, limit, s.store.GetFollowerList)
+	return s.getFollowUserList(ctx, userID, rawCursor, limit, s.repo.GetFollowerList)
 }
 
 func (s *Service) GetFollowingList(ctx context.Context, userID uint, rawCursor string, limit int) (FollowListResponse, error) {
 	if err := s.requireUser(ctx, userID); err != nil {
 		return FollowListResponse{}, err
 	}
-	return s.getFollowUserList(ctx, userID, rawCursor, limit, s.store.GetFollowingList)
+	return s.getFollowUserList(ctx, userID, rawCursor, limit, s.repo.GetFollowingList)
 }
 
 func (s *Service) getFollowUserList(ctx context.Context, userID uint, rawCursor string, limit int, getList func(context.Context, uint, *FollowCursor, int) ([]FollowListItem, error)) (FollowListResponse, error) {
@@ -273,7 +273,7 @@ func (s *Service) requireVideoAndUser(ctx context.Context, videoID, userID uint)
 }
 
 func (s *Service) requireFollowUsers(ctx context.Context, followerID, followeeID uint) error {
-	if s.store == nil {
+	if s.repo == nil {
 		return ErrRepositoryUnavailable
 	}
 	if followerID == 0 || followeeID == 0 {
@@ -289,13 +289,13 @@ func (s *Service) requireFollowUsers(ctx context.Context, followerID, followeeID
 }
 
 func (s *Service) requireVideo(ctx context.Context, videoID uint) error {
-	if s.store == nil {
+	if s.repo == nil {
 		return ErrRepositoryUnavailable
 	}
 	if videoID == 0 {
 		return ErrInvalidVideoID
 	}
-	if err := s.store.GetPublishedVideo(ctx, videoID); err != nil {
+	if err := s.repo.GetPublishedVideo(ctx, videoID); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrVideoNotFound
 		}
@@ -305,13 +305,13 @@ func (s *Service) requireVideo(ctx context.Context, videoID uint) error {
 }
 
 func (s *Service) requireUser(ctx context.Context, userID uint) error {
-	if s.store == nil {
+	if s.repo == nil {
 		return ErrRepositoryUnavailable
 	}
 	if userID == 0 {
 		return ErrInvalidUserID
 	}
-	if err := s.store.GetActiveUser(ctx, userID); err != nil {
+	if err := s.repo.GetActiveUser(ctx, userID); err != nil {
 		return mapUserError(err)
 	}
 	return nil
