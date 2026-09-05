@@ -102,7 +102,7 @@ func (s *Service) CreateFollow(ctx context.Context, followerID, followeeID uint)
 	if _, err := s.repo.CreateFollow(ctx, followerID, followeeID); err != nil {
 		return FollowState{}, err
 	}
-	return s.getFollowState(ctx, followerID, followeeID, true)
+	return s.getFollowState(ctx, followeeID, true)
 }
 
 func (s *Service) RemoveFollow(ctx context.Context, followerID, followeeID uint) (FollowState, error) {
@@ -112,7 +112,7 @@ func (s *Service) RemoveFollow(ctx context.Context, followerID, followeeID uint)
 	if _, err := s.repo.RemoveFollow(ctx, followerID, followeeID); err != nil {
 		return FollowState{}, err
 	}
-	return s.getFollowState(ctx, followerID, followeeID, false)
+	return s.getFollowState(ctx, followeeID, false)
 }
 
 func (s *Service) GetFollowState(ctx context.Context, followerID, followeeID uint) (FollowState, error) {
@@ -123,10 +123,10 @@ func (s *Service) GetFollowState(ctx context.Context, followerID, followeeID uin
 	if err != nil {
 		return FollowState{}, err
 	}
-	return s.getFollowState(ctx, followerID, followeeID, following)
+	return s.getFollowState(ctx, followeeID, following)
 }
 
-func (s *Service) getFollowState(ctx context.Context, followerID, followeeID uint, following bool) (FollowState, error) {
+func (s *Service) getFollowState(ctx context.Context, followeeID uint, following bool) (FollowState, error) {
 	count, err := s.repo.GetFollowerCount(ctx, followeeID)
 	if err != nil {
 		return FollowState{}, err
