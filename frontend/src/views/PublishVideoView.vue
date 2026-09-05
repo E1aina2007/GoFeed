@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import {
@@ -13,6 +13,11 @@ import {
   type DraftItem,
   type VideoProcessingStatus,
 } from '@/features/video/api'
+import {
+  clearPublishingDraftID,
+  readPublishingDraftID,
+  savePublishingDraftID,
+} from '@/features/video/publishResume'
 import { ApiError } from '@/lib/api'
 import { useConfirmStore } from '@/stores/confirm'
 import { useToastStore } from '@/stores/toast'
@@ -51,6 +56,8 @@ const currentOperation = ref<PublishingOperation>()
 const statusPollController = ref<AbortController>()
 let statusPollTimer: ReturnType<typeof setTimeout> | undefined
 let statusPollGeneration = 0
+let resumeAttempted = false
+let resumeDisposed = false
 
 const progressLabel = computed(() => `${Math.round(uploadProgress.value * 100)}%`)
 const isBusy = computed(() => isSubmitting.value || isDiscarding.value)
@@ -85,11 +92,18 @@ function clearActiveDraft() {
   activeDraft.value = undefined
   boundVideoFile.value = undefined
   boundCoverFile.value = undefined
+  clearPublishingDraftID()
 }
 
 function setActiveDraft(draft: DraftItem) {
   const previousID = activeDraft.value?.id
   activeDraft.value = draft
+  // purging 由 sweeper 不可逆清扫，其余状态保留 ID 供发布页恢复
+  if (draft.status === 'purging') {
+    clearPublishingDraftID()
+  } else {
+    savePublishingDraftID(draft.id)
+  }
   if (!draft.has_video) {
     boundVideoFile.value = undefined
   } else if (previousID !== draft.id || !boundVideoFile.value) {
@@ -203,6 +217,7 @@ function selectCover(event: Event) {
 }
 
 onBeforeUnmount(() => {
+  resumeDisposed = true
   stopStatusPolling()
   releaseVideoPreview()
   releaseCoverPreview()
@@ -216,19 +231,24 @@ function validationError() {
   if (!title.value.trim()) {
     return '请填写视频标题'
   }
-  if (!videoFile.value) {
+  // 恢复的草稿媒体已绑定在服务端，本地不需要重新选择文件
+  if (!videoFile.value && !activeDraft.value?.has_video) {
     return '请选择一个视频文件'
   }
-  const videoError = mediaValidationError('video', videoFile.value)
-  if (videoError) {
-    return videoError
+  if (videoFile.value) {
+    const videoError = mediaValidationError('video', videoFile.value)
+    if (videoError) {
+      return videoError
+    }
   }
-  if (!coverFile.value) {
+  if (!coverFile.value && !activeDraft.value?.has_cover) {
     return '请选择一张封面图片'
   }
-  const coverError = mediaValidationError('cover', coverFile.value)
-  if (coverError) {
-    return coverError
+  if (coverFile.value) {
+    const coverError = mediaValidationError('cover', coverFile.value)
+    if (coverError) {
+      return coverError
+    }
   }
   if (activeDraft.value?.status === 'purging') {
     return '草稿已进入清扫，无法继续上传'
@@ -612,8 +632,147 @@ async function cancelPublishing() {
   await router.replace({ name: 'feed' })
 }
 
+function isMissingResumeRecord(error: unknown) {
+  return error instanceof ApiError && error.status === 404
+}
+
+// 恢复期间用户可能已开始新草稿或离开页面；每个 await 之后重新确认页面仍处于空闲初始态
+function canStartResume() {
+  return !resumeDisposed && !activeDraft.value && !isBusy.value
+}
+
+async function resumeTrackedProcessing(videoID: number) {
+  isSubmitting.value = true
+  currentStage.value = '正在处理视频'
+  errorMessage.value = ''
+  try {
+    const status = await pollVideoStatus(videoID)
+    if (status) {
+      await applyVideoProcessingStatus(videoID, status)
+    }
+  } catch (error) {
+    if (isAmbiguousPublishError(error)) {
+      showPendingPublish()
+      return
+    }
+    errorMessage.value = messageForPublishingError(error)
+    toast.error(errorMessage.value)
+  } finally {
+    isSubmitting.value = false
+    activeUploadController.value = undefined
+    currentOperation.value = undefined
+    currentStage.value = ''
+  }
+}
+
+async function resumeFromTrackedStatus(videoID: number, status: VideoProcessingStatus) {
+  if (status.status === 'published') {
+    clearPublishingDraftID()
+    toast.success('上次发布的视频已发布成功，可在“我的视频”查看')
+    return
+  }
+  if (status.status === 'processing') {
+    const confirmed = await confirmStore.confirm({
+      title: '继续未完成的发布',
+      message: '上次发布的视频仍在处理中，是否查看最新状态？',
+      confirmText: '查看状态',
+    })
+    if (confirmed && canStartResume()) {
+      await resumeTrackedProcessing(videoID)
+    }
+    return
+  }
+
+  const reason = status.rejected_reason.trim()
+  const confirmed = await confirmStore.confirm({
+    title: '继续未完成的发布',
+    message: reason
+      ? `上次发布的视频处理失败：${reason}，是否查看？`
+      : '上次发布的视频处理失败，是否查看？',
+    confirmText: '查看结果',
+  })
+  if (!confirmed || !canStartResume()) {
+    return
+  }
+  // 被拒记录不返回草稿形体，放弃入口所需的 DraftItem 仅承载 ID 与状态，展示以状态端点结果为准
+  setActiveDraft({
+    id: videoID,
+    title: '',
+    description: '',
+    status: 'rejected',
+    has_video: true,
+    has_cover: true,
+    created_at: '',
+    updated_at: '',
+  })
+  errorMessage.value = reason ? `视频处理失败：${reason}` : '视频处理失败，请重新上传'
+}
+
+async function resumeUnfinishedPublish() {
+  if (resumeAttempted || !canStartResume()) {
+    return
+  }
+  resumeAttempted = true
+  const storedID = readPublishingDraftID()
+  if (!storedID) {
+    return
+  }
+
+  let status: VideoProcessingStatus | undefined
+  try {
+    status = await getVideoStatus(storedID)
+  } catch (error) {
+    if (!isMissingResumeRecord(error)) {
+      toast.info('未能确认上次发布的处理结果，已保留记录')
+      return
+    }
+  }
+  if (!canStartResume()) {
+    return
+  }
+  if (status) {
+    await resumeFromTrackedStatus(storedID, status)
+    return
+  }
+
+  let draft: DraftItem
+  try {
+    draft = (await getDraft(storedID)).draft
+  } catch (error) {
+    if (isMissingResumeRecord(error)) {
+      clearPublishingDraftID()
+      return
+    }
+    toast.info('未能确认上次草稿的状态，已保留记录')
+    return
+  }
+  if (!canStartResume()) {
+    return
+  }
+  if (draft.status === 'purging') {
+    clearPublishingDraftID()
+    toast.info('上次的草稿已进入清扫，无法继续使用')
+    return
+  }
+  const confirmed = await confirmStore.confirm({
+    title: '继续未完成的发布',
+    message: `草稿《${draft.title}》尚未发布，是否继续？`,
+    confirmText: '继续编辑',
+  })
+  if (!confirmed || !canStartResume()) {
+    return
+  }
+  title.value = draft.title
+  description.value = draft.description
+  setActiveDraft(draft)
+}
+
+onMounted(() => {
+  void resumeUnfinishedPublish()
+})
+
 function pendingPublishMessage() {
-  return '发布已受理，处理结果暂未确认，请稍后在“我的视频”查看，请勿重复提交'
+  return '发布结果暂未确认，请稍后重新进入发布页查看进度，请勿重复提交'
 }
 
 function showPendingPublish() {
@@ -676,7 +835,15 @@ async function reconcileUnconfirmedPublish(videoID: number, originalError: unkno
 
 async function submit() {
   errorMessage.value = validationError()
-  if (errorMessage.value || !videoFile.value || !coverFile.value) {
+  if (errorMessage.value) {
+    return
+  }
+  const selectedVideo = videoFile.value
+  const selectedCover = coverFile.value
+  if (!activeDraft.value?.has_video && !selectedVideo) {
+    return
+  }
+  if (!activeDraft.value?.has_cover && !selectedCover) {
     return
   }
 
@@ -701,13 +868,19 @@ async function submit() {
     }
 
     if (!activeDraft.value?.has_video) {
-      if (!(await uploadMissingVideo(currentDraftID, videoFile.value))) {
+      if (!selectedVideo) {
+        return
+      }
+      if (!(await uploadMissingVideo(currentDraftID, selectedVideo))) {
         return
       }
     }
 
     if (!activeDraft.value?.has_cover) {
-      if (!(await uploadMissingCover(currentDraftID, coverFile.value))) {
+      if (!selectedCover) {
+        return
+      }
+      if (!(await uploadMissingCover(currentDraftID, selectedCover))) {
         return
       }
     }

@@ -15,6 +15,10 @@ import {
   type VideoProcessingStatus,
 } from '@/features/video/api'
 import { ApiError } from '@/lib/api'
+import {
+  readPublishingDraftID,
+  savePublishingDraftID,
+} from '@/features/video/publishResume'
 import { useConfirmStore } from '@/stores/confirm'
 import { useToastStore } from '@/stores/toast'
 import PublishVideoView from '../PublishVideoView.vue'
@@ -119,6 +123,7 @@ const uploadFailureCases: Array<[string, ApiError, string]> = [
 describe('PublishVideoView', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+    window.sessionStorage.clear()
     vi.mocked(getVideoStatus).mockResolvedValue(processingStatus())
   })
 
@@ -662,5 +667,156 @@ describe('PublishVideoView', () => {
     expect(discardDraft).toHaveBeenCalledWith(7)
     expect(routerReplace).toHaveBeenCalledWith({ name: 'feed' })
     expect(wrapper.find('.draft-actions').exists()).toBe(false)
+  })
+
+  describe('unfinished publish resume', () => {
+    function mountResumeView(pinia = createPinia()) {
+      const wrapper = mount(PublishVideoView, {
+        global: { plugins: [pinia], stubs: { RouterLink: true } },
+      })
+      return {
+        wrapper,
+        confirmStore: useConfirmStore(pinia),
+        toastStore: useToastStore(pinia),
+      }
+    }
+
+    it('does not probe the status endpoint when no record is stored', async () => {
+      mountResumeView()
+      await flushPromises()
+
+      expect(getVideoStatus).not.toHaveBeenCalled()
+    })
+
+    it('offers to check a tracked processing video and completes the publish flow', async () => {
+      savePublishingDraftID(7)
+      vi.mocked(getVideoStatus)
+        .mockResolvedValueOnce(processingStatus('processing'))
+        .mockResolvedValueOnce(processingStatus('published'))
+      const { confirmStore } = mountResumeView()
+      await flushPromises()
+
+      expect(confirmStore.open).toBe(true)
+      expect(confirmStore.message).toBe('上次发布的视频仍在处理中，是否查看最新状态？')
+
+      confirmStore.accept()
+      await flushPromises()
+
+      expect(routerReplace).toHaveBeenCalledWith({ name: 'feed', query: { published: '7' } })
+      expect(readPublishingDraftID()).toBeUndefined()
+    })
+
+    it('keeps the tracked record when the user declines the processing prompt', async () => {
+      savePublishingDraftID(7)
+      vi.mocked(getVideoStatus).mockResolvedValue(processingStatus('processing'))
+      const { confirmStore } = mountResumeView()
+      await flushPromises()
+
+      confirmStore.cancel()
+      await flushPromises()
+
+      expect(getVideoStatus).toHaveBeenCalledTimes(1)
+      expect(readPublishingDraftID()).toBe(7)
+      expect(confirmStore.open).toBe(false)
+    })
+
+    it('clears the record and notifies when the tracked video is already published', async () => {
+      savePublishingDraftID(7)
+      vi.mocked(getVideoStatus).mockResolvedValue(processingStatus('published'))
+      const { confirmStore, toastStore } = mountResumeView()
+      await flushPromises()
+
+      expect(confirmStore.open).toBe(false)
+      expect(readPublishingDraftID()).toBeUndefined()
+      expect(toastStore.toasts.filter((item) => item.type === 'success')).toHaveLength(1)
+    })
+
+    it('restores a rejected video with its reason and allows discarding it', async () => {
+      savePublishingDraftID(7)
+      vi.mocked(getVideoStatus).mockResolvedValue(processingStatus('rejected'))
+      vi.mocked(discardDraft).mockResolvedValue({ draft: draft({ status: 'purging' }) })
+      const { wrapper, confirmStore } = mountResumeView()
+      await flushPromises()
+
+      confirmStore.accept()
+      await flushPromises()
+
+      expect(wrapper.get('[role="alert"]').text()).toBe('视频处理失败：媒体校验失败')
+      expect(wrapper.find('.draft-actions').exists()).toBe(true)
+
+      await wrapper.get('.discard-action').trigger('click')
+      await flushPromises()
+      expect(confirmStore.open).toBe(true)
+
+      confirmStore.accept()
+      await flushPromises()
+
+      expect(discardDraft).toHaveBeenCalledWith(7)
+      expect(readPublishingDraftID()).toBeUndefined()
+      expect(wrapper.find('.draft-actions').exists()).toBe(false)
+    })
+
+    it('resumes an unfinished draft and publishes without re-uploading media', async () => {
+      savePublishingDraftID(7)
+      vi.mocked(getVideoStatus)
+        .mockRejectedValueOnce(new ApiError(404, 'video not found'))
+        .mockResolvedValueOnce(processingStatus('published'))
+      vi.mocked(getDraft).mockResolvedValue({
+        draft: draft({ has_video: true, has_cover: true }),
+      })
+      vi.mocked(publishDraft).mockResolvedValue({
+        draft: draft({ status: 'processing', has_video: true, has_cover: true }),
+      })
+      const { wrapper, confirmStore } = mountResumeView()
+      await flushPromises()
+
+      expect(confirmStore.message).toBe('草稿《春日散步》尚未发布，是否继续？')
+      confirmStore.accept()
+      await flushPromises()
+
+      expect((wrapper.get('input').element as HTMLInputElement).value).toBe('春日散步')
+
+      await wrapper.get('form').trigger('submit')
+      await flushPromises()
+
+      expect(createDraft).not.toHaveBeenCalled()
+      expect(uploadVideo).not.toHaveBeenCalled()
+      expect(uploadCover).not.toHaveBeenCalled()
+      expect(publishDraft).toHaveBeenCalledWith(7)
+      expect(routerReplace).toHaveBeenCalledWith({ name: 'feed', query: { published: '7' } })
+    })
+
+    it('clears the stored record when the video and draft are both gone', async () => {
+      savePublishingDraftID(7)
+      vi.mocked(getVideoStatus).mockRejectedValue(new ApiError(404, 'video not found'))
+      vi.mocked(getDraft).mockRejectedValue(new ApiError(404, 'video not found'))
+      const { confirmStore } = mountResumeView()
+      await flushPromises()
+
+      expect(readPublishingDraftID()).toBeUndefined()
+      expect(confirmStore.open).toBe(false)
+    })
+
+    it('clears the record when the draft has entered purging', async () => {
+      savePublishingDraftID(7)
+      vi.mocked(getVideoStatus).mockRejectedValue(new ApiError(404, 'video not found'))
+      vi.mocked(getDraft).mockResolvedValue({ draft: draft({ status: 'purging' }) })
+      const { toastStore } = mountResumeView()
+      await flushPromises()
+
+      expect(readPublishingDraftID()).toBeUndefined()
+      expect(toastStore.toasts.filter((item) => item.type === 'info')).toHaveLength(1)
+    })
+
+    it('keeps the record when the status check fails transiently', async () => {
+      savePublishingDraftID(7)
+      vi.mocked(getVideoStatus).mockRejectedValue(new ApiError(500, 'video operation failed'))
+      const { toastStore } = mountResumeView()
+      await flushPromises()
+
+      expect(readPublishingDraftID()).toBe(7)
+      expect(getDraft).not.toHaveBeenCalled()
+      expect(toastStore.toasts.filter((item) => item.type === 'info')).toHaveLength(1)
+    })
   })
 })
