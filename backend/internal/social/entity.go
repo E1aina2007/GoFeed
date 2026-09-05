@@ -7,9 +7,10 @@ import (
 )
 
 const (
-	DefaultListLimit = 20
-	MaxListLimit     = 50
-	deletedUsername  = "已注销用户"
+	DefaultListLimit     = 20
+	MaxListLimit         = 50
+	deletedUsername      = "已注销用户"
+	currentCursorVersion = 1
 )
 
 // VideoLike 记录用户对视频的当前点赞关系
@@ -96,12 +97,29 @@ type FollowListResponse struct {
 	NextCursor string           `json:"next_cursor,omitempty"`
 }
 
+// CursorKind 标识 social 列表游标绑定的查询范围
+type CursorKind string
+
+const (
+	CursorKindComments  CursorKind = "comments"
+	CursorKindFollowers CursorKind = "followers"
+	CursorKindFollowing CursorKind = "following"
+)
+
+// CommentCursor 记录评论列表分页位置及其版本和视频范围
 type CommentCursor struct {
-	CreatedAt time.Time `json:"created_at"`
-	ID        uint      `json:"id"`
+	Version   int        `json:"v"`
+	Kind      CursorKind `json:"k"`
+	VideoID   uint       `json:"r"`
+	CreatedAt time.Time  `json:"p"`
+	ID        uint       `json:"i"`
 }
 
+// FollowCursor 记录关注关系列表分页位置及其版本和目标用户范围
 type FollowCursor struct {
-	CreatedAt time.Time `json:"created_at"`
-	ID        uint      `json:"id"`
+	Version   int        `json:"v"`
+	Kind      CursorKind `json:"k"`
+	UserID    uint       `json:"r"`
+	CreatedAt time.Time  `json:"p"`
+	ID        uint       `json:"i"`
 }

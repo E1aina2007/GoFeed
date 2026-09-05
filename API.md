@@ -143,11 +143,11 @@
       "created_at": "2026-08-26T08:00:00Z"
     }
   ],
-  "next_cursor": "eyJjcmVhdGVkX2F0IjoiMjAyNi0wOC0yNlQwODowMDowMFoiLCJpZCI6MzAxfQ"
+  "next_cursor": "eyJ2IjoxLCJrIjoiY29tbWVudHMiLCJyIjoxMDAsInAiOiIyMDI2LTA4LTI2VDA4OjAwOjAwWiIsImkiOjMwMX0"
 }
 ```
 
-评论按创建时间和 ID 倒序排列。已删除评论不会返回；评论作者已注销时，作者资料会显示为 `已注销用户`。
+评论按创建时间和 ID 倒序排列。游标当前版本为 `1`，绑定 `comments` 列表类型和请求的视频 ID，只能原样回传到同一视频的评论列表；旧格式、版本不支持、结构字段不合法或跨视频复用均返回 `400`。已删除评论不会返回；评论作者已注销时，作者资料会显示为 `已注销用户`。
 
 ### `FollowListResponse`
 
@@ -162,11 +162,11 @@
       "followed_at": "2026-08-26T08:00:00Z"
     }
   ],
-  "next_cursor": "eyJjcmVhdGVkX2F0IjoiMjAyNi0wOC0yNlQwODowMDowMFoiLCJpZCI6N30"
+  "next_cursor": "eyJ2IjoxLCJrIjoiZm9sbG93ZXJzIiwiciI6NywicCI6IjIwMjYtMDgtMjZUMDg6MDA6MDBaIiwiaSI6N30"
 }
 ```
 
-粉丝和关注列表均按建立关注关系的时间和关系 ID 倒序分页。`user` 为关系另一端的公开资料。
+粉丝和关注列表均按建立关注关系的时间和关系 ID 倒序分页。游标当前版本为 `1`，同时绑定 `followers` 或 `following` 列表类型和目标用户 ID；不能在另一类关系列表或其他用户间复用，旧格式、版本不支持或结构字段不合法均返回 `400`。`user` 为关系另一端的公开资料。
 
 ## 系统接口
 
@@ -352,7 +352,7 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 
 成功响应：`200 OK`，响应体为 [`FollowListResponse`](#followlistresponse)。`followers` 返回关注该用户的账号，`following` 返回该用户正在关注的账号。
 
-常见失败：`400` 路径参数、`cursor` 或 `limit` 不合法，`404` 用户不存在或已注销。
+常见失败：`400` 路径参数、`limit` 或 `cursor` 不合法；`cursor` 必须由同一目标用户的同一列表生成，旧格式、版本不支持、跨用户或 `followers`/`following` 互换复用均返回 `400`。`404` 用户不存在或已注销。
 
 ### 退出当前会话
 
@@ -566,7 +566,7 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 
 成功响应：`200 OK`，响应体为 [`CommentListResponse`](#commentlistresponse)。
 
-常见失败：`400` 路径参数、`cursor` 或 `limit` 不合法，`404` 视频不存在、未发布或已删除。
+常见失败：`400` 路径参数、`limit` 或 `cursor` 不合法；`cursor` 必须由同一视频评论列表生成，旧格式、版本不支持或跨视频复用均返回 `400`。`404` 视频不存在、未发布或已删除。
 
 ### 创建视频草稿
 
