@@ -41,6 +41,7 @@ var (
 	ErrInvalidVideoID          = errors.New("invalid video id")
 	ErrInvalidLimit            = errors.New("invalid limit")
 	ErrInvalidCursor           = errors.New("invalid cursor")
+	ErrInvalidAuthorID         = errors.New("invalid author_id")
 	ErrInvalidPublishRequest   = errors.New("invalid publish request")
 	ErrVideoNotFound           = errors.New("video not found")
 	ErrNotAuthor               = errors.New("only the author can modify this video")
