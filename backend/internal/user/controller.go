@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	authn "gofeed/internal/auth"
+	"gofeed/internal/error"
 	"gofeed/internal/middleware/jwt"
 
 	"github.com/gin-gonic/gin"
@@ -31,7 +32,7 @@ func NewController(srv *Service, sessions *authn.SessionService, avatarStorage .
 func getPathID(c *gin.Context) (uint, error) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil || id == 0 {
-		return 0, errors.New("invalid user id")
+		return 0, ErrInvalidUserID
 	}
 	return uint(id), nil
 }
@@ -44,7 +45,7 @@ func currentUserID(c *gin.Context) (uint, bool) {
 func (ctl *Controller) CreateUser(c *gin.Context) {
 	var req CreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid registration payload"})
+		apierror.WriteCode(c, apierror.CodeInvalid, "invalid registration payload")
 		return
 	}
 	user := &User{Username: req.Username, Password: req.Password}
@@ -59,7 +60,7 @@ func (ctl *Controller) CreateUser(c *gin.Context) {
 func (ctl *Controller) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid login payload"})
+		apierror.WriteCode(c, apierror.CodeInvalid, "invalid login payload")
 		return
 	}
 	user, err := ctl.Srv.Authenticate(c.Request.Context(), req.Username, req.Password)
@@ -69,7 +70,7 @@ func (ctl *Controller) Login(c *gin.Context) {
 	}
 	pair, err := ctl.Sessions.Create(c.Request.Context(), user.ID, user.Username)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create session"})
+		apierror.WriteCode(c, apierror.CodeInternal, "failed to create session")
 		return
 	}
 	c.JSON(http.StatusOK, loginResponse(pair, user))
@@ -79,23 +80,23 @@ func (ctl *Controller) Login(c *gin.Context) {
 func (ctl *Controller) UpdateRefreshToken(c *gin.Context) {
 	var req RefreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid refresh payload"})
+		apierror.WriteCode(c, apierror.CodeInvalid, "invalid refresh payload")
 		return
 	}
 	session, nextRefreshToken, err := ctl.Sessions.UpdateRefreshToken(c.Request.Context(), req.RefreshToken)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
+		apierror.WriteCode(c, apierror.CodeUnauthorized, "invalid refresh token")
 		return
 	}
 	user, err := ctl.Srv.GetByID(c.Request.Context(), session.UserID)
 	if err != nil {
 		_ = ctl.Sessions.UpdateSessionRevocation(c.Request.Context(), session.ID, session.UserID)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
+		apierror.WriteCode(c, apierror.CodeUnauthorized, "invalid refresh token")
 		return
 	}
 	accessToken, err := authn.GenerateToken(user.ID, user.Username, session.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create access token"})
+		apierror.WriteCode(c, apierror.CodeInternal, "failed to create access token")
 		return
 	}
 	c.JSON(http.StatusOK, LoginResponse{
@@ -111,11 +112,11 @@ func (ctl *Controller) UpdateSessionRevocation(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	sessionID, hasSession := jwt.SessionID(c)
 	if !ok || !hasSession {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
 	}
 	if err := ctl.Sessions.UpdateSessionRevocation(c.Request.Context(), sessionID, userID); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -125,7 +126,7 @@ func (ctl *Controller) UpdateSessionRevocation(c *gin.Context) {
 func (ctl *Controller) GetUser(c *gin.Context) {
 	id, err := getPathID(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		handleUserError(c, err)
 		return
 	}
 	user, err := ctl.Srv.GetByID(c.Request.Context(), id)
@@ -150,12 +151,12 @@ func (ctl *Controller) GetUserList(c *gin.Context) {
 func (ctl *Controller) UpdateName(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
 	}
 	var req UpdateNameRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid username payload"})
+		apierror.WriteCode(c, apierror.CodeInvalid, "invalid username payload")
 		return
 	}
 	if err := ctl.Srv.UpdateName(c.Request.Context(), userID, req.NewUsername); err != nil {
@@ -169,12 +170,12 @@ func (ctl *Controller) UpdateName(c *gin.Context) {
 func (ctl *Controller) UpdatePassword(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
 	}
 	var req UpdatePasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid password payload"})
+		apierror.WriteCode(c, apierror.CodeInvalid, "invalid password payload")
 		return
 	}
 	if err := ctl.Srv.UpdatePassword(c.Request.Context(), userID, req.OldPassword, req.NewPassword); err != nil {
@@ -188,12 +189,12 @@ func (ctl *Controller) UpdatePassword(c *gin.Context) {
 func (ctl *Controller) UpdateProfile(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
 	}
 	var req UpdateProfileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid profile payload"})
+		apierror.WriteCode(c, apierror.CodeInvalid, "invalid profile payload")
 		return
 	}
 	if err := ctl.Srv.UpdateProfile(c.Request.Context(), userID, &req); err != nil {
@@ -207,11 +208,11 @@ func (ctl *Controller) UpdateProfile(c *gin.Context) {
 func (ctl *Controller) UpdateAvatar(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
 	}
 	if ctl.AvatarStorage == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "avatar storage unavailable"})
+		apierror.WriteCode(c, apierror.CodeInternal, "avatar storage unavailable")
 		return
 	}
 
@@ -220,31 +221,31 @@ func (ctl *Controller) UpdateAvatar(c *gin.Context) {
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": ErrAvatarTooLarge.Error()})
+			apierror.WriteCode(c, apierror.CodeTooLarge, ErrAvatarTooLarge.Error())
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid avatar upload payload"})
+		apierror.WriteCode(c, apierror.CodeInvalid, "invalid avatar upload payload")
 		return
 	}
 	defer file.Close()
 
 	if header.Size <= 0 || header.Size > MaxAvatarSize {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": ErrAvatarTooLarge.Error()})
+		apierror.WriteCode(c, apierror.CodeTooLarge, ErrAvatarTooLarge.Error())
 		return
 	}
 
 	head := make([]byte, 512)
 	n, err := io.ReadFull(file, head)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read avatar upload"})
+		apierror.WriteCode(c, apierror.CodeInternal, "failed to read avatar upload")
 		return
 	}
 	if !validateAvatar(header.Filename, head[:n]) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": ErrInvalidAvatar.Error()})
+		apierror.WriteCode(c, apierror.CodeInvalid, ErrInvalidAvatar.Error())
 		return
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read avatar upload"})
+		apierror.WriteCode(c, apierror.CodeInternal, "failed to read avatar upload")
 		return
 	}
 
@@ -275,7 +276,7 @@ func (ctl *Controller) UpdateAvatar(c *gin.Context) {
 func (ctl *Controller) DeleteUser(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
 	}
 	if err := ctl.Srv.DeleteUser(c.Request.Context(), userID); err != nil {
@@ -289,7 +290,7 @@ func (ctl *Controller) DeleteUser(c *gin.Context) {
 func (ctl *Controller) GetProfile(c *gin.Context) {
 	id, err := getPathID(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		handleUserError(c, err)
 		return
 	}
 	profile, err := ctl.Srv.GetProfile(c.Request.Context(), id)
@@ -319,28 +320,22 @@ func loginResponse(pair *authn.TokenPair, user *User) LoginResponse {
 	}
 }
 
+// userErrorRules 按从最具体到最通用排列，决定用户模块领域错误的公共类别与对外文案
+var userErrorRules = []apierror.Rule{
+	{Match: apierror.Is(ErrInvalidUserID, ErrNewUserNameRequired, ErrInvalidInput, ErrNothingToUpdate, ErrInvalidAvatar), Code: apierror.CodeInvalid, UseErrorText: true},
+	{Match: apierror.Is(ErrAvatarTooLarge), Code: apierror.CodeTooLarge, UseErrorText: true},
+	{Match: apierror.Is(ErrUsernameTaken), Code: apierror.CodeConflict, UseErrorText: true},
+	{Match: apierror.Is(ErrWrongPassword), Code: apierror.CodeForbidden, UseErrorText: true},
+	{Match: apierror.Is(gorm.ErrRecordNotFound), Code: apierror.CodeNotFound, PublicMessage: "user not found"},
+}
+
 func handleLoginError(c *gin.Context, err error) {
-	if errors.Is(err, ErrInvalidCredentials) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
-		return
-	}
-	c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authenticate"})
+	// 登录失败使用端点专用文案，避免区分用户名不存在与密码错误
+	apierror.Write(c, err, "failed to authenticate", apierror.Rule{
+		Match: apierror.Is(ErrInvalidCredentials), Code: apierror.CodeUnauthorized, PublicMessage: "invalid username or password",
+	})
 }
 
 func handleUserError(c *gin.Context, err error) {
-	switch {
-	case errors.Is(err, ErrNewUserNameRequired), errors.Is(err, ErrInvalidInput),
-		errors.Is(err, ErrNothingToUpdate), errors.Is(err, ErrInvalidAvatar):
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-	case errors.Is(err, ErrAvatarTooLarge):
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": err.Error()})
-	case errors.Is(err, ErrUsernameTaken):
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-	case errors.Is(err, ErrWrongPassword):
-		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
-	case errors.Is(err, gorm.ErrRecordNotFound):
-		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
-	default:
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "user operation failed"})
-	}
+	apierror.Write(c, err, "user operation failed", userErrorRules...)
 }

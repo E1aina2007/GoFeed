@@ -34,6 +34,7 @@ var (
 	ErrNewUserNameRequired     = errors.New("new username is required")
 	ErrWrongPassword           = errors.New("wrong password")
 	ErrInvalidCredentials      = errors.New("invalid username or password")
+	ErrInvalidUserID           = errors.New("invalid user id")
 	ErrInvalidInput            = errors.New("invalid user input")
 	ErrVideoCounterUnavailable = errors.New("video counter unavailable")
 )
