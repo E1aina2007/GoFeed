@@ -1,10 +1,10 @@
 package social
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
 
+	"gofeed/internal/error"
 	"gofeed/internal/middleware/jwt"
 
 	"github.com/gin-gonic/gin"
@@ -46,7 +46,7 @@ func (ctl *Controller) GetCommentList(c *gin.Context) {
 func (ctl *Controller) CreateComment(c *gin.Context) {
 	userID, ok := jwt.UserID(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
 	}
 	videoID, err := parsePathID(c.Param("id"), ErrInvalidVideoID)
@@ -56,7 +56,7 @@ func (ctl *Controller) CreateComment(c *gin.Context) {
 	}
 	var request CreateCommentRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": ErrInvalidCommentContent.Error()})
+		apierror.WriteCode(c, apierror.CodeInvalid, ErrInvalidCommentContent.Error())
 		return
 	}
 	comment, err := ctl.service.CreateComment(c.Request.Context(), videoID, userID, request.Content)
@@ -71,7 +71,7 @@ func (ctl *Controller) CreateComment(c *gin.Context) {
 func (ctl *Controller) DeleteComment(c *gin.Context) {
 	userID, ok := jwt.UserID(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
 	}
 	videoID, err := parsePathID(c.Param("id"), ErrInvalidVideoID)
@@ -95,7 +95,7 @@ func (ctl *Controller) DeleteComment(c *gin.Context) {
 func (ctl *Controller) GetLikeState(c *gin.Context) {
 	userID, ok := jwt.UserID(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
 	}
 	videoID, err := parsePathID(c.Param("id"), ErrInvalidVideoID)
@@ -115,7 +115,7 @@ func (ctl *Controller) GetLikeState(c *gin.Context) {
 func (ctl *Controller) CreateLike(c *gin.Context) {
 	userID, ok := jwt.UserID(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
 	}
 	videoID, err := parsePathID(c.Param("id"), ErrInvalidVideoID)
@@ -135,7 +135,7 @@ func (ctl *Controller) CreateLike(c *gin.Context) {
 func (ctl *Controller) RemoveLike(c *gin.Context) {
 	userID, ok := jwt.UserID(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
 	}
 	videoID, err := parsePathID(c.Param("id"), ErrInvalidVideoID)
@@ -201,7 +201,7 @@ func (ctl *Controller) GetFollowingList(c *gin.Context) {
 func (ctl *Controller) GetFollowState(c *gin.Context) {
 	followerID, ok := jwt.UserID(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
 	}
 	followeeID, err := parsePathID(c.Param("id"), ErrInvalidUserID)
@@ -221,7 +221,7 @@ func (ctl *Controller) GetFollowState(c *gin.Context) {
 func (ctl *Controller) CreateFollow(c *gin.Context) {
 	followerID, ok := jwt.UserID(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
 	}
 	followeeID, err := parsePathID(c.Param("id"), ErrInvalidUserID)
@@ -241,7 +241,7 @@ func (ctl *Controller) CreateFollow(c *gin.Context) {
 func (ctl *Controller) RemoveFollow(c *gin.Context) {
 	followerID, ok := jwt.UserID(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
 	}
 	followeeID, err := parsePathID(c.Param("id"), ErrInvalidUserID)
@@ -276,24 +276,13 @@ func parseLimit(raw string) (int, error) {
 	return limit, nil
 }
 
+// socialErrorRules 按从最具体到最通用排列，决定互动模块领域错误的公共类别与对外文案
+var socialErrorRules = []apierror.Rule{
+	{Match: apierror.Is(ErrInvalidUserID, ErrInvalidVideoID, ErrInvalidCommentID, ErrInvalidLimit, ErrInvalidCursor, ErrInvalidCommentContent, ErrSelfFollow), Code: apierror.CodeInvalid, UseErrorText: true},
+	{Match: apierror.Is(ErrUserNotFound, ErrVideoNotFound, ErrCommentNotFound, gorm.ErrRecordNotFound), Code: apierror.CodeNotFound, UseErrorText: true},
+	{Match: apierror.Is(ErrCommentNotAuthor), Code: apierror.CodeForbidden, UseErrorText: true},
+}
+
 func handleError(c *gin.Context, err error) {
-	switch {
-	case errors.Is(err, ErrInvalidUserID),
-		errors.Is(err, ErrInvalidVideoID),
-		errors.Is(err, ErrInvalidCommentID),
-		errors.Is(err, ErrInvalidLimit),
-		errors.Is(err, ErrInvalidCursor),
-		errors.Is(err, ErrInvalidCommentContent),
-		errors.Is(err, ErrSelfFollow):
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-	case errors.Is(err, ErrUserNotFound),
-		errors.Is(err, ErrVideoNotFound),
-		errors.Is(err, ErrCommentNotFound),
-		errors.Is(err, gorm.ErrRecordNotFound):
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-	case errors.Is(err, ErrCommentNotAuthor):
-		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
-	default:
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "social operation failed"})
-	}
+	apierror.Write(c, err, "social operation failed", socialErrorRules...)
 }
