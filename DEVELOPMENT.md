@@ -2,7 +2,7 @@
 
 > 更新日期：2026-09-12
 >
-> 功能快照基线：`7f97382`（`feat: 完善视频处理消息可靠性`）；文档提交不单独推进功能状态
+> 功能快照基线：`7f97382`（`feat: 完善视频处理消息可靠性`）；真实 RabbitMQ 重连回归补充为 `ef94396`，文档提交不单独推进功能状态
 
 本文是 GoFeed 后续开发分析和实施的主入口。它把 README 中的开发流程、当前进度、验收规则与下一阶段建议集中在一起，减少每次任务都从头扫描项目的需要。本文记录的是当前 checkout 的快照；开始新任务时仍需先检查工作树，并核对任务涉及的事实来源。
 以下模块状态只统计已提交的提交历史；当前工作树中的未提交改动不计入完成判定。
@@ -34,6 +34,7 @@
 - `220aff0` 只补充前端恢复未完成发布记录，不改变后端路由或 social 游标契约
 - `22174a5` 完成 social 评论、关注和粉丝列表的 v1 游标实现；`62313b1` 补齐范围合同路由回归。两者均已提交，R1/R2 无需因此回溯重排
 - `7f97382` 完成 MQ 单一契约、运行中重连、outbox claim 租约与退避、分级延迟重试队列及 worker 优雅退出；新增 `000009` 迁移
+- `ef94396` 增加真实 RabbitMQ 底层断线、runtime 自动重连和拓扑恢复集成回归，不改变生产行为
 
 ### 按任务定位文件
 
@@ -69,12 +70,12 @@
 | 可观测性与查询预算 | 已完成 | `69a08c1` | 请求内查询计数随完成日志输出 `db_queries`，公开列表与详情 e2e 断言 ≤4 条语句 |
 | 并发与异常测试收尾 | 已完成 | `d185645` | 同刻排序、分页变更、注销作者占位、统计失败 503、注入错误与 GET 幂等矩阵落地 |
 | R1 状态机与 outbox 迁移 | 已完成 | `c2134ac` | 发布事务 draft→processing 并原子写入 outbox 事件；冗余计数值列已删除 |
-| R2 relay/worker | 已提交，成功消费路径已观察 | `b0321ef`、`d2294a2`、`6eaab01`、`1678360` | worker 已实际启动并完成 `video_id=10` 消费；真实 broker 故障、重启与死信矩阵本轮未执行 |
+| R2 relay/worker | 已提交，真实核心链路已回归 | `b0321ef`、`d2294a2`、`6eaab01`、`1678360` | 正常消费、死信与 1s 重试回流已在真实 MySQL/RabbitMQ 上通过；可靠性扩展及剩余边界见 MQ 增强行 |
 | R3-A API 异步状态 | 已提交，后端回归完成 | `f4fafeb` | 发布返回 202 + DraftItem，新增作者状态查询，processing/rejected 结果字段固定 |
 | R3-B rejected 生命周期 | 已提交，迁移与后端回归完成 | `f4fafeb` | rejected 可主动丢弃；按 rejected_at 自动进入 purging；000008 无待执行迁移 |
 | R3-C 前端异步状态 | 已提交，前端门禁未纳入本轮 | `5ada6f9` | 状态查询 API、处理中轮询、拒绝提示和发布页面单测已落地 |
 | M2 遗留：social 列表游标版本化 | 已完成 | `22174a5`、`62313b1` | 评论、关注、粉丝 v1 游标绑定列表类型与视频/目标用户范围；旧格式和跨范围值返回 400 |
-| MQ 可靠性增强 | 已提交，待真实依赖验收 | `7f97382` | MQ 规格为唯一事实源；runtime 自动重连；outbox 使用 publishing 租约、围栏与退避；consumer 使用 1s/5s/30s 分级重试队列 |
+| MQ 可靠性增强 | 核心真实依赖回归通过，运维故障矩阵待收尾 | `7f97382`、`ef94396` | MQ 规格为唯一事实源；runtime 自动重连；outbox 使用 publishing 租约、围栏与退避；consumer 使用 1s/5s/30s 分级重试队列 |
 
 ### 已确认的系统边界
 
@@ -91,7 +92,7 @@
 - 慢查询阈值 200ms 由 `internal/db` 显式配置，预期内的记录不存在不再按错误级别刷日志
 - 视频状态机为 `draft → processing → published | rejected`：发布事务原子完成 `draft → processing`、写入发布时刻与 outbox 事件，worker 校验通过后 CAS 为 `published`；作者可查询 `processing`/`published`/`rejected`，`rejected` 可主动丢弃或在 `rejected_at + RETENTION_VIDEO_DRAFT_HOURS` 到期后由 sweeper 转入 `purging`
 - 发布接口响应为 `202 + {"draft": DraftItem}`；`processing` 行在公开列表、详情与 `GET /mine` 中不可见，worker 校验通过后自动转为可见
-- 仓库迁移文件的最高版本为 `000009`；该迁移为 `video_outbox_events` 增加 `next_attempt_at`、`locked_until`、`last_attempt_at`、`last_error` 与 `(status, next_attempt_at, id)` claim 索引，并把历史 pending 事件回填为立即可派发。2026-09-05 的 `no change` 只证明当时 `000008` 已应用，不能作为 `000009` 已应用的证据
+- 仓库迁移文件的最高版本为 `000009`；该迁移为 `video_outbox_events` 增加 `next_attempt_at`、`locked_until`、`last_attempt_at`、`last_error` 与 `(status, next_attempt_at, id)` claim 索引，并把历史 pending 事件回填为立即可派发。2026-09-12 已在测试夹具创建的临时真实 MySQL 库从头应用全部迁移并通过元数据/回填对齐；这不等于日常或部署目标库已经升级
 - worker 进程内运行 relay 与 consumer：relay 在短事务内把到期 pending 或过期 publishing 事件批量 claim 为 `publishing`，以 `attempt` 作为围栏、`locked_until` 作为租约；publisher confirm 成功后标记 `dispatched`，失败时回到 `pending` 并按 1 秒起步、最高 5 分钟退避
 - MQ 的 `EventSpec`、`ConsumerSpec` 与 `RetryPolicy` 是 exchange、routing key、queue、prefetch 和重试档位的唯一事实源；runtime 在意外断线后重建连接、发布器和拓扑，显式 `Close` 后永久终止
 - consumer 手动 ack；基础设施失败依次投递到 `video.process.retry.1s`、`video.process.retry.5s`、`video.process.retry.30s`，TTL 到期后回主队列。初次投递加三次重试均会实际处理，最后一次仍失败才进入 `video.process.dead`
@@ -146,12 +147,12 @@ git commit --only -m "<type>: <简短中文摘要>" -- <本模块路径>
 
 ### 下一步执行顺序（按提交历史校准）
 
-1. **先完成 `000009` 与真实依赖验收**：在隔离 MySQL 测试库应用全部迁移，核对 outbox 列、默认值、回填与 claim 索引；再用真实 RabbitMQ 覆盖意外断线重连、拓扑恢复、1s/5s/30s 延迟、最终死信、并发 relay、租约接管和重复投递。测试媒体目录必须临时隔离
-2. **补齐 MQ 运维观测**：基于现有状态字段增加 pending/publishing 数量、最老待派发年龄、租约接管、发布失败、重连与 DLQ 深度指标和告警；先观测单队列压力，再决定是否拆分更多事件类型
-3. **进入 Redis C1**：登录/注册限流只依赖 Redis 客户端、429 契约、TTL 和 Redis 故障降级；会话缓存按指标评估。用户列表分页是独立的 API 与前端交付，不依赖 Redis
-4. **持续复用横切错误契约**：后续 HTTP 模块直接复用 `apierror.Rule`/`Write`，不重新建立模块私有的状态码分支
+1. **升级并冒烟目标库**：临时真实 MySQL 已验证全量迁移和 `000009` 对齐；部署时仍需先检查目标库 `schema_migrations`，应用 `000009`，再启动新版 worker，并观察历史 pending 是否正常派发
+2. **补完剩余运行时故障矩阵**：真实依赖已覆盖断线重连、拓扑恢复、并发 claim、租约接管、首档 1s 回流和最终死信边界；还需验证 5s/30s 实际计时、worker 整进程杀停/重启，以及 confirm 成功但数据库标记前崩溃造成的重复投递
+3. **补齐 MQ 运维观测**：基于现有状态字段增加 pending/publishing 数量、最老待派发年龄、租约接管、发布失败、重连与 DLQ 深度指标和告警；先观测单队列压力，再决定是否拆分更多事件类型
+4. **进入 Redis C1**：登录/注册限流只依赖 Redis 客户端、429 契约、TTL 和 Redis 故障降级；会话缓存按指标评估。后续 HTTP 模块继续复用 `apierror.Rule`/`Write`
 
-阶段一的全部列表游标契约已闭合；MQ 可靠性代码已经提交，但在第 1 项完成前只能称为“静态与无外部依赖回归通过”，不能宣称真实运行时故障闭环已验收。
+阶段一的全部列表游标契约已闭合；MQ 可靠性核心路径已通过真实依赖回归，但在目标库升级与第 2 项完成前仍不能宣称生产故障闭环全部验收。
 
 ### 阶段一：Feed 服务端可靠性（已完成）
 
@@ -181,7 +182,7 @@ git commit --only -m "<type>: <简短中文摘要>" -- <本模块路径>
 
 阶段一核心可靠性已完成并支撑了后续 R1/R2；social 列表游标补丁已提交且不回滚或阻塞已经提交的异步发布闭环。Redis C1 按自身 Redis 依赖推进，不等待阶段二真实 broker 验收。
 
-### 阶段二：RabbitMQ 视频处理闭环（可靠性增强已提交，待真实依赖验收）
+### 阶段二：RabbitMQ 视频处理闭环（核心真实依赖回归通过，待运维收口）
 
 RabbitMQ 首个业务闭环只负责视频异步处理；outbox 与草稿清扫分别维护自己的租约和围栏语义。当前拆为六个已交付模块：
 
@@ -190,9 +191,9 @@ RabbitMQ 首个业务闭环只负责视频异步处理；outbox 与草稿清扫�
 3. **R3-A API 异步状态（已提交，`f4fafeb`）**：发布接口返回 `202 + {draft: DraftItem}`；新增作者状态查询端点，顶层固定返回 `status`、`published_at`、`rejected_at`、`rejected_reason`；公开读取继续隐藏 processing/rejected
 4. **R3-B rejected 生命周期（已提交，`f4fafeb`）**：`DELETE /api/video/auth/drafts/:id` 接受 `draft`/`rejected`；`GetExpiredDraftPurgeList` 和 claim 按各自时间基准筛选，`000007` 保持不变，`000008` 回填历史 `rejected_at` 并增加 `(status, rejected_at, id)` 索引
 5. **R3-C 前端异步状态（已提交，`5ada6f9`）**：发布页面消费状态查询接口，轮询 `processing`，展示 `published`/`rejected`，并在组件销毁时取消轮询；提交同时更新视频 API 类型和页面单测
-6. **MQ 可靠性增强（已提交，`7f97382`）**：`internal/mq` 集中事件与消费规格并由 runtime 管理连接生命周期；`000009` 为 outbox 增加 publishing 租约、attempt 围栏、失败原因和下次尝试时间；relay 批量 claim，consumer 经三个 TTL 重试队列延迟投递，worker 在关闭 broker 前等待 relay/consumer 退出
+6. **MQ 可靠性增强（已提交，`7f97382`、`ef94396`）**：`internal/mq` 集中事件与消费规格并由 runtime 管理连接生命周期；`000009` 为 outbox 增加 publishing 租约、attempt 围栏、失败原因和下次尝试时间；relay 批量 claim，consumer 经三个 TTL 重试队列延迟投递，worker 在关闭 broker 前等待 relay/consumer 退出；真实 broker 重连回归由 `ef94396` 补齐
 
-阶段二当前的收口门槛包括真实 MySQL/RabbitMQ 集成和前端门禁记录：必须验证 `000009` 迁移与回填、relay 崩溃及租约接管、worker 重启、连接重建后的拓扑恢复、重复消息、三档延迟与最终死信、媒体缺失、状态不可逆和消息/数据库不一致，并补记 R3-C 的 lint、单测、构建及必要的浏览器回归。不要把 fake dialer 单测或“能连接 RabbitMQ”当作真实故障闭环完成。
+阶段二已在临时真实 MySQL/RabbitMQ 上验证 `000009` 迁移与回填、并发 claim、租约接管、连接重建后的拓扑恢复、正常消费、重复消息、首档延迟、最终死信、媒体缺失和状态不可逆。剩余收口门槛是目标库升级冒烟、5s/30s 两档真实计时、worker 整进程崩溃窗口，以及 R3-C 的前端门禁记录。
 
 2026-09-05 的后端收口记录：目标库执行 `migrate ... up` 返回 `no change`；`go vet ./...`、`go test -count=1 ./...`、`go test -race -count=1 ./...` 均在隔离 MySQL 测试库通过。运行日志观察到 worker 启动、consumer 订阅 `video.process` 并完成 `video_id=10`，sweeper 轮次成功且无待清扫项。本轮明确不执行前端、Docker/Compose 或真实 RabbitMQ 故障矩阵；因此这些未覆盖项不构成已完成的阶段二运行时验收。
 
@@ -202,7 +203,7 @@ RabbitMQ 首个业务闭环只负责视频异步处理；outbox 与草稿清扫�
 
 ### 阶段二后续：消息队列可靠性（核心实现已提交）
 
-`7f97382` 已实现 `MESSAGE_QUEUE_RELIABILITY_PLAN.md` 的核心代码边界：MQ 规格单一事实源、运行中重连、outbox claim 租约/退避，以及 consumer 分级重试/DLQ。尚未完成的是在真实 MySQL/RabbitMQ 上执行迁移与故障矩阵，以及积压、租约接管、重连和 DLQ 的运维指标；只有指标证明必要时才增加多类型队列。
+`7f97382` 已实现 `MESSAGE_QUEUE_RELIABILITY_PLAN.md` 的核心代码边界，`ef94396` 补充真实 broker 重连与拓扑恢复回归。临时真实 MySQL/RabbitMQ 已执行核心迁移与消息链路；尚未完成的是目标库升级、完整进程级故障矩阵，以及积压、租约接管、重连和 DLQ 的运维指标。只有指标证明必要时才增加多类型队列。
 
 ### 阶段三：Redis 定向能力
 
@@ -216,7 +217,7 @@ Redis 不成为用户、视频、草稿或清扫状态的权威来源；当前�
 - 本地磁盘存储只适合单机或共享卷部署；异步 worker、API、sweeper 必须明确共享卷或对象存储契约
 - 用户列表目前没有分页，数据量增长后会影响响应体和查询成本
 - `observe.pprof` 在配置示例中存在，但当前配置加载器不读取；启用时要使用独立、仅回环监听的 `ServeMux` 和独立关闭生命周期
-- 阶段一所有列表游标契约均已提交并通过回归；R1、R2、R3-A/R3-B、R3-C 及 MQ 可靠性增强均已提交，阶段二仍缺 `000009` 的真实 MySQL 对齐和真实 RabbitMQ 故障矩阵
+- 阶段一所有列表游标契约均已提交并通过回归；R1、R2、R3-A/R3-B、R3-C 及 MQ 可靠性增强均已提交，`000009` 和核心 RabbitMQ 路径已通过临时真实依赖回归；阶段二仍缺目标库升级、进程级故障矩阵和前端门禁收口
 - 手写 GORM 列名尚未达到完整编译期类型安全；`gorm.io/gen` 延后到读取模式稳定后评估，避免当前引入生成代码和持久化层大范围改写
 - 草稿 `purging` 是不可逆状态；涉及 `000004` 回滚时必须停止 API 与所有 sweeper，确认不存在不兼容行后再执行 down migration，不能用故意失败的 SQL 阻止回滚
 
@@ -250,8 +251,8 @@ go test -race -count=1 ./...
 - R3-C 前端异步状态：提交 `5ada6f9` 更新视频 API 类型、状态查询、发布页轮询和 `PublishVideoView` 单测；本轮按范围不执行前端门禁，不能将其写为新的前端验收结论
 - social 列表游标版本化：`22174a5`、`62313b1` 已提交；2026-09-05 的 `go vet ./...`、`go test -count=1 ./...`、`go test -race -count=1 ./...` 均已在真实 MySQL 下通过。`social` codec/service 测试与 `router.TestSocialCursorScopeContract` 覆盖正常分页、旧格式、跨视频、跨用户和 `followers`/`following` 互换游标的 `400` 语义，未新增迁移或前端改动
 - API 错误处理复用（2026-09-09）：公共契约与 video/user/social 迁移一次交付，未新增迁移或前端改动。本轮按用户要求跳过测试补写，仅执行 `go build ./...`、`go vet ./...` 与既有单测 `go test -count=1 ./internal/error/... ./internal/video/... ./internal/user/... ./internal/social/...`，结果全部通过；`internal/error` 暂无测试文件。新增的 `apierror` 规则矩阵、cause 保留和默认文案断言未补，属未覆盖边界
-- MQ 可靠性增强（2026-09-12）：代码提交为 `7f97382`；`go vet ./...`、`go test -count=1 ./...`、`go test -race -count=1 ./...` 与 `git diff --check` 均通过。无外部依赖的契约、runtime、退避和 UTF-8 截断用例实际运行；需要数据库的 schema/outbox/worker 用例因未配置可连接 MySQL 而跳过，真实 RabbitMQ 重连、延迟队列和死信链路也未执行，不能称为集成回归通过
-- 阶段状态：Feed 核心可靠性与阶段二代码已提交；`000009` 的真实 MySQL 对齐、RabbitMQ 故障矩阵和前端门禁仍待收口；API 错误复用与 MQ 可靠性核心实现均已完成
+- MQ 可靠性增强（2026-09-12）：实现提交为 `7f97382`，真实 broker 重连测试提交为 `ef94396`。加载本地忽略的 `.env` 后，`go test -count=1 -v ./internal/testutil` 在临时真实 MySQL 上通过模型、`000009` 列/默认值/索引及历史 pending 回填；`go test -count=1 -v ./internal/mq` 通过真实 RabbitMQ 意外断线重连与拓扑恢复；`go test -count=1 -v ./internal/worker` 通过正常处理、死信、重试耗尽和 1s TTL 回流。随后 `go vet ./...`、`go test -count=1 ./...`、`go test -race -count=1 ./...` 全部在 MySQL/RabbitMQ 已配置时通过
+- 阶段状态：Feed 核心可靠性与阶段二代码已提交；`000009` 和 MQ 核心路径已有临时真实依赖证据，目标库升级、5s/30s 计时、进程级故障窗口与前端门禁仍待收口；API 错误复用与 MQ 可靠性核心实现均已完成
 
 ### 前端
 
