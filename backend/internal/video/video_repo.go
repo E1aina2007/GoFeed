@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -418,14 +419,44 @@ func (r *Repository) RemovePurgedDraft(ctx context.Context, id uint, token strin
 }
 
 func draftPurgeLeaseInterval(lease time.Duration) (clause.Expr, error) {
-	seconds := int64(lease / time.Second)
-	if lease%time.Second != 0 {
-		seconds++
-	}
-	if seconds <= 0 {
+	expr, ok := databaseLeaseInterval(lease)
+	if !ok {
 		return clause.Expr{}, ErrInvalidDraftPurgeLease
 	}
-	return gorm.Expr("TIMESTAMPADD(SECOND, ?, NOW(3))", seconds), nil
+	return expr, nil
+}
+
+// databaseLeaseInterval 把正租约时长转换为使用数据库时钟计算的到期表达式
+func databaseLeaseInterval(lease time.Duration) (clause.Expr, bool) {
+	seconds := durationSecondsCeil(lease)
+	if seconds <= 0 {
+		return clause.Expr{}, false
+	}
+	return gorm.Expr("TIMESTAMPADD(SECOND, ?, NOW(3))", seconds), true
+}
+
+// durationSecondsCeil 将时长向上取整为秒，避免亚秒租约被截断为零
+func durationSecondsCeil(duration time.Duration) int64 {
+	if duration <= 0 {
+		return 0
+	}
+	seconds := int64(duration / time.Second)
+	if duration%time.Second != 0 {
+		seconds++
+	}
+	return seconds
+}
+
+// truncateUTF8Bytes 按字节上限截断字符串并保持 UTF-8 编码完整
+func truncateUTF8Bytes(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	for len(value) > limit {
+		_, size := utf8.DecodeLastRuneInString(value)
+		value = value[:len(value)-size]
+	}
+	return value
 }
 
 // DeletePublishedVideo 只允许作者软删除已发布视频，避免草稿进入已发布视频的保留期路径

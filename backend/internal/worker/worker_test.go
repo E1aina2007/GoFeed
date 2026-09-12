@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 
+	"gofeed/internal/mq"
 	"gofeed/internal/testutil"
 	"gofeed/internal/video"
 
@@ -24,30 +27,49 @@ func TestMain(m *testing.M) {
 	os.Exit(testutil.Main(m))
 }
 
-// fakePublisher 记录发布调用并支持注入故障
+// 测试目标：记录发布调用并支持注入故障
+// 预期效果：用例可断言载荷、消息头与路由键，也可模拟 broker 不可用
 type fakePublisher struct {
-	mu       sync.Mutex
-	messages []ProcessMessage
-	headers  []amqp.Table
-	err      error
+	mu          sync.Mutex
+	messages    []ProcessMessage
+	headers     []amqp.Table
+	exchanges   []string
+	routingKeys []string
+	attempts    []string
+	err         error
 }
 
-func (f *fakePublisher) Publish(_ context.Context, _, _ string, payload any) error {
-	return f.PublishWithHeaders(context.Background(), "", "", payload, nil)
+func (f *fakePublisher) Publish(ctx context.Context, exchange, routingKey string, payload any) error {
+	return f.PublishWithHeaders(ctx, exchange, routingKey, payload, nil)
 }
 
-func (f *fakePublisher) PublishWithHeaders(_ context.Context, _, _ string, payload any, headers amqp.Table) error {
+func (f *fakePublisher) PublishWithHeaders(_ context.Context, exchange, routingKey string, payload any, headers amqp.Table) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.attempts = append(f.attempts, routingKey)
 	if f.err != nil {
 		return f.err
 	}
 	f.messages = append(f.messages, payload.(ProcessMessage))
 	f.headers = append(f.headers, headers)
+	f.exchanges = append(f.exchanges, exchange)
+	f.routingKeys = append(f.routingKeys, routingKey)
 	return nil
 }
 
-// faultInjection 按表名向语句注入错误的测试夹具
+// 测试目标：记录原消息是否被确认
+// 预期效果：用例可断言重试路径的确认顺序
+type ackRecorder struct {
+	acked bool
+}
+
+func (a *ackRecorder) ack(_ bool) error {
+	a.acked = true
+	return nil
+}
+
+// 测试目标：按表名向语句注入错误的测试夹具
+// 预期效果：用例可精确制造数据库基础设施故障
 type faultInjection struct {
 	mu     sync.Mutex
 	target *faultTarget
@@ -85,7 +107,8 @@ func (f *faultInjection) disarm() {
 	f.target = nil
 }
 
-// registerFaultInjection 注册按表名短路的故障回调，无标记时为 no-op
+// 测试目标：注册按表名短路的故障回调
+// 预期效果：未标记目标表时为 no-op，用例结束自动移除回调
 func registerFaultInjection(t *testing.T, gdb *gorm.DB) *faultInjection {
 	t.Helper()
 	faults := &faultInjection{}
@@ -133,7 +156,8 @@ func registerFaultInjection(t *testing.T, gdb *gorm.DB) *faultInjection {
 	return faults
 }
 
-// seedProcessingVideo 写入一条处理中视频与 outbox 事件，返回视频行
+// 测试目标：写入一条处理中视频与 outbox 事件
+// 预期效果：返回已回填标识的视频行与待派发事件
 func seedProcessingVideo(t *testing.T, repo *video.Repository, db *gorm.DB, id int64) video.Video {
 	t.Helper()
 	ctx := context.Background()
@@ -161,7 +185,8 @@ func seedProcessingVideo(t *testing.T, repo *video.Repository, db *gorm.DB, id i
 	return row
 }
 
-// writeMediaFile 按公开 URL 相对路径写入媒体文件
+// 测试目标：按公开 URL 相对路径写入媒体文件
+// 预期效果：被测处理逻辑可校验到完整媒体
 func writeMediaFile(t *testing.T, root, relative string, content []byte) {
 	t.Helper()
 	path := filepath.Join(root, filepath.FromSlash(relative))
@@ -170,6 +195,23 @@ func writeMediaFile(t *testing.T, root, relative string, content []byte) {
 	}
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatalf("写入媒体文件失败: %v", err)
+	}
+}
+
+// 测试目标：验证 relay 与 consumer 的契约全部取自 mq 规格
+// 预期效果：事件规格取自 VideoProcessEventSpec，消费规格整体等于 VideoProcessSpec
+func TestWorkerUsesMQSpecAsSingleSource(t *testing.T) {
+	db := testutil.DB(t)
+	repo := video.NewRepository(db)
+	relay := NewRelay(repo, &fakePublisher{})
+	consumer := NewConsumer(repo, &fakePublisher{}, t.TempDir())
+	spec := mq.VideoProcessSpec()
+
+	if relay.spec != mq.VideoProcessEventSpec() {
+		t.Fatalf("relay 事件规格应取自 VideoProcessEventSpec got=%+v", relay.spec)
+	}
+	if !reflect.DeepEqual(consumer.spec, spec) {
+		t.Fatalf("consumer 消费规格应等于 VideoProcessSpec got=%+v want=%+v", consumer.spec, spec)
 	}
 }
 
@@ -189,8 +231,11 @@ func TestRelayDispatchRoundMarksDispatched(t *testing.T) {
 		t.Fatalf("应派发一条消息 got=%d", len(publisher.messages))
 	}
 	msg := publisher.messages[0]
-	if msg.SchemaVersion != 1 || msg.EventID == "" || msg.VideoID == 0 || msg.PlayURL == "" || msg.CoverURL == "" {
+	if msg.SchemaVersion != mq.SchemaVersion || msg.EventID == "" || msg.VideoID == 0 || msg.PlayURL == "" || msg.CoverURL == "" {
 		t.Fatalf("消息载荷错误 got=%+v", msg)
+	}
+	if publisher.exchanges[0] != mq.VideoProcessEventSpec().Exchange || publisher.routingKeys[0] != mq.VideoProcessEventSpec().RoutingKey {
+		t.Fatalf("派发目标应取自事件规格 got=%s/%s", publisher.exchanges[0], publisher.routingKeys[0])
 	}
 
 	var event video.OutboxEvent
@@ -202,8 +247,8 @@ func TestRelayDispatchRoundMarksDispatched(t *testing.T) {
 	}
 }
 
-// 测试目标：验证发布失败的事件保持 pending 由下一轮重试
-// 预期效果：派发失败不标记事件，视频状态不变
+// 测试目标：验证发布失败的事件写回 pending 并安排退避，退避到期后可重新派发
+// 预期效果：失败后状态为 pending 且 next_attempt_at 在未来，清除退避后派发成功
 func TestRelayKeepsPendingWhenPublishFails(t *testing.T) {
 	db := testutil.DB(t)
 	repo := video.NewRepository(db)
@@ -219,10 +264,20 @@ func TestRelayKeepsPendingWhenPublishFails(t *testing.T) {
 		t.Fatalf("读取事件失败: %v", err)
 	}
 	if event.Status != video.OutboxEventStatusPending {
-		t.Fatalf("发布失败的事件应保持 pending got=%+v", event)
+		t.Fatalf("发布失败的事件应写回 pending got=%+v", event)
+	}
+	if event.NextAttemptAt == nil || !event.NextAttemptAt.After(time.Now()) {
+		t.Fatalf("失败事件应安排未来重试 got=%v", event.NextAttemptAt)
+	}
+	if event.LastError == "" {
+		t.Fatal("失败事件应记录原因")
 	}
 
-	// 恢复后同一事件可成功派发
+	// 测试目标：模拟退避到期后同一事件可成功派发
+	// 预期效果：清除 next_attempt_at 后恢复派发并标记已派发
+	if err := db.Model(&video.OutboxEvent{}).Where("id = ?", event.ID).Update("next_attempt_at", nil).Error; err != nil {
+		t.Fatalf("清除退避失败: %v", err)
+	}
 	publisher.err = nil
 	if err := relay.dispatchRound(context.Background()); err != nil {
 		t.Fatalf("恢复后派发失败: %v", err)
@@ -232,30 +287,44 @@ func TestRelayKeepsPendingWhenPublishFails(t *testing.T) {
 	}
 }
 
-// 测试目标：验证 relay 跳过视频行已删除的孤立事件
-// 预期效果：不一致事件不产生消息且保持 pending，供人工处置
-func TestRelaySkipsOrphanEvents(t *testing.T) {
+// 测试目标：验证视频行软删除后的事件按固定不一致退避释放
+// 预期效果：不产生消息，事件回到 pending 并按固定退避推迟到五分钟之后
+func TestRelayReleasesOrphanEventWithFixedBackoff(t *testing.T) {
 	db := testutil.DB(t)
 	repo := video.NewRepository(db)
 	publisher := &fakePublisher{}
 	relay := NewRelay(repo, publisher)
 	row := seedProcessingVideo(t, repo, db, 3)
 	if err := db.Delete(&video.Video{}, row.ID).Error; err != nil {
-		t.Fatalf("删除视频行失败: %v", err)
+		t.Fatalf("软删除视频行失败: %v", err)
 	}
 
+	startedAt := time.Now()
 	if err := relay.dispatchRound(context.Background()); err != nil {
 		t.Fatalf("派发轮次失败: %v", err)
 	}
 	if len(publisher.messages) != 0 {
-		t.Fatalf("孤立事件不应派发消息 got=%d", len(publisher.messages))
+		t.Fatalf("缺少视频快照的事件不应派发消息 got=%d", len(publisher.messages))
 	}
 	var event video.OutboxEvent
 	if err := db.First(&event, "video_id = ?", row.ID).Error; err != nil {
 		t.Fatalf("读取事件失败: %v", err)
 	}
 	if event.Status != video.OutboxEventStatusPending {
-		t.Fatalf("孤立事件应保持 pending got=%+v", event)
+		t.Fatalf("不一致事件应回到 pending got=%+v", event)
+	}
+	if event.NextAttemptAt == nil {
+		t.Fatal("不一致事件应安排固定退避")
+	}
+	if event.NextAttemptAt.Before(startedAt.Add(outboxInconsistentBackoff-time.Minute)) ||
+		event.NextAttemptAt.After(time.Now().Add(outboxInconsistentBackoff+time.Minute)) {
+		t.Fatalf("不一致事件应按固定退避释放 got=%v want≈%v", event.NextAttemptAt, outboxInconsistentBackoff)
+	}
+	if event.LockedUntil != nil {
+		t.Fatalf("释放后不应保留租约 got=%v", event.LockedUntil)
+	}
+	if event.LastError == "" {
+		t.Fatal("不一致事件应记录原因")
 	}
 }
 
@@ -270,7 +339,7 @@ func TestConsumerProcessPublishesValidMedia(t *testing.T) {
 	writeMediaFile(t, root, "videos/1/20260801/clip.mp4", []byte{0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'})
 	writeMediaFile(t, root, "covers/1/20260801/cover.png", []byte{0x89, 'P', 'N', 'G'})
 
-	msg := ProcessMessage{SchemaVersion: 1, EventID: "evt-ok", VideoID: row.ID, PlayURL: row.PlayURL, CoverURL: row.CoverURL}
+	msg := ProcessMessage{SchemaVersion: mq.SchemaVersion, EventID: "evt-ok", VideoID: row.ID, PlayURL: row.PlayURL, CoverURL: row.CoverURL}
 	if err := consumer.process(context.Background(), msg); err != nil {
 		t.Fatalf("消费处理失败: %v", err)
 	}
@@ -291,7 +360,7 @@ func TestConsumerProcessRejectsMissingMedia(t *testing.T) {
 	consumer := NewConsumer(repo, &fakePublisher{}, t.TempDir())
 	row := seedProcessingVideo(t, repo, db, 5)
 
-	msg := ProcessMessage{SchemaVersion: 1, EventID: "evt-missing", VideoID: row.ID, PlayURL: row.PlayURL, CoverURL: row.CoverURL}
+	msg := ProcessMessage{SchemaVersion: mq.SchemaVersion, EventID: "evt-missing", VideoID: row.ID, PlayURL: row.PlayURL, CoverURL: row.CoverURL}
 	if err := consumer.process(context.Background(), msg); err != nil {
 		t.Fatalf("确定性失败不应返回错误: %v", err)
 	}
@@ -314,7 +383,7 @@ func TestConsumerProcessDuplicateMessageIsNoop(t *testing.T) {
 	row := seedProcessingVideo(t, repo, db, 6)
 	writeMediaFile(t, root, "videos/1/20260801/clip.mp4", []byte{0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'})
 	writeMediaFile(t, root, "covers/1/20260801/cover.png", []byte{0x89, 'P', 'N', 'G'})
-	msg := ProcessMessage{SchemaVersion: 1, EventID: "evt-dup", VideoID: row.ID, PlayURL: row.PlayURL, CoverURL: row.CoverURL}
+	msg := ProcessMessage{SchemaVersion: mq.SchemaVersion, EventID: "evt-dup", VideoID: row.ID, PlayURL: row.PlayURL, CoverURL: row.CoverURL}
 
 	if err := consumer.process(context.Background(), msg); err != nil {
 		t.Fatalf("首次消费失败: %v", err)
@@ -325,88 +394,185 @@ func TestConsumerProcessDuplicateMessageIsNoop(t *testing.T) {
 }
 
 // 测试目标：验证损坏载荷与未知版本进入死信
-// 预期效果：解码失败和不支持版本均返回死信动作
+// 预期效果：解码失败和不支持版本均返回死信结果
 func TestConsumerHandleDeliveryDeadLettersCorruptPayload(t *testing.T) {
 	db := testutil.DB(t)
 	repo := video.NewRepository(db)
 	consumer := NewConsumer(repo, &fakePublisher{}, t.TempDir())
 
 	corrupt := amqp.Delivery{Body: []byte("not-json")}
-	if result := consumer.handleDelivery(context.Background(), corrupt); result != consumeDeadLetter {
+	if result := consumer.handleDelivery(context.Background(), corrupt); result != mq.ResultDeadLetter {
 		t.Fatalf("损坏载荷应进入死信 got=%v", result)
 	}
 	stale := amqp.Delivery{Body: []byte(`{"schema_version":99}`)}
-	if result := consumer.handleDelivery(context.Background(), stale); result != consumeDeadLetter {
+	if result := consumer.handleDelivery(context.Background(), stale); result != mq.ResultDeadLetter {
 		t.Fatalf("未知版本应进入死信 got=%v", result)
 	}
 }
 
-// 测试目标：验证基础设施故障按重试计数退避重发并在耗尽后进入死信
-// 预期效果：首次故障退避后重发携带递增头并确认，重试耗尽返回死信动作
-func TestConsumerHandleDeliveryRetriesOnDatabaseFailure(t *testing.T) {
+// 测试目标：验证基础设施故障时最多安排三次延迟重试，达到上限的投递仍执行处理
+// 预期效果：前三次失败依次投递到 1s、5s、30s 队列并递增计数头，基础设施恢复后第 3 次重试成功确认
+func TestConsumerSchedulesThreeRetriesThenProcessesFinalAttempt(t *testing.T) {
 	db := testutil.DB(t)
 	repo := video.NewRepository(db)
+	root := t.TempDir()
 	faults := registerFaultInjection(t, db)
 	publisher := &fakePublisher{}
-	consumer := NewConsumer(repo, publisher, t.TempDir())
+	consumer := NewConsumer(repo, publisher, root)
 	row := seedProcessingVideo(t, repo, db, 7)
+	writeMediaFile(t, root, "videos/1/20260801/clip.mp4", []byte{0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'})
+	writeMediaFile(t, root, "covers/1/20260801/cover.png", []byte{0x89, 'P', 'N', 'G'})
+	spec := mq.VideoProcessSpec()
 
-	msg := ProcessMessage{SchemaVersion: 1, EventID: "evt-retry", VideoID: row.ID, PlayURL: row.PlayURL, CoverURL: row.CoverURL}
+	msg := ProcessMessage{SchemaVersion: mq.SchemaVersion, EventID: "evt-retry", VideoID: row.ID, PlayURL: row.PlayURL, CoverURL: row.CoverURL}
 	body, err := json.Marshal(msg)
 	if err != nil {
 		t.Fatalf("编码消息失败: %v", err)
 	}
 
 	faults.arm("videos", errors.New("injected database outage"))
-	if result := consumer.handleDelivery(context.Background(), amqp.Delivery{Body: body}); result != consumeAck {
-		t.Fatalf("重发路径应确认原消息 got=%v", result)
-	}
-	if len(publisher.messages) != 1 || publisher.headers[0]["x-retry-attempt"].(int) != 1 {
-		t.Fatalf("应重发一次并携带计数头 got=%+v headers=%+v", publisher.messages, publisher.headers)
-	}
-
-	exhausted := amqp.Delivery{Body: body, Headers: amqp.Table{"x-retry-attempt": int32(3)}}
-	if result := consumer.handleDelivery(context.Background(), exhausted); result != consumeDeadLetter {
-		t.Fatalf("重试耗尽应进入死信 got=%v", result)
-	}
-	faults.disarm()
-}
-
-// 测试目标：验证退避期间上下文取消时不确认消息
-// 预期效果：返回重投动作，消息由 broker 在信道关闭后重新投递
-func TestConsumerHandleDeliveryRequeuesOnContextCancel(t *testing.T) {
-	db := testutil.DB(t)
-	repo := video.NewRepository(db)
-	faults := registerFaultInjection(t, db)
-	consumer := NewConsumer(repo, &fakePublisher{}, t.TempDir())
-	row := seedProcessingVideo(t, repo, db, 8)
-
-	msg := ProcessMessage{SchemaVersion: 1, EventID: "evt-cancel", VideoID: row.ID, PlayURL: row.PlayURL, CoverURL: row.CoverURL}
-	body, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatalf("编码消息失败: %v", err)
-	}
-
-	faults.arm("videos", errors.New("injected database outage"))
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if result := consumer.handleDelivery(ctx, amqp.Delivery{Body: body}); result != consumeRequeue {
-		t.Fatalf("上下文取消应返回重投动作 got=%v", result)
-	}
-	faults.disarm()
-}
-
-// 测试目标：验证重发退避按重试次数指数增长并封顶
-// 预期效果：退避时长为 1s、2s、4s 且不超过上限
-func TestRetryBackoff(t *testing.T) {
-	for attempt, want := range map[int]time.Duration{0: time.Second, 1: 2 * time.Second, 2: 4 * time.Second, 10: maxRetryBackoff} {
-		if got := retryBackoff(attempt); got != want {
-			t.Fatalf("退避 %d 错误 got=%v want=%v", attempt, got, want)
+	// 测试目标：验证前三次失败各自安排一次延迟重试
+	// 预期效果：计数头从一递增到三，投递目标依次为三档重试队列
+	for attempt := 0; attempt < spec.Retry.MaxRetries; attempt++ {
+		delivery := amqp.Delivery{Body: body, Headers: amqp.Table{"x-retry-attempt": int32(attempt)}}
+		if result := consumer.handleDelivery(context.Background(), delivery); result != mq.ResultRetry {
+			t.Fatalf("第 %d 次投递应返回重试结果 got=%v", attempt, result)
+		}
+		recorder := &ackRecorder{}
+		if err := consumer.republishRetry(context.Background(), body, attempt, recorder.ack); err != nil {
+			t.Fatalf("第 %d 次投递重试队列失败: %v", attempt, err)
+		}
+		if !recorder.acked {
+			t.Fatalf("第 %d 次投递重试成功后应确认原消息", attempt)
+		}
+		if got, want := publisher.routingKeys[attempt], spec.RetryQueueName(attempt); got != want {
+			t.Fatalf("第 %d 次投递目标队列错误 got=%s want=%s", attempt, got, want)
+		}
+		header, ok := publisher.headers[attempt]["x-retry-attempt"].(int)
+		if !ok || header != attempt+1 {
+			t.Fatalf("第 %d 次投递计数头错误 got=%v want=%d", attempt, publisher.headers[attempt]["x-retry-attempt"], attempt+1)
 		}
 	}
+
+	// 测试目标：验证达到重试上限的那次投递仍然执行处理
+	// 预期效果：基础设施恢复后处理成功并确认，不再安排第四次重试
+	faults.disarm()
+	final := amqp.Delivery{Body: body, Headers: amqp.Table{"x-retry-attempt": int32(spec.Retry.MaxRetries)}}
+	if result := consumer.handleDelivery(context.Background(), final); result != mq.ResultAck {
+		t.Fatalf("达到重试上限的投递在基础设施恢复后应确认 got=%v", result)
+	}
+	if len(publisher.messages) != spec.Retry.MaxRetries {
+		t.Fatalf("基础设施恢复后不应再安排重试 got=%d", len(publisher.messages))
+	}
+	var updated video.Video
+	if err := db.First(&updated, row.ID).Error; err != nil {
+		t.Fatalf("读取视频失败: %v", err)
+	}
+	if updated.Status != video.VideoStatusPublished {
+		t.Fatalf("视频应已发布 got=%+v", updated)
+	}
 }
 
-// testTime 固定测试基准时间
+// 测试目标：验证重试耗尽且处理仍失败时才进入死信
+// 预期效果：上限前一次投递仍返回重试结果，达到上限的投递返回死信且不再重发
+func TestConsumerDeadLettersWhenFinalAttemptFails(t *testing.T) {
+	db := testutil.DB(t)
+	repo := video.NewRepository(db)
+	root := t.TempDir()
+	faults := registerFaultInjection(t, db)
+	publisher := &fakePublisher{}
+	consumer := NewConsumer(repo, publisher, root)
+	row := seedProcessingVideo(t, repo, db, 8)
+	writeMediaFile(t, root, "videos/1/20260801/clip.mp4", []byte{0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'})
+	writeMediaFile(t, root, "covers/1/20260801/cover.png", []byte{0x89, 'P', 'N', 'G'})
+	spec := mq.VideoProcessSpec()
+
+	msg := ProcessMessage{SchemaVersion: mq.SchemaVersion, EventID: "evt-exhausted", VideoID: row.ID, PlayURL: row.PlayURL, CoverURL: row.CoverURL}
+	body, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("编码消息失败: %v", err)
+	}
+
+	faults.arm("videos", errors.New("injected database outage"))
+	// 测试目标：验证上限前一次投递仍可安排重试
+	// 预期效果：第 2 次重试失败返回重试结果，说明死信边界正好在重试上限
+	beforeLimit := amqp.Delivery{Body: body, Headers: amqp.Table{"x-retry-attempt": int32(spec.Retry.MaxRetries - 1)}}
+	if result := consumer.handleDelivery(context.Background(), beforeLimit); result != mq.ResultRetry {
+		t.Fatalf("上限前一次投递应返回重试结果 got=%v", result)
+	}
+	// 测试目标：验证重试耗尽且本次处理仍失败时进入死信
+	// 预期效果：达到上限的投递返回死信结果且不再安排重试
+	exhausted := amqp.Delivery{Body: body, Headers: amqp.Table{"x-retry-attempt": int32(spec.Retry.MaxRetries)}}
+	if result := consumer.handleDelivery(context.Background(), exhausted); result != mq.ResultDeadLetter {
+		t.Fatalf("重试耗尽且处理失败应进入死信 got=%v", result)
+	}
+	if len(publisher.messages) != 0 {
+		t.Fatalf("耗尽后不应再次安排重试 got=%d", len(publisher.messages))
+	}
+	faults.disarm()
+}
+
+// 测试目标：验证重试消息投递失败时不确认原消息
+// 预期效果：republishRetry 尝试投递到第一档重试队列后返回错误，确认回调未触发
+func TestConsumerRetryPublishFailureLeavesMessageUnacked(t *testing.T) {
+	db := testutil.DB(t)
+	repo := video.NewRepository(db)
+	publisher := &fakePublisher{err: errors.New("broker unavailable")}
+	consumer := NewConsumer(repo, publisher, t.TempDir())
+	spec := mq.VideoProcessSpec()
+
+	msg := ProcessMessage{SchemaVersion: mq.SchemaVersion, EventID: "evt-retry-fail", VideoID: 1}
+	body, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("编码消息失败: %v", err)
+	}
+	recorder := &ackRecorder{}
+	if err := consumer.republishRetry(context.Background(), body, 0, recorder.ack); err == nil {
+		t.Fatal("重试投递失败应返回错误")
+	}
+	if recorder.acked {
+		t.Fatal("重试投递失败时不应确认原消息")
+	}
+	if len(publisher.attempts) != 1 || publisher.attempts[0] != spec.RetryQueueName(0) {
+		t.Fatalf("重试投递应尝试第一档重试队列 got=%v", publisher.attempts)
+	}
+	if len(publisher.messages) != 0 {
+		t.Fatalf("失败的投递不应记录成功消息 got=%d", len(publisher.messages))
+	}
+}
+
+// 测试目标：验证 outbox 退避按时长翻倍并封顶五分钟
+// 预期效果：各次尝试的退避始终为正且不超过五分钟，超长尝试沿用封顶值
+func TestOutboxBackoffIsPositiveAndCapped(t *testing.T) {
+	cases := map[int]time.Duration{
+		1:           time.Second,
+		2:           2 * time.Second,
+		9:           256 * time.Second,
+		10:          outboxMaxBackoff,
+		64:          outboxMaxBackoff,
+		math.MaxInt: outboxMaxBackoff,
+		0:           time.Second,
+		-7:          time.Second,
+	}
+	for attempt, want := range cases {
+		got := outboxBackoff(attempt)
+		if got <= 0 {
+			t.Fatalf("退避必须为正 attempt=%d got=%v", attempt, got)
+		}
+		if got > outboxMaxBackoff {
+			t.Fatalf("退避不得超过五分钟 attempt=%d got=%v", attempt, got)
+		}
+		if got != want {
+			t.Fatalf("退避计算错误 attempt=%d got=%v want=%v", attempt, got, want)
+		}
+	}
+	if outboxMaxBackoff != 5*time.Minute {
+		t.Fatalf("退避封顶值应为五分钟 got=%v", outboxMaxBackoff)
+	}
+}
+
+// 测试目标：固定测试基准时间
+// 预期效果：用例共享同一发布时刻，避免时区与时钟差异
 func testTime() time.Time {
 	return time.Date(2026, 8, 1, 12, 0, 0, 0, time.Local)
 }

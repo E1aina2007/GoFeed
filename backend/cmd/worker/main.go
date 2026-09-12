@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -65,44 +66,40 @@ func main() {
 		return err
 	})
 
-	// 异步处理闭环依赖 RabbitMQ：启动期按退避重试，耗尽后退出交由重启策略兜底
-	var conn *mq.Connection
+	// 异步处理闭环依赖 RabbitMQ：runtime 负责启动期连接、拓扑声明与运行中重连
+	broker := mq.NewRuntime(cfg.RabbitMQ)
 	connectWithRetry("RabbitMQ", 10, func() error {
-		var err error
-		conn, err = mq.NewConnection(cfg.RabbitMQ)
-		if err != nil {
+		if err := broker.EnsureConnected(); err != nil {
 			log.Printf("Failed to connect to RabbitMQ: %v", err)
+			return err
 		}
-		return err
+		return nil
 	})
-	channel, err := conn.Channel()
-	if err != nil {
-		log.Fatalf("Failed to open RabbitMQ channel: %v", err)
-	}
-	if err := mq.DeclareTopology(channel); err != nil {
-		log.Fatalf("Failed to declare RabbitMQ topology: %v", err)
-	}
-	publisher, err := mq.NewPublisher(channel)
-	if err != nil {
-		log.Fatalf("Failed to create publisher: %v", err)
-	}
 
 	repo := video.NewRepository(dbConn)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	relay := worker.NewRelay(repo, publisher)
-	go relay.Run(ctx)
-
-	consumer := worker.NewConsumer(repo, publisher, workerStorageRoot)
-	go consumer.Run(ctx, conn)
+	relay := worker.NewRelay(repo, broker)
+	consumer := worker.NewConsumer(repo, broker, workerStorageRoot)
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() {
+		defer workers.Done()
+		relay.Run(ctx)
+	}()
+	go func() {
+		defer workers.Done()
+		consumer.Run(ctx, broker)
+	}()
 
 	log.Println("Worker started - relay and consumer are running")
 
 	<-ctx.Done()
 	log.Println("Received shutdown signal, draining...")
+	workers.Wait()
 
-	if err := conn.Close(); err != nil {
+	if err := broker.Close(); err != nil {
 		log.Printf("Failed to close RabbitMQ connection: %v", err)
 	}
 	if err := db.Close(dbConn); err != nil {

@@ -60,7 +60,8 @@ func TestModelsAlignWithMigrations(t *testing.T) {
 			table: "video_outbox_events",
 			columns: []string{
 				"id", "event_id", "video_id", "event_type", "status",
-				"attempt", "created_at", "dispatched_at",
+				"attempt", "next_attempt_at", "locked_until", "last_attempt_at", "last_error",
+				"created_at", "dispatched_at",
 			},
 		},
 		{
@@ -282,14 +283,148 @@ func TestRejectedPurgeMigrationBackfillsLegacyTimestamp(t *testing.T) {
 	}
 }
 
+// 测试目标：验证 outbox 租约迁移的列语义与 claim 索引列顺序
+// 预期效果：三个时间列可空且无默认值，last_error 非空且默认空字符串，claim 索引顺序为 status、next_attempt_at、id
+func TestOutboxLeaseMigrationColumns(t *testing.T) {
+	db := DB(t)
+
+	type columnMeta struct {
+		ColumnName    string  `gorm:"column:COLUMN_NAME"`
+		IsNullable    string  `gorm:"column:IS_NULLABLE"`
+		ColumnDefault *string `gorm:"column:COLUMN_DEFAULT"`
+	}
+	var actual []columnMeta
+	if err := db.Raw(`
+		SELECT COLUMN_NAME, IS_NULLABLE, COLUMN_DEFAULT
+		FROM information_schema.COLUMNS
+		WHERE TABLE_SCHEMA = DATABASE()
+		  AND TABLE_NAME = 'video_outbox_events'
+		  AND COLUMN_NAME IN ('next_attempt_at', 'locked_until', 'last_attempt_at', 'last_error')
+	`).Scan(&actual).Error; err != nil {
+		t.Fatalf("读取 video_outbox_events 列元数据失败: %v", err)
+	}
+	byName := make(map[string]columnMeta, len(actual))
+	for _, column := range actual {
+		byName[column.ColumnName] = column
+	}
+	for _, name := range []string{"next_attempt_at", "locked_until", "last_attempt_at"} {
+		column, ok := byName[name]
+		if !ok || column.IsNullable != "YES" || column.ColumnDefault != nil {
+			t.Errorf("列 %s 应为无默认值的可空列 got=%+v", name, column)
+		}
+	}
+	lastError, ok := byName["last_error"]
+	if !ok || lastError.IsNullable != "NO" || lastError.ColumnDefault == nil || *lastError.ColumnDefault != "" {
+		t.Errorf("列 last_error 应为默认空字符串的非空列 got=%+v", lastError)
+	}
+
+	// 测试目标：读取 claim 索引的实际列顺序
+	// 预期效果：索引顺序必须匹配 claim 查询的状态过滤与排序
+	var indexColumns []string
+	if err := db.Raw(`
+		SELECT COLUMN_NAME
+		FROM information_schema.STATISTICS
+		WHERE TABLE_SCHEMA = DATABASE()
+		  AND TABLE_NAME = 'video_outbox_events'
+		  AND INDEX_NAME = 'idx_video_outbox_events_claim'
+		ORDER BY SEQ_IN_INDEX
+	`).Scan(&indexColumns).Error; err != nil {
+		t.Fatalf("读取 claim 索引元数据失败: %v", err)
+	}
+	want := []string{"status", "next_attempt_at", "id"}
+	if len(indexColumns) != len(want) {
+		t.Fatalf("claim 索引列数错误 got=%v want=%v", indexColumns, want)
+	}
+	for index, name := range want {
+		if indexColumns[index] != name {
+			t.Fatalf("claim 索引第 %d 列错误 got=%v want=%v", index+1, indexColumns, want)
+		}
+	}
+}
+
+// 测试目标：验证 000009 迁移把历史 pending 事件的 next_attempt_at 回填为 created_at
+// 预期效果：迁移前的 pending 行立即可被 claim，非 pending 行不被回填
+func TestOutboxLeaseMigrationBackfillsLegacyPending(t *testing.T) {
+	db := DB(t)
+	row := &video.Video{
+		AuthorID: 1,
+		Title:    "outbox 回填视频",
+		Status:   video.VideoStatusProcessing,
+	}
+	if err := db.Create(row).Error; err != nil {
+		t.Fatalf("创建处理视频失败: %v", err)
+	}
+	pending := &video.OutboxEvent{
+		EventID:   "evt-backfill-pending",
+		VideoID:   row.ID,
+		EventType: video.VideoProcessEventType,
+		Status:    video.OutboxEventStatusPending,
+	}
+	dispatched := &video.OutboxEvent{
+		EventID:   "evt-backfill-dispatched",
+		VideoID:   row.ID,
+		EventType: video.VideoProcessEventType,
+		Status:    video.OutboxEventStatusDispatched,
+	}
+	for _, event := range []*video.OutboxEvent{pending, dispatched} {
+		if err := db.Create(event).Error; err != nil {
+			t.Fatalf("创建 outbox 事件失败: %v", err)
+		}
+	}
+	// 测试目标：还原迁移前的历史状态
+	// 预期效果：两条事件都不带 next_attempt_at
+	if err := db.Exec("UPDATE video_outbox_events SET next_attempt_at = NULL WHERE id IN (?, ?)", pending.ID, dispatched.ID).Error; err != nil {
+		t.Fatalf("还原历史状态失败: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(migrationsDir(), "000009_outbox_publishing_lease.up.sql"))
+	if err != nil {
+		t.Fatalf("读取 000009 迁移失败: %v", err)
+	}
+	updateSQL := migrationUpdateStatementFor(string(content), "UPDATE video_outbox_events")
+	if updateSQL == "" {
+		t.Fatal("000009 迁移缺少 next_attempt_at 回填语句")
+	}
+	if err := db.Exec(updateSQL).Error; err != nil {
+		t.Fatalf("执行 next_attempt_at 回填失败: %v", err)
+	}
+
+	var backfilled struct {
+		NextAttemptAt *time.Time `gorm:"column:next_attempt_at"`
+		CreatedAt     time.Time  `gorm:"column:created_at"`
+	}
+	if err := db.Raw("SELECT next_attempt_at, created_at FROM video_outbox_events WHERE id = ?", pending.ID).Scan(&backfilled).Error; err != nil {
+		t.Fatalf("读取回填后的 pending 行失败: %v", err)
+	}
+	if backfilled.NextAttemptAt == nil || !backfilled.NextAttemptAt.Equal(backfilled.CreatedAt) {
+		t.Fatalf("pending 行应回填为 created_at got=%+v want created_at=%v", backfilled, backfilled.CreatedAt)
+	}
+
+	var untouched struct {
+		NextAttemptAt *time.Time `gorm:"column:next_attempt_at"`
+	}
+	if err := db.Raw("SELECT next_attempt_at FROM video_outbox_events WHERE id = ?", dispatched.ID).Scan(&untouched).Error; err != nil {
+		t.Fatalf("读取 dispatched 行失败: %v", err)
+	}
+	if untouched.NextAttemptAt != nil {
+		t.Fatalf("非 pending 行不应被回填 got=%v", untouched.NextAttemptAt)
+	}
+}
+
 type videoTimestamp struct {
 	RejectedAt *time.Time `gorm:"column:rejected_at"`
 	UpdatedAt  time.Time  `gorm:"column:updated_at"`
 }
 
 func migrationUpdateStatement(content string) string {
+	return migrationUpdateStatementFor(content, "UPDATE videos")
+}
+
+// 测试目标：从迁移脚本中抽取指定表的更新语句
+// 预期效果：回填用例复用迁移自身的语句而不复制 SQL 文本
+func migrationUpdateStatementFor(content, prefix string) string {
 	for _, statement := range strings.Split(content, ";") {
-		if index := strings.Index(statement, "UPDATE videos"); index >= 0 {
+		if index := strings.Index(statement, prefix); index >= 0 {
 			return strings.TrimSpace(statement[index:])
 		}
 	}

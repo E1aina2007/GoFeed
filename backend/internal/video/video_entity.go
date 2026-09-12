@@ -55,6 +55,7 @@ type Video struct {
 // outbox 事件状态
 const (
 	OutboxEventStatusPending    = "pending"
+	OutboxEventStatusPublishing = "publishing"
 	OutboxEventStatusDispatched = "dispatched"
 )
 
@@ -62,16 +63,20 @@ const (
 const VideoProcessEventType = "video.process"
 
 // OutboxEvent 记录发布事务产生的待派发处理事件
-// relay 以 (status, id) 轮询 pending 事件，confirm 成功后标记 dispatched
+// relay 以 (status, next_attempt_at, id) claim 到 publishing 并持有租约，confirm 成功后标记 dispatched
 type OutboxEvent struct {
-	ID           uint   `gorm:"primaryKey"`
-	EventID      string `gorm:"type:char(36);not null;uniqueIndex:uq_video_outbox_events_event_id"`
-	VideoID      uint   `gorm:"not null;index:idx_video_outbox_events_video"`
-	EventType    string `gorm:"type:varchar(64);not null"`
-	Status       string `gorm:"type:varchar(16);not null;default:'pending'"`
-	Attempt      int    `gorm:"not null;default:0"`
-	CreatedAt    time.Time
-	DispatchedAt *time.Time
+	ID            uint   `gorm:"primaryKey"`
+	EventID       string `gorm:"type:char(36);not null;uniqueIndex:uq_video_outbox_events_event_id"`
+	VideoID       uint   `gorm:"not null;index:idx_video_outbox_events_video"`
+	EventType     string `gorm:"type:varchar(64);not null"`
+	Status        string `gorm:"type:varchar(16);not null;default:'pending'"`
+	Attempt       int    `gorm:"not null;default:0"`
+	NextAttemptAt *time.Time
+	LockedUntil   *time.Time
+	LastAttemptAt *time.Time
+	LastError     string `gorm:"type:varchar(255);not null;default:''"`
+	CreatedAt     time.Time
+	DispatchedAt  *time.Time
 }
 
 // TableName 固定 outbox 事件表名，避免默认命名规则映射到错误数据表
