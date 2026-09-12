@@ -1,50 +1,54 @@
 # GoFeed 后端开发方案
 
-> 更新日期：2026-09-01
+> 更新日期：2026-09-12
 >
-> 后端功能基线：`914f343`（公开列表与详情查询预算断言已完成）；当前 checkout 的 `HEAD` 为 `7db27fe`（进度文档提交不计入功能状态），本计划只覆盖后端路线
+> 后端功能基线：`7f97382`（视频处理消息可靠性已提交）；文档提交不单独推进功能状态，本计划只覆盖后端路线
 
 本文把 [`DEVELOPMENT.md`](./DEVELOPMENT.md) 的「当前路线」细化为可直接开工的模块方案。事实来源仍是 `AGENTS.md`、`DEVELOPMENT.md`、`backend/internal/router/router.go`、`backend/db/migrations` 与真实数据库；本文与它们冲突时，以后者为准。每个模块按「设计契约 → 实现 → 自动化验证 → 页面验收 → 独立提交 → review 暂停」推进，完成一个模块后更新 `DEVELOPMENT.md` 的模块状态、验证记录与下一步，再开始下一个。
 
+实现先复用当前 package 内的 controller/service/repository、`PublicVideoQuery`、列表装配、存储、会话和清扫能力；只有现有契约无法表达的新状态才新增最小逻辑。保持 router 作为组合根和既有依赖方向；新增导出函数及不可自明的小辅助函数使用现有简短中文用途注释，新增 Go 测试注释遵循 `AGENTS.md` 的两行中文格式。
+
 ## 基线快照
 
-- 阶段一 M1–M6、阶段二 R1/R2 已完成并提交；当前工作树正在收口 R3-A/R3-B，`DEVELOPMENT.md`、`README.md`、`API.md` 已同步后端异步契约
-- 迁移最高版本为 `000008`：`000007` 增加 `videos.rejected_at`，`000008` 为历史 rejected 回填时间并增加清扫索引；真实库本次检查为 version 7、dirty 0，尚未应用 000008
+- 阶段一 Feed 核心（M1–M6）和 social 列表游标版本化均已提交：social 实现为 `22174a5`，范围合同回归为 `62313b1`；阶段二 R1/R2/R3-A/R3-B 后端已提交，前端 R3-C 适配由 `5ada6f9` 提交
+- 迁移最高版本为 `000009`：在 `000007`/`000008` 的 rejected 生命周期之后，`000009` 为 outbox 增加 publishing 租约、下次尝试时间、最后尝试时间与错误字段，并回填历史 pending 事件；本机尚未对真实 MySQL 应用和对齐该迁移
 - `PublicVideoQuery` 保持 6 个生产调用点：`video_repo.go` 4 处、`social/repo.go` 2 处；公开视频边界集中在 `video` 包
 - 列表作者读取已收敛为一次批量查询：`buildListResponse` 截断后收集去重作者 ID，经 `AuthorReader.GetPublicAuthors` 一次读取；详情仍走单条 `GetPublicAuthor`；缺失或已注销作者由适配器补占位资料
-- 互动统计读取失败时 fail-closed 返回 `503`（`ErrEngagementUnavailable`，映射在 `video_controller.handleVideoError`）；`Service.engagements` 仍用实体列值预填计数，`videos.likes_count`、`videos.comments_count` 两列依旧没有写入方，删除决策由 R1 迁移处理
+- 互动统计读取失败时 fail-closed 返回 `503`（`ErrEngagementUnavailable`，映射在 `video_controller.handleVideoError`）；`Service.engagements` 仅接受互动关系表聚合结果，`videos.likes_count`、`videos.comments_count` 已由 R1 的 `000006` 迁移删除，避免双事实源
 - `internal/db` 已内置请求内查询计数（GORM 语句回调）与 200ms 慢查询阈值；`observability.RequestLogger` 在完成日志输出 `db_queries`；公开列表与详情 ≤4 条语句由真实 MySQL e2e 断言（`router/query_budget_test.go`）守护
-- social 包的评论、关注、粉丝列表仍使用无版本的 `CommentCursor`/`FollowCursor`（仅 `created_at, id`），未接入 M2 的 v1 游标契约
-- 视频状态机与 worker 已落地 `draft → processing → published | rejected`；R3-A/R3-B 在当前工作树补齐状态查询、rejected 主动丢弃和到期清扫
-- `cmd/worker/main.go` 只连接数据库等待信号；Compose 的 `worker` 服务未挂载 `backend_uploads`（backend、sweeper 已挂载）
-- Redis/RabbitMQ 已有配置、健康检查、Compose 卷与 CI service，Go 侧尚无客户端；API 启动与 `/ready` 不依赖中间件
+- social 包的评论、关注、粉丝列表使用已提交的 v1 `CommentCursor`/`FollowCursor`，分别绑定 `comments + video_id`、`followers`/`following + user_id`；旧格式、未知字段、版本或范围不匹配统一返回 `400`
+- 视频状态机与 worker 已落地 `draft → processing → published | rejected`；R3-A/R3-B 已在 `f4fafeb` 提交状态查询、rejected 主动丢弃和到期清扫
+- `cmd/worker/main.go` 已连接 MySQL 与 RabbitMQ，运行 relay 和 consumer；`7f97382` 增加运行中重连和先等待两个循环退出再关闭 broker 的生命周期；Compose 的 `worker` 已在 `6eaab01` 挂载 `backend_uploads`
+- Redis 只有配置和健康检查，Go 侧仍无 Redis 客户端；RabbitMQ 客户端已由 worker 接入，API 启动与 `/ready` 不依赖中间件
 
 ## 总路线
 
 | 阶段 | 模块 | 产出 | API 变化 | 前端影响 | 状态 |
 | --- | --- | --- | --- | --- | --- |
 | 一 | M1 查询入口收紧 | `PublicVideoQuery` 模型绑定 | 无 | 无 | 已完成 `0842820` |
-| 一 | M2 游标契约 | 游标版本 + 范围绑定 | 400 语义细化 | 无（游标不透明） | 已完成 `61fb00e`（social 列表遗留） |
+| 一 | M2 游标契约（video） | 游标版本 + 范围绑定 | 400 语义细化 | 无（游标不透明） | 已完成 `61fb00e`；social 扩展状态见下一行 |
 | 一 | M3 作者批量补全 | 消除列表 N+1 | 无 | 无 | 已完成 `4e253f9` |
 | 一 | M4 互动统计故障语义 | 统计失败 503 | 新增 503 | 无（沿用错误重试） | 已完成 `fb867c8` |
 | 一 | M5 可观测性与查询预算 | 查询计数与预算断言 | 无 | 无 | 已完成 `69a08c1`、`914f343` |
-| 一 | M2 遗留：social 游标版本化 | 评论/关注/粉丝列表接入 v1 契约 | 400 语义细化 | 无（游标不透明） | 已完成（见阶段一记录） |
+| 一 | M2 遗留：social 游标版本化 | 评论/关注/粉丝列表接入 v1 契约 | 400 语义细化 | 无（游标不透明） | 已完成 `22174a5`、`62313b1` |
 | 一 | M6 并发与异常测试收尾 | 阶段一回归矩阵 | 无 | 无 | 已完成（见阶段一记录） |
 | 二 | R1 状态机与 outbox 迁移 | `000006` + 发布事务改造 | 无（响应形状后移到 R3） | 无 | 已完成 `c2134ac` |
-| 二 | R2 relay/worker | 队列拓扑与异步处理闭环 | 无 | 无 | 已完成 `d2294a2` |
-| 二 | R3-A API 异步状态 | 202 发布 + 状态查询 | 发布改 202、新端点 | 后续页面跟进 | 本次完成，待 review |
-| 二 | R3-B rejected 生命周期 | `000007`/`000008`、主动丢弃、到期清扫 | DELETE 扩展既有契约 | 无 | 本次完成，待 review |
+| 二 | R2 relay/worker | 队列拓扑与异步处理闭环 | 无 | 无 | 已提交；worker 成功消费路径已观察，真实 broker 故障矩阵本轮未执行 |
+| 二 | R3-A API 异步状态 | 202 发布 + 状态查询 | 发布改 202、新端点 | 后续页面已在 `5ada6f9` 跟进 | 已提交；后端回归已完成 |
+| 二 | R3-B rejected 生命周期 | `000007`/`000008`、主动丢弃、到期清扫 | DELETE 扩展既有契约 | 无 | 已提交；迁移无待执行、后端回归已完成 |
+| 二 | R3-C 前端异步状态 | 状态查询、处理中轮询、拒绝反馈 | 无新增后端接口 | 发布页已跟进 | 已提交；前端门禁未纳入本轮 |
+| 二 | R4 MQ 可靠性增强 | MQ 规格、运行中重连、outbox 租约、分级重试/DLQ | 无 | 无 | 已提交 `7f97382`；待真实 MySQL/RabbitMQ 验收 |
 | 三 | C1 限流 | 登录/注册限流 | 新增 429 | 无 | 未开始 |
 | 三 | C2 会话校验缓存 | 指标驱动评估 | 待定 | 待定 | 未开始 |
 | 三 | C3 用户列表分页 | 用户列表游标化 | `GET /api/user` 加参数 | 可后续跟进 | 未开始 |
 
-依赖关系：M1 → M2 →（M3、M4）→ M5 → social 游标/M6 → R1 → R2 → R3。R3-A/R3-B 后端模块各自独立回归与 review；前端状态展示在后续模块实现。C1 依赖阶段二完成（复用其连接与配置基础）。
+依赖关系（按实际提交历史修订）：M1 → M2(video) →（M3、M4）→ M5 → M6 → R1 → R2 → R3-A/R3-B → R3-C → R4；social 游标版本化已独立提交，不阻塞 R1/R2。C1 只依赖 Redis 配置与客户端接入，不依赖 RabbitMQ 验收；API 错误复用与 MQ 可靠性核心实现均已提交。
 
 ---
 
 ## 阶段一：Feed 服务端可靠性
 
-### 已完成模块（M1–M5）
+### 已完成模块（M1–M6，含 social 游标）
 
 设计与验证细节以 `DEVELOPMENT.md` 的「已完成模块」「当前模块验证记录」为准，此处只保留交付结果与执行偏差：
 
@@ -63,16 +67,15 @@
 
 ### M2 遗留：social 列表游标版本化（已完成）
 
-M2 只在 `video` 包两个游标列表落地；按原计划，`social` 包的评论、关注、粉丝列表应「按同一契约紧随一个独立小模块完成，不混入同一提交」。当前三个列表已不再使用无版本的 `CommentCursor`/`FollowCursor`，本模块已补齐：
+M2 只在 `video` 包两个游标列表落地的历史缺口已由 `22174a5` 补齐，并由 `62313b1` 增加范围合同回归。实现保留 `social.Repo` 依赖边界，不回溯修改已完成的视频游标模块：
 
-- `CommentCursor`、`FollowCursor` 增加版本与范围字段，`encodeCursor`/`decodeCursor` 对齐 `video` 包 v1 契约；旧格式、版本或范围不符统一返回 `400`（复用现有 `ErrInvalidCursor` 类路径）
-- 范围绑定按列表语义固定：评论列表绑定 `video_id`，关注/粉丝列表绑定目标用户 ID，防止跨列表、跨资源复用游标；解码后的范围与服务层实际参数不一致时按 400 处理
-- 错误语义与 M2 决策一致：不区分暴露细节，统一 400，不引入签名
-- `API.md` 同步三个列表接口的 400 说明；前端把游标当不透明值，已有失败重试路径无需改动
+- `CommentCursor`、`FollowCursor` 使用版本、列表类型、资源 ID、时间和记录 ID 的 v1 紧凑字段；严格拒绝旧格式、未知字段和不支持版本
+- 评论游标绑定 `comments + video_id`；粉丝与关注分别绑定 `followers`/`following + user_id`，防止跨列表、跨资源复用游标
+- `API.md` 已同步三个列表接口的示例和 `400` 说明；前端继续把游标当不透明值，无需改动参数语义
 
-**边界**：无迁移、无前端改动；不改 `video` 包已落地的游标实现，只对齐契约形状。
+**边界**：无迁移、无前端改动；不改 `video` 包已落地的游标实现，只补齐 social 包契约。
 
-**验证**：`go vet ./...`、`go test ./...`、`go test -race -count=1 ./...`；真实 MySQL 路由回归覆盖三个列表的旧格式 400、跨资源复用 400 与正常翻页。
+**验证**：2026-09-05 的 `go vet ./...`、`go test -count=1 ./...`、`go test -race -count=1 ./...` 均已在真实 MySQL 下通过；路由回归覆盖三个列表正常翻页、旧格式、评论跨视频、关系跨用户和 `followers`/`following` 互换的 `400`。
 
 ### M6 并发与异常测试收尾
 
@@ -84,14 +87,14 @@ M2 只在 `video` 包两个游标列表落地；按原计划，`social` 包的�
 | 分页期间新增 / 软删除视频 | 顺序可解释，无重复或跳漏 |
 | 作者注销 | 占位作者，列表不报错 |
 | 六媒体字段残缺 | fail-closed 排除（已有回归，纳入矩阵） |
-| 游标篡改 / 跨列表复用 / 旧版本 | 统一 400（video 列表已有回归；social 列表在 M2 遗留落地后纳入） |
+| 游标篡改 / 跨列表复用 / 旧版本 | 统一 400（video 与 social 列表均有回归） |
 | 互动统计查询失败 | 503，零计数不出现在响应 |
 | 数据库暂态失败（注入错误） | 错误路径干净，无半组装响应 |
 | 重复请求 | GET 幂等，响应一致 |
 
 验证执行 `go test -race -count=1 ./...` 并明确记录真实 MySQL 集成范围。
 
-**阶段一完成标准**（沿用 `DEVELOPMENT.md`）：契约评审通过；单测 / 竞态 / vet 通过；真实 MySQL 迁移与查询回归有证据；`API.md` 已同步（M2 的 400 细化 + social 列表契约 + M4 的 503）。达到前不开始队列或缓存接入。
+**阶段一完成标准**（沿用 `DEVELOPMENT.md`）：契约评审通过；单测 / 竞态 / vet 通过；真实 MySQL 迁移与查询回归有证据；`API.md` 已同步（视频和 social 游标 400 + M4 的 503）。该标准已满足；Redis 新能力按自身 Redis 依赖与验证推进，不以 RabbitMQ 运行时验收为前置。
 
 ---
 
@@ -101,7 +104,7 @@ M2 只在 `video` 包两个游标列表落地；按原计划，`social` 包的�
 
 **迁移 `000006`**（up/down 成对，down 前置条件写进迁移注释）：
 
-1. 新表 `video_outbox_events`：`id`（自增主键）、`event_id`（`CHAR(36)` 唯一键）、`video_id`（索引）、`event_type`、`status`（`pending` / `dispatched`）、`attempt`（int）、`created_at`、`dispatched_at`；索引 `(status, id)` 供 relay 轮询
+1. 新表 `video_outbox_events`：`id`（自增主键）、`event_id`（`CHAR(36)` 唯一键）、`video_id`（索引）、`event_type`、`status`、`attempt`、`created_at`、`dispatched_at`；初始索引 `(status, id)` 供 relay 轮询，后续 `000009` 扩展 publishing 租约字段和 claim 索引
 2. `videos` 增加 `rejected_reason VARCHAR(255) NOT NULL DEFAULT ''`
 3. **删除 `videos.likes_count`、`videos.comments_count`**：基线核实两列无任何写入方，读路径已以互动关系表聚合为事实源。决策为「派生字段」，彻底消除双事实源漂移；实体删除对应字段，`Service.engagements` 移除列值预填逻辑
 
@@ -111,23 +114,23 @@ M2 只在 `video` 包两个游标列表落地；按原计划，`social` 包的�
 
 ### R2 relay/worker
 
-**连接与拓扑**：新增 `internal/mq`（连接管理、拓扑声明、带 confirm 的发布器）。该包被 relay 与 worker 共同消费，属于横切基础设施，符合现有 `middleware` 层定位；`video` 包不 import `mq`，组合在 worker 完成。
+**连接与拓扑**：`internal/mq` 提供事件/消费规格、连接 runtime、拓扑声明和 confirm 发布。`VideoProcessSpec` 是 exchange、routing key、queue、prefetch 与重试策略的唯一事实源；`video` 包不 import `mq`，组合仍在 worker 完成。
 
 - Exchange `gofeed.events`（topic，durable）；routing key `video.process`
-- 队列 `video.process`（durable，`x-dead-letter-exchange=gofeed.dlx`）+ 死信队列 `video.process.dead`
+- 队列 `video.process`（durable，`x-dead-letter-exchange=gofeed.dlx`）+ `video.process.retry.1s/5s/30s` 三档 TTL 队列 + 死信队列 `video.process.dead`
 - 发布启用 publisher confirm；API 侧不建任何连接，`/ready` 不新增依赖
 
-**relay**（worker 进程内）：轮询 `video_outbox_events` 中 `pending` 事件（`LIMIT 32`，`FOR UPDATE SKIP LOCKED` 支持多实例），从 `videos` 读取组装消息并发布，confirm 成功后标记 `dispatched`。消息体只含 `event_id`、`video_id`、媒体相对路径、schema 版本，不携带文件内容。
+**relay**（worker 进程内）：在短事务中以 `FOR UPDATE SKIP LOCKED` 批量把到期 pending 或租约过期 publishing 事件 claim 为 `publishing`，递增 `attempt` 作为围栏并设置租约；事务外读取视频快照和 confirm 发布，成功后仅由仍持有同一 attempt 的 relay 标记 `dispatched`，失败则释放为 pending 并安排封顶五分钟的退避。消息体只含 `event_id`、`video_id`、媒体相对路径、schema 版本，不携带文件内容。
 
 **consumer**：手动 ack；处理动作为本闭环的**最小业务集**——校验共享卷下视频与封面文件存在、大小合法、扩展名与文件头（magic bytes）一致（复用 `video/storage.go` 的校验规则）。通过则 CAS `processing → published`；失败则 `processing → rejected` 并写入 `rejected_reason`。转码、截帧明确不在本阶段。
 
 - 幂等：条件更新 `WHERE id = ? AND status = 'processing'`，`RowsAffected = 0` 视为重复消息直接 ack
-- 有限重试：失败且 `attempt < 3` 时按同一 routing key 重发（header 计数）后 ack；达到上限 nack 进死信
+- 有限重试：基础设施失败先把消息发布到下一档 TTL 重试队列，broker confirm 后才 ack 原消息；初次投递后允许三次延迟重试，第三次重试仍实际处理，只有该次也失败才 nack 进死信
 - Compose：`worker` 服务补挂载 `backend_uploads`；运行 `docker compose config --quiet` 验证
 
 **必测**：发布事务回滚、relay 崩溃重启、worker 重启、重复消息、重试上限、死信、媒体缺失、`processing → published/rejected` 之外的状态更新被拒绝、消息与数据库不一致。不把「能连接 RabbitMQ」当作闭环完成。
 
-### R3 API 与前端异步状态（后端已完成，待 review）
+### R3 API 与前端异步状态（代码已提交，待集成收口）
 
 **建议决策**：发布接口改为异步语义，路径不变。
 
@@ -140,11 +143,19 @@ M2 只在 `video` 包两个游标列表落地；按原计划，`social` 包的�
 
 - `GET /mine` 维持只含 `published`；状态轮询走新端点
 - sweeper 已扩展：`rejected_at + RETENTION_VIDEO_DRAFT_HOURS` 到期自动转 `purging`，`rejected_at IS NULL` 的旧行由 000008 使用 `updated_at` 回填，避免拒绝件永久占用存储
-- 前端状态展示与轮询仍是后续独立页面模块；本次只交付后端契约和清扫生命周期
+- 前端状态展示与轮询已由 `5ada6f9` 独立提交；后端契约和清扫生命周期由 `f4fafeb` 提交
 
 **R3-B 迁移与兼容**：`000007` 增加可空 `videos.rejected_at`；由于真实库已处于 version 7，不能改写该迁移，`000008` 使用 `updated_at` 回填旧 `rejected` 行并建立 `(status, rejected_at, id)` 索引。`rejected_at IS NULL` 的记录在回填前不会被自动 claim。
 
-**阶段二完成标准**：三个模块均独立回归并有真实 MySQL（与 RabbitMQ 集成）证据；`API.md`、`README.md`、`DEVELOPMENT.md` 同步；Compose 配置校验通过。
+**阶段二完成标准**：R1、R2、R3-A、R3-B、前端 R3-C 与 R4 均有独立提交；目标数据库应用到 `000009` 并通过 schema/outbox 对齐；真实 RabbitMQ 故障矩阵和前端门禁证据齐全；`API.md`、`README.md`、`DEVELOPMENT.md` 同步；Compose 配置校验通过。2026-09-12 的 vet、常规和 race 回归通过，但需要 MySQL/RabbitMQ 的用例跳过，因此阶段二运行时仍未完成最终验收。
+
+### R4 MQ 可靠性增强（核心实现已提交）
+
+`7f97382` 已完成固定 MQ 规格、运行中 connection 重连、outbox claim 租约/退避与 consumer ACK/分级重试/DLQ。`Runtime.Close` 是终止操作，不被测试或业务代码用作“模拟断线”；意外断线才触发下一次调用重建连接和拓扑。MySQL outbox 仍是事件派发状态的事实源，RabbitMQ 只承载至少一次投递。剩余工作是：在真实依赖上验收 `000009`、重连、租约接管、延迟和死信，并增加积压/最老事件、发布失败、接管、重连与 DLQ 观测；多类型队列继续以指标为前提。
+
+### API 错误处理复用（已实现，2026-09-09）
+
+`API_ERROR_REUSE_PLAN.md` 的公共契约与 video/user/social 迁移已一次实现：`internal/error` 提供公共类别、描述与统一写入，三个 controller 改为模块级规则表；保持现有 HTTP 状态、文案和 `{"error":"..."}` 响应形状，worker/sweeper 仍不依赖 HTTP 映射。旧 `ParseStatusCode` 已删除。按用户要求本轮跳过测试环节，仅执行构建与既有单测回归。
 
 ---
 
@@ -159,20 +170,22 @@ M2 只在 `video` 包两个游标列表落地；按原计划，`social` 包的�
 - 降级：Redis 不可用时 fail-open 并记录日志（限流非权威功能，不阻断业务；`/ready` 不受影响）
 - 测试：限流器接口 + 内存实现单测；Redis 实现走集成或按可用性明确记录跳过
 
+**设计校正**：Redis 客户端属于可由 C1/C2 复用的基础能力，应放在 `internal/redis` 的窄接口后，而非 `internal/middleware/redis`。限流 Lua 必须在一次调用中返回计数和剩余 TTL，`Retry-After` 取向上取整后的正秒数；Redis 故障只 fail-open，不改变 `/ready`。
+
 ### C2 会话校验缓存（评估项）
 
-按 `DEVELOPMENT.md`：由命中率与延迟指标驱动，实现前固定 key 命名、TTL、主动失效（登出/改密/注销时删除）与 Redis 故障回退（查 MySQL）。指标不成立则不做。
+按 `DEVELOPMENT.md`：由命中率与延迟指标驱动，实现前固定 key 命名、TTL、主动失效（登出/改密/注销时删除）与 Redis 故障回退（查 MySQL）。缓存只记录活动会话校验所需的会话 ID、用户 ID 和有效期，TTL 取访问令牌剩余时间、会话有效期与上限三者最小值；指标不成立则不做。按用户撤销必须在原 MySQL 事务内收集实际撤销的 session ID、提交后逐个失效，不能 Redis `SCAN`；上线前还要验证登录发会话与改密/注销的并发契约，避免撤销后新建的竞争会话被误称已失效。
 
-### C3 用户列表分页
+### C3 用户列表分页（与 Redis 无关）
 
-`GET /api/user` 增加 `cursor` / `limit`，按 M2 的游标契约执行（`created_at, id` keyset，版本 + 无范围绑定）；`API.md` 同步后前端跟进。数据量增长前完成即可。
+`users` 表没有 `created_at`，因此 `GET /api/user` 使用 `id ASC` 单列 keyset；游标必须带 `v: 1` 与固定列表类型 `k: "users"`，严格拒绝跨列表或未知字段。该接口当前前端一次读取全部用户，后端改为默认分页时必须与前端“加载更多”交互、单测和页面验收同一模块发布，不能把旧页面静默截断为第一页。
 
 ---
 
 ## 前端并行边界
 
-- 阶段一 M1–M5 已全部落地，未触及任何前端文件；剩余的 social 游标版本化与 M6 同样只是后端契约细化与测试：游标对前端始终不透明（旧值 400 走既有失败重试路径），503 沿用既有错误界面。**前端不需要等待后端，可直接按既有路线继续页面与交互工作**
-- 阶段二 R1、R2 同样无前端影响；**R3 是唯一需要前后端协同的契约点**，顺序是先稳定 `API.md` 再动前端
+- 阶段一 M1–M6（含 social 游标版本化）已落地；游标对前端保持不透明，旧值 400 走既有失败路径
+- 阶段二 R1、R2 无前端影响；R3 后端契约已由 `f4fafeb` 提交，前端状态轮询已由 `5ada6f9` 提交，后续只需补记前端门禁和真实联调结果
 - C1 的 429、C3 的分页参数按相同原则：后端契约先行，前端随后
 
 ## 验证命令
@@ -189,8 +202,8 @@ go test -race -count=1 ./...
 
 ## 明确不做
 
-- 阶段一完成前不接入 Redis/RabbitMQ 业务客户端，不改前端交互
+- 不把 Redis 接入 `/ready` 必需依赖；RabbitMQ 仅由 worker 参与视频处理，API 仍不建立 MQ 连接
 - 当前游标 Feed 不做缓存，除非读压力指标证明收益；Redis 不成为用户、视频、草稿、清扫状态的权威来源；不把 Redis 加入 `/ready` 必需依赖
-- 阶段二不搬用草稿清扫租约到视频处理；转码、截帧不入闭环
+- outbox 与草稿清扫各自维护状态、租约和围栏语义，只复用通用时长/UTF-8 截断辅助；转码、截帧不入闭环
 - `gorm.io/gen` 延后到读取模式稳定后评估；`observe.pprof` 仍是延后事项
-- 不修改已应用的迁移；所有 schema 变更走 `000006` 起的递增版本
+- 不修改已应用的迁移；每个新 schema 模块在开工时从迁移目录和目标库状态分配下一个空闲递增版本，不在可选步骤中预占 `000009` 之后的文件名

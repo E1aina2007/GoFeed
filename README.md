@@ -67,7 +67,7 @@ migrate -path ./db/migrations -database "mysql://root:<URL 编码后的密码>@t
 
 密码中包含 `@`、`:`、`/`、`?`、`#` 或 `%` 等 URL 特殊字符时必须先编码。每次新增迁移文件后重新执行同一条 `up` 命令即可；`schema_migrations` 会记录已执行版本，因此只会应用尚未执行的迁移。不要修改已执行的迁移文件，应新增一对递增版本的 `.up.sql` 和 `.down.sql` 文件。
 
-跨越草稿或拒绝视频版本向下回滚属于维护操作。先停止所有 API、worker 与 sweeper 实例并确认相关进程已完全退出，再执行只读检查；有 `processing`、`rejected` 或 `purging` 行时不要运行 `migrate steps -1`，应先完成业务回收或按迁移前置条件处理。回滚完成前不得重新启动 API、worker 或 sweeper，避免检查与 DDL 之间出现新的状态行。`golang-migrate` 在 down SQL 失败时会将版本留为 dirty，不能把这一检查写成故意失败的迁移 SQL。
+跨越草稿、拒绝视频或 outbox 租约版本向下回滚属于维护操作。先停止所有 API、worker 与 sweeper 实例并确认相关进程已完全退出，再执行只读检查；有 `processing`、`rejected` 或 `purging` 行时不要继续回滚相关状态机迁移，应先完成业务回收或按迁移前置条件处理。`000009` 的 down migration 会把遗留 `publishing` 事件恢复为 `pending` 后删除租约列，但仍必须在全部 worker 停止时执行。回滚完成前不得重新启动进程，避免检查与 DDL 之间出现新的状态行。`golang-migrate` 在 down SQL 失败时会将版本留为 dirty，不能把这一检查写成故意失败的迁移 SQL。
 
 ```sql
 SELECT COUNT(*) AS incompatible_rows
@@ -85,6 +85,8 @@ WHERE status IN ('draft', 'purging')
 ```bash
 cd backend
 go run ./cmd            # API
+# 另开一个 backend 终端；先应用到 000009，验证异步发布闭环时需要 RabbitMQ
+# go run ./cmd/worker
 # go run ./cmd/sweeper  # 按需启动注销用户和到期视频清扫任务
 ```
 
@@ -126,7 +128,7 @@ pnpm preview        # 本地预览构建产物
 
 每次 push、Pull Request 和手动触发都会执行以下门禁：
 
-1. 后端：启动 MySQL 8.0、Redis 7 和 RabbitMQ 3 service，执行 `go vet ./...`、`go build ./...` 和 `go test -race -count=1 ./...`。集成测试会创建临时数据库并应用全部向上迁移；Redis/RabbitMQ 当前只固定服务可用性契约，Go 进程尚不建立客户端连接。
+1. 后端：启动 MySQL 8.0、Redis 7 和 RabbitMQ 3 service，执行 `go vet ./...`、`go build ./...` 和 `go test -race -count=1 ./...`。集成测试会创建临时数据库并应用全部向上迁移；worker 会使用 RabbitMQ 执行视频处理集成用例，Redis 仍只固定服务可用性契约。
 2. 部署配置：从 `backend/.env.example` 和 `backend/configs/config.example.yaml` 生成 CI 临时的忽略配置文件，执行 `docker compose config --quiet`，并检查后端 `/ready`、前端 `service_healthy`、Redis/RabbitMQ 健康检查、持久卷及 API 不依赖中间件启动的契约。不使用真实 `.env` 或秘密。
 3. 前端：以冻结锁文件安装依赖，执行只读 `pnpm run lint`、Vitest、类型检查与生产构建。
 
@@ -134,7 +136,7 @@ pnpm preview        # 本地预览构建产物
 
 ## 配置
 
-配置加载顺序：先读取 `CONFIG_PATH` 指定的 YAML（默认 `configs/config.dev.yaml`），再用环境变量覆盖，环境变量优先级最高。数据库、Redis、RabbitMQ 的密码、JWT 密钥和运行模式只从环境变量读取，YAML 中即使存在同名字段也会被忽略。`redis` 和 `rabbitmq` 配置已由加载器读取，但当前 API、worker 与 sweeper 不创建中间件客户端；`observe.pprof` 仍是后续功能预留，当前加载器不读取它，现有 `/ready` 只依赖 MySQL。
+配置加载顺序：先读取 `CONFIG_PATH` 指定的 YAML（默认 `configs/config.dev.yaml`），再用环境变量覆盖，环境变量优先级最高。数据库、Redis、RabbitMQ 的密码、JWT 密钥和运行模式只从环境变量读取，YAML 中即使存在同名字段也会被忽略。`redis` 和 `rabbitmq` 配置已由加载器读取；worker 通过可重连 runtime 建立 RabbitMQ 连接并运行 relay/consumer，API 与 sweeper 不建立 MQ 连接，当前仍无 Redis 客户端。`observe.pprof` 仍是后续功能预留，当前加载器不读取它，现有 `/ready` 只依赖 MySQL。
 
 当前生效的配置项：
 
@@ -165,7 +167,7 @@ pnpm preview        # 本地预览构建产物
 
 ### 本地开发配置
 
-本机 MySQL 的完整初始化、迁移和直接启动流程见上方「本地开发（不使用 Compose）」。`backend/.env` 存放数据库和中间件密码及固定 `JWT_SECRET`，`backend/configs/config.dev.yaml` 存放非敏感配置；两者均由从 `backend` 目录运行的 API 读取。当前 API、worker 与 sweeper 不连接 Redis/RabbitMQ，因此日常直接启动仍只要求 MySQL；需要预先启动中间件服务时，在填好 `backend/.env` 后执行 `docker compose up -d redis rabbitmq`。
+本机 MySQL 的完整初始化、迁移和直接启动流程见上方「本地开发（不使用 Compose）」。`backend/.env` 存放数据库和中间件密码及固定 `JWT_SECRET`，`backend/configs/config.dev.yaml` 存放非敏感配置；从 `backend` 目录运行的 API 和 worker 都会读取这些配置。仅启动 API 仍只要求 MySQL；要验证异步发布闭环，需在填好 `backend/.env` 后启动 RabbitMQ 并运行 worker（可执行 `docker compose up -d rabbitmq`，再直接运行 worker）。Redis 当前没有 Go 客户端，非限流开发不需要启动它。
 
 ### Docker 部署
 
@@ -200,7 +202,7 @@ RABBITMQ_DEFAULT_USER=gofeed
 RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 ```
 
-如需调整 HTTP 端口，修改 `server.port`，并同步 `docker-compose.yml` 中 `8080:8080` 的端口映射。Redis `6379` 与 RabbitMQ `5672` 仅绑定到宿主机回环地址，供本地诊断或后续直接运行的进程使用；Compose 内服务始终通过 `redis:6379` 和 `rabbitmq:5672` 通信。
+如需调整 HTTP 端口，修改 `server.port`，并同步 `docker-compose.yml` 中 `8080:8080` 的端口映射。Redis `6379` 与 RabbitMQ `5672` 仅绑定到宿主机回环地址，供本地 worker、诊断或后续直接运行的进程使用；Compose 内服务始终通过 `redis:6379` 和 `rabbitmq:5672` 通信。
 
 ### 观测与健康检查
 
@@ -208,11 +210,11 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 ## 项目进度
 
-当前主线：发布体验与运维。后端已完成草稿聚合上传、发布、公开列表与详情、我的视频、作者删除、头像上传，并接入会话鉴权；用户主页会统计满足公开数据不变量的已发布视频数量。公开视频查询统一排除软删除、缺少发布时间或任一视频/封面媒体字段的记录，服务层也会对异常实体 fail-closed；视频列表游标已升级为绑定查询范围的 v1 契约，跨范围或旧格式值统一返回 `400`。存储侧将清洗后的物理名与用户指定名分离，并为每次保存附加不可复用对象键；DB 只存相对路径。视频异步发布已提供 `202` 受理响应和作者状态查询；草稿恢复后端已提供主动丢弃，`rejected` 视频也可主动或按 `rejected_at` 到期转入 `purging`，由 sweeper 用 token 租约逐媒体持久化删除进度，最后硬删除；任何失败都不会把 `purging` 记录恢复为可写状态。账号和已发布视频删除仍采用软删除 + 7 天宽限期。
+当前主线：发布体验与运维。后端已完成草稿聚合上传、发布、公开列表与详情、我的视频、作者删除、头像上传，并接入会话鉴权；用户主页会统计满足公开数据不变量的已发布视频数量。公开视频查询统一排除软删除、缺少发布时间或任一视频/封面媒体字段的记录，服务层也会对异常实体 fail-closed；视频列表与 social 评论、粉丝、关注列表均使用绑定列表类型与资源范围的 v1 游标，跨范围或旧格式值统一返回 `400`（social 实现与范围回归已由 `22174a5`、`62313b1` 提交）。存储侧将清洗后的物理名与用户指定名分离，并为每次保存附加不可复用对象键；DB 只存相对路径。视频异步发布已提供 `202` 受理响应和作者状态查询；MQ 可靠性增强已由 `7f97382` 提交，MySQL outbox 使用 `pending → publishing → dispatched` 租约状态、attempt 围栏和失败退避，RabbitMQ runtime 支持意外断线重连，consumer 使用 1s/5s/30s 三档延迟重试后进入死信。草稿恢复后端已提供主动丢弃，`rejected` 视频也可主动或按 `rejected_at` 到期转入 `purging`，由 sweeper 用 token 租约逐媒体持久化删除进度，最后硬删除；任何失败都不会把 `purging` 记录恢复为可写状态。账号和已发布视频删除仍采用软删除 + 7 天宽限期。
 
-后端 CRUD 方法命名已统一为 `Get`、`Get...List`、`Create`、`Update`，涉及硬删除的操作使用 `Remove`（提交 `240f3fa`）。互动后端已完成点赞、评论、关注的模型、鉴权接口和软删除语义（提交 `589ec78`，评论删除命名修正提交 `6425fe3`）；互动前端已接入 Feed、详情和作者主页（提交 `bfe518b`）。上述模块均已独立回归并分开提交，接口明细以根目录 [`API.md`](./API.md) 和后端注册路由为准。
+后端 CRUD 方法命名已统一为 `Get`、`Get...List`、`Create`、`Update`，涉及硬删除的操作使用 `Remove`（提交 `240f3fa`）。互动后端已完成点赞、评论、关注的模型、鉴权接口和软删除语义（提交 `589ec78`，评论删除命名修正提交 `6425fe3`）；`1298b2f` 只将服务依赖接口命名为 `Repo` 并清理注释，`22174a5`、`62313b1` 完成 social v1 游标及其范围回归，当前功能基线为 `7f97382`。互动前端已接入 Feed、详情和作者主页（提交 `bfe518b`）。上述模块均已独立回归并分开提交，接口明细以根目录 [`API.md`](./API.md) 和后端注册路由为准。
 
-前端已完成基础页面和请求层：短视频 Feed、登录、注册、发布、视频详情、用户列表、用户主页、我的视频、账户设置和头像上传；全局操作提示已覆盖登录注册、发布、视频删除和账户资料操作。Feed 已完成请求取消、分页并发控制、ID 去重、页面失焦暂停播放及桌面/移动端回归；对网络错误和临时 `408`/`429`/`5xx` 还会进行最多两次退避重试，页面离开时会取消等待中的恢复请求，重试耗尽后沿用现有错误与手动重试界面。基础 Feed 全链路回归已补齐。接口明细以根目录 [`API.md`](./API.md) 和后端注册路由为准。
+前端已完成基础页面和请求层：短视频 Feed、登录、注册、发布、视频详情、用户列表、用户主页、我的视频、账户设置和头像上传；全局操作提示已覆盖登录注册、发布、视频删除和账户资料操作。Feed 已完成请求取消、分页并发控制、ID 去重、页面失焦暂停播放及桌面/移动端回归；对网络错误和临时 `408`/`429`/`5xx` 还会进行最多两次退避重试，页面离开时会取消等待中的恢复请求，重试耗尽后沿用现有错误与手动重试界面。异步发布状态适配已在 `5ada6f9` 完成，发布页会轮询 `processing` 并展示 `published`/`rejected`；基础 Feed 全链路回归已补齐。接口明细以根目录 [`API.md`](./API.md) 和后端注册路由为准。
 
 ## 开发流程与下一步路线
 
@@ -220,4 +222,4 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 模块按“设计契约 → 实现 → 自动化验证 → 页面验收 → 独立提交 → review 暂停”推进；提交范围和验证细则见上述文档。
 
-当前 **Feed 数据不变量与查询边界** 已完成并提交 `c79100c`，**模型绑定的公开视频查询入口** 已完成并提交 `0842820`，**视频游标契约** 已完成并提交 `61fb00e`，**作者批量补全** 已完成并提交 `4e253f9`，**互动统计故障语义** 已完成并提交 `fb867c8`（互动统计查询失败时列表、详情、我的视频与发布响应统一返回 `503`），**可观测性与查询预算** 已完成并提交 `69a08c1`（请求内查询计数随完成日志输出 `db_queries`，公开列表与详情的 ≤4 条语句预算由真实 MySQL e2e 断言），**并发与异常测试收尾** 已完成并提交 `d185645`（表级故障注入覆盖同刻排序、分页变更、注销作者占位、统计失败 503、注入错误与 GET 幂等）；**阶段一 Feed 服务端可靠性全部完成**，列表作者读取已收敛为一次批量查询。**阶段二 R1 状态机与 outbox 迁移** 已完成并提交 `c2134ac`（发布事务原子完成 `draft → processing` 与 outbox 事件写入，删除派生计数值列），**R2 relay/worker** 已完成并提交 `d2294a2`（`internal/mq` 连接、拓扑与 confirm 发布；relay 轮询派发并标记 dispatched；consumer 手动 ack 校验媒体完成 `processing → published/rejected` 流转，基础设施故障退避重发三次后进死信；Compose worker 补挂载共享媒体卷）；**R3 后端异步状态与 rejected 生命周期已在当前工作树完成，待 review**（发布返回 `202 + DraftItem`，新增状态查询，`000008` 回填并建立拒绝清扫索引）；前端状态展示作为后续独立模块。查询模式稳定后再评估 `gorm.io/gen` 的生成字段，后续再按指标引入 Redis 定向能力。
+当前 **Feed 数据不变量与查询边界** 已完成并提交 `c79100c`，**模型绑定的公开视频查询入口** 已完成并提交 `0842820`，**视频游标契约** 已完成并提交 `61fb00e`，**作者批量补全** 已完成并提交 `4e253f9`，**互动统计故障语义** 已完成并提交 `fb867c8`，**可观测性与查询预算** 已完成并提交 `69a08c1`，**并发与异常测试收尾** 已完成并提交 `d185645`；**social 评论/关注/粉丝 v1 游标** 已由 `22174a5`、`62313b1` 提交。阶段二的状态机、relay/worker、异步状态页面与 rejected 生命周期均已提交；**MQ 可靠性增强** 已由 `7f97382` 提交，并新增 `000009` outbox 租约迁移。2026-09-12 的后端 `go vet ./...`、`go test -count=1 ./...`、`go test -race -count=1 ./...` 与差异检查通过，但本机没有可连接的 MySQL/RabbitMQ，因此新迁移对齐和真实 broker 故障矩阵明确跳过，不能据此宣称阶段二运行时闭环已全部验收。**API 错误处理复用** 已于 2026-09-09 实现并保持既有状态码与响应形状。查询模式稳定后再评估 `gorm.io/gen` 的生成字段；下一步与完整验收边界见 [`DEVELOPMENT.md`](./DEVELOPMENT.md)。
