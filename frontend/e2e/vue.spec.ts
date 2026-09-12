@@ -60,7 +60,8 @@ test('merges a paginated overlap without duplicate videos', async ({ page }) => 
   await page.goto('/')
 
   const feed = page.getByRole('main', { name: '最新视频' })
-  await expect(feed.locator('.short-video')).toHaveCount(1)
+  // 首页视频恰好填满视口时，浏览器布局吸附可能先触发滚动加载；只需确认首页已渲染即可滚动
+  await expect(page.getByRole('link', { name: '首屏视频' })).toBeVisible()
   await feed.evaluate((element) => {
     element.scrollTo({ top: element.scrollHeight })
     element.dispatchEvent(new Event('scroll'))
@@ -75,7 +76,8 @@ test('redirects an anonymous like to sign in with the feed as return target', as
   await mockPublicFeed(page)
   await page.goto('/')
 
-  await page.getByRole('button', { name: '点赞，当前 0 个赞' }).click()
+  // 首页视频恰好填满视口时浏览器可能自动加载第二页，点赞按钮需限定到第一个视频卡片
+  await page.getByRole('button', { name: '点赞，当前 0 个赞' }).first().click()
 
   await expect(page).toHaveURL(/\/login\?redirect=\/$/)
 })
