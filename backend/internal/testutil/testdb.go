@@ -15,6 +15,7 @@ import (
 	"gofeed/internal/config"
 
 	sqldriver "github.com/go-sql-driver/mysql"
+	"github.com/joho/godotenv"
 	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -30,6 +31,7 @@ var (
 // 测试目标：初始化独立测试库并执行迁移
 // 预期效果：测试结束后清理对应资源
 func Main(m *testing.M) int {
+	loadBackendDotEnv()
 	if os.Getenv("MYSQL_DATABASE") == "" {
 		// 未配置数据库时不创建测试库，预期集成测试自行跳过并保留可见结果
 		return m.Run()
@@ -198,6 +200,33 @@ func openMySQL(cfg config.DatabaseConfig, dbname string, multiStatements bool) (
 	return gorm.Open(gormmysql.Open(mc.FormatDSN()), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
+}
+
+// 测试目标：测试进程启动时补充加载 backend/.env 的集成测试配置
+// 预期效果：VS Code 一键测试等未注入环境变量的场景也能启用真实 MySQL 集成测试，已导出的环境变量优先级不变
+func loadBackendDotEnv() {
+	path, ok := backendDotEnvPath()
+	if !ok {
+		return
+	}
+	loadDotEnv(path)
+}
+
+// 测试目标：通过测试工具源文件位置定位 backend/.env
+// 预期效果：不依赖测试进程工作目录即可找到配置文件
+func backendDotEnvPath() (string, bool) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", false
+	}
+	return filepath.Join(filepath.Dir(file), "..", "..", ".env"), true
+}
+
+// 测试目标：加载单个 .env 文件
+// 预期效果：文件缺失或不可读时静默跳过，保持未配置时的既有跳过行为
+func loadDotEnv(path string) {
+	// CI 通过显式环境变量注入配置，缺失文件属正常场景
+	_ = godotenv.Load(path)
 }
 
 // 测试目标：按文件名顺序执行迁移目录中的全部向上迁移脚本
