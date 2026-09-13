@@ -358,3 +358,98 @@ func TestRetryQueueIntegration(t *testing.T) {
 		t.Fatalf("视频应已发布 got=%+v", updated)
 	}
 }
+
+// 测试目标：在清理阶段清空单个队列
+// 预期效果：清理失败只标记用例错误，不中断其余清理链
+func purgeQueueQuietly(t *testing.T, conn *amqp.Connection, queue string) {
+	t.Helper()
+	channel, err := conn.Channel()
+	if err != nil {
+		t.Errorf("创建清理信道失败: %v", err)
+		return
+	}
+	defer channel.Close()
+	if _, err := channel.QueuePurge(queue, false); err != nil {
+		t.Errorf("清空队列 %s 失败: %v", queue, err)
+	}
+}
+
+// 测试目标：在超时内轮询观测快照直到死信深度达到期望
+// 预期效果：broker 计数最终一致时不产生抖动失败
+func waitForDeadLetterDepth(t *testing.T, observer *MQObserver, want int) MQSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		snapshot, err := observer.Snapshot(context.Background())
+		if err != nil {
+			t.Fatalf("采集快照失败: %v", err)
+		}
+		if snapshot.DeadLetterDepth == want {
+			return snapshot
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("死信深度未达期望 got=%d want=%d", snapshot.DeadLetterDepth, want)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// 测试目标：验证观测器在真实 MySQL 与 RabbitMQ 上合并 outbox 与死信状态
+// 预期效果：pending 与 publishing 计数随事件流转正确，死信深度随消息进出变化
+func TestMQObserverSnapshotIntegration(t *testing.T) {
+	db := testutil.DB(t)
+	conn := newIntegrationConnection(t)
+	purgeQueues(t, conn)
+	runtime := newIntegrationRuntime(t)
+	spec := mq.VideoProcessSpec()
+	// 测试目标：用例结束后清空死信队列兜底
+	// 预期效果：观测用例不向死信队列残留探针消息
+	t.Cleanup(func() { purgeQueueQuietly(t, conn, spec.DeadLetterQueueName()) })
+
+	repo := video.NewRepository(db)
+	seedProcessingVideo(t, repo, db, 104)
+	observer := NewMQObserver(repo, runtime)
+
+	// 测试目标：初始快照反映一条 pending 事件与空死信队列
+	// 预期效果：pending 计数为一，publishing 与死信深度为零
+	snapshot, err := observer.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("采集快照失败: %v", err)
+	}
+	if snapshot.PendingCount != 1 || snapshot.PublishingCount != 0 || snapshot.DeadLetterDepth != 0 {
+		t.Fatalf("初始快照错误 got=%+v", snapshot)
+	}
+	if snapshot.OldestPendingAgeSeconds > 5 {
+		t.Fatalf("刚创建事件的年龄应接近零 got=%d", snapshot.OldestPendingAgeSeconds)
+	}
+
+	// 测试目标：claim 后快照反映 publishing 租约状态
+	// 预期效果：publishing 计数为一，pending 清零
+	dispatches, err := repo.ClaimPendingOutboxEvents(context.Background(), 10, time.Minute)
+	if err != nil || len(dispatches) != 1 {
+		t.Fatalf("claim 失败 got=%d err=%v", len(dispatches), err)
+	}
+	snapshot, err = observer.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("采集快照失败: %v", err)
+	}
+	if snapshot.PendingCount != 0 || snapshot.PublishingCount != 1 || snapshot.OldestPublishingAgeSeconds > 5 {
+		t.Fatalf("claim 后快照错误 got=%+v", snapshot)
+	}
+
+	// 测试目标：经真实死信交换机路由一条探针消息
+	// 预期效果：死信深度增加一，观测器可读到
+	if err := runtime.Publish(context.Background(), mq.DeadLetterExchange, spec.DeadLetterQueueName(),
+		map[string]any{"probe": "observer"}); err != nil {
+		t.Fatalf("发布探针消息失败: %v", err)
+	}
+	waitForDeadLetterDepth(t, observer, 1)
+
+	// 测试目标：确认探针消息后死信深度恢复
+	// 预期效果：消费并确认后深度回到零
+	delivery := consumeDelivery(t, conn, spec.DeadLetterQueueName())
+	if err := delivery.Ack(false); err != nil {
+		t.Fatalf("确认探针消息失败: %v", err)
+	}
+	waitForDeadLetterDepth(t, observer, 0)
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -630,6 +631,147 @@ func TestTruncateUTF8BytesKeepsValidEncoding(t *testing.T) {
 	}
 	if got := truncateUTF8Bytes("故障", 4); got != "故" {
 		t.Fatalf("边界落在字符中间应丢弃该字符 got=%q", got)
+	}
+}
+
+// 测试目标：按表名向读取语句注入错误的轻量故障夹具
+// 预期效果：快照用例可制造真实数据库故障，不影响其他表的读取
+type outboxReadFault struct {
+	mu    sync.Mutex
+	table string
+	err   error
+}
+
+func (f *outboxReadFault) inject(tx *gorm.DB) {
+	f.mu.Lock()
+	table, err := f.table, f.err
+	f.mu.Unlock()
+	if err == nil || tx.Statement == nil {
+		return
+	}
+	if tx.Statement.Table == table {
+		tx.AddError(err)
+	}
+}
+
+// 测试目标：武装或解除指定表的读取故障
+// 预期效果：err 为 nil 时读取恢复正常
+func (f *outboxReadFault) arm(table string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.table, f.err = table, err
+}
+
+// 测试目标：注册故障注入器到 Scan 使用的 row 回调处理器
+// 预期效果：GetOutboxSnapshot 的 Scan 读取路径可被注入错误，用例结束自动移除回调
+func registerOutboxReadFault(t *testing.T, db *gorm.DB) *outboxReadFault {
+	t.Helper()
+	fault := &outboxReadFault{}
+	callback := func(tx *gorm.DB) { fault.inject(tx) }
+	if err := db.Callback().Row().Before("gorm:row").Register("gofeed:outbox_snapshot_fault", callback); err != nil {
+		t.Fatalf("注册读取故障回调失败: %v", err)
+	}
+	t.Cleanup(func() {
+		fault.arm("", nil)
+		if err := db.Callback().Row().Remove("gofeed:outbox_snapshot_fault"); err != nil {
+			t.Errorf("移除读取故障回调失败: %v", err)
+		}
+	})
+	return fault
+}
+
+// 测试目标：覆盖指定事件的事务创建时间
+// 预期效果：快照用例可精确构造各状态的最老时间
+func setOutboxCreatedAt(t *testing.T, db *gorm.DB, eventID string, at time.Time) {
+	t.Helper()
+	if err := db.Exec("UPDATE video_outbox_events SET created_at = ? WHERE event_id = ?", at, eventID).Error; err != nil {
+		t.Fatalf("设置事件 %s 创建时间失败: %v", eventID, err)
+	}
+}
+
+// 测试目标：断言快照时间与期望值在毫秒精度内一致
+// 预期效果：DATETIME(3) 读写往返后误差不超过两毫秒
+func assertSnapshotTime(t *testing.T, name string, got *time.Time, want time.Time) {
+	t.Helper()
+	if got == nil {
+		t.Fatalf("%s 不应为空", name)
+	}
+	if diff := got.Sub(want); diff > 2*time.Millisecond || diff < -2*time.Millisecond {
+		t.Fatalf("%s 应为 %v got=%v", name, want, *got)
+	}
+}
+
+// 测试目标：验证快照只统计 pending 与 publishing 并取各自最老事件时间
+// 预期效果：dispatched 不计入数量也不影响最老时间，两种状态数量与最早 created_at 正确
+func TestGetOutboxSnapshotCountsOnlyActiveStatuses(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db)
+	row := seedProcessingVideoRow(t, repo, 1, "快照视频")
+	now := time.Now()
+	cases := []struct {
+		eventID string
+		status  string
+		age     time.Duration
+	}{
+		{eventID: "evt-snap-pending-old", status: OutboxEventStatusPending, age: 90 * time.Second},
+		{eventID: "evt-snap-pending-new", status: OutboxEventStatusPending, age: 30 * time.Second},
+		{eventID: "evt-snap-publishing-old", status: OutboxEventStatusPublishing, age: 2 * time.Minute},
+		{eventID: "evt-snap-publishing-new", status: OutboxEventStatusPublishing, age: 15 * time.Second},
+		{eventID: "evt-snap-dispatched", status: OutboxEventStatusDispatched, age: 5 * time.Minute},
+	}
+	for _, tc := range cases {
+		seedOutboxEvent(t, db, row.ID, tc.eventID, tc.status)
+		setOutboxCreatedAt(t, db, tc.eventID, now.Add(-tc.age))
+	}
+
+	snapshot, err := repo.GetOutboxSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("读取快照失败: %v", err)
+	}
+	if snapshot.PendingCount != 2 || snapshot.PublishingCount != 2 {
+		t.Fatalf("快照计数错误 got=%+v", snapshot)
+	}
+	assertSnapshotTime(t, "oldest_pending_at", snapshot.OldestPendingAt, now.Add(-90*time.Second))
+	assertSnapshotTime(t, "oldest_publishing_at", snapshot.OldestPublishingAt, now.Add(-2*time.Minute))
+}
+
+// 测试目标：验证空表快照返回零计数与空时间
+// 预期效果：无事件时计数为零且两个最老时间指针为 nil
+func TestGetOutboxSnapshotOnEmptyTable(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db)
+
+	var total int64
+	if err := db.Model(&OutboxEvent{}).Count(&total).Error; err != nil || total != 0 {
+		t.Fatalf("前置条件失败：outbox 应为空 got=%d err=%v", total, err)
+	}
+	snapshot, err := repo.GetOutboxSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("读取快照失败: %v", err)
+	}
+	if snapshot.PendingCount != 0 || snapshot.PublishingCount != 0 {
+		t.Fatalf("空表计数应为零 got=%+v", snapshot)
+	}
+	if snapshot.OldestPendingAt != nil || snapshot.OldestPublishingAt != nil {
+		t.Fatalf("空表最老时间应为 nil got=%+v", snapshot)
+	}
+}
+
+// 测试目标：验证快照查询的数据库错误原样返回
+// 预期效果：注入的底层错误不被吞掉或改写，快照保持零值
+func TestGetOutboxSnapshotPropagatesDatabaseError(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db)
+	faults := registerOutboxReadFault(t, db)
+	injected := errors.New("injected snapshot outage")
+	faults.arm("video_outbox_events", injected)
+
+	snapshot, err := repo.GetOutboxSnapshot(context.Background())
+	if !errors.Is(err, injected) {
+		t.Fatalf("快照查询错误应原样返回 got=%v", err)
+	}
+	if snapshot.PendingCount != 0 || snapshot.PublishingCount != 0 || snapshot.OldestPendingAt != nil || snapshot.OldestPublishingAt != nil {
+		t.Fatalf("失败快照应保持零值 got=%+v", snapshot)
 	}
 }
 

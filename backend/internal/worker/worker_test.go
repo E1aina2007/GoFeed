@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -575,4 +576,174 @@ func TestOutboxBackoffIsPositiveAndCapped(t *testing.T) {
 // 预期效果：用例共享同一发布时刻，避免时区与时钟差异
 func testTime() time.Time {
 	return time.Date(2026, 8, 1, 12, 0, 0, 0, time.Local)
+}
+
+// 测试目标：写入一条已过期的 publishing 事件
+// 预期效果：租约接管与派发用例可模拟持有者崩溃后的接管场景
+func seedExpiredPublishingEvent(t *testing.T, db *gorm.DB, videoID uint, eventID string) video.OutboxEvent {
+	t.Helper()
+	event := video.OutboxEvent{
+		EventID:   eventID,
+		VideoID:   videoID,
+		EventType: video.VideoProcessEventType,
+		Status:    video.OutboxEventStatusPublishing,
+		Attempt:   1,
+	}
+	if err := db.Create(&event).Error; err != nil {
+		t.Fatalf("创建过期 publishing 事件失败: %v", err)
+	}
+	if err := db.Model(&video.OutboxEvent{}).Where("id = ?", event.ID).
+		Update("locked_until", gorm.Expr("TIMESTAMPADD(SECOND, -60, NOW(3))")).Error; err != nil {
+		t.Fatalf("构造过期租约失败: %v", err)
+	}
+	return event
+}
+
+// 测试目标：验证 claim 返回的派发结果正确标记租约接管
+// 预期效果：过期 publishing 事件 LeaseTakenOver 为 true，普通 pending 事件为 false
+func TestClaimPendingOutboxEventsFlagsLeaseTakeover(t *testing.T) {
+	db := testutil.DB(t)
+	repo := video.NewRepository(db)
+	row := seedProcessingVideo(t, repo, db, 20)
+	seedExpiredPublishingEvent(t, db, row.ID, "evt-takeover-20")
+
+	dispatches, err := repo.ClaimPendingOutboxEvents(context.Background(), 10, time.Minute)
+	if err != nil {
+		t.Fatalf("claim 失败: %v", err)
+	}
+	if len(dispatches) != 2 {
+		t.Fatalf("应领取两条事件 got=%d", len(dispatches))
+	}
+	flags := make(map[string]bool, len(dispatches))
+	for _, dispatch := range dispatches {
+		flags[dispatch.Event.EventID] = dispatch.LeaseTakenOver
+	}
+	if flags["evt-20"] {
+		t.Fatal("普通 pending 事件不应标记租约接管")
+	}
+	if !flags["evt-takeover-20"] {
+		t.Fatal("过期 publishing 事件应标记租约接管")
+	}
+}
+
+// 测试目标：验证 relay 接管租约派发时记录 mq_lease_takeover
+// 预期效果：日志携带 event、event_id、video_id 与接管后递增的 attempt
+func TestRelayLogsLeaseTakeover(t *testing.T) {
+	db := testutil.DB(t)
+	repo := video.NewRepository(db)
+	row := seedProcessingVideo(t, repo, db, 21)
+	seedExpiredPublishingEvent(t, db, row.ID, "evt-takeover-21")
+	relay := NewRelay(repo, &fakePublisher{})
+	logs := captureWorkerLogs(t)
+
+	if err := relay.dispatchRound(context.Background()); err != nil {
+		t.Fatalf("派发轮次失败: %v", err)
+	}
+	want := fmt.Sprintf("event=mq_lease_takeover event_id=evt-takeover-21 video_id=%d attempt=2", row.ID)
+	if !strings.Contains(logs.String(), want) {
+		t.Fatalf("应记录租约接管日志 got=%q want=%q", logs.String(), want)
+	}
+}
+
+// 测试目标：验证 relay 发布失败时记录 mq_publish_failed 定位字段
+// 预期效果：日志携带 component=relay、event_type、event_id、video_id、attempt 与 error
+func TestRelayLogsPublishFailure(t *testing.T) {
+	db := testutil.DB(t)
+	repo := video.NewRepository(db)
+	row := seedProcessingVideo(t, repo, db, 22)
+	relay := NewRelay(repo, &fakePublisher{err: errors.New("broker unavailable")})
+	logs := captureWorkerLogs(t)
+
+	if err := relay.dispatchRound(context.Background()); err != nil {
+		t.Fatalf("派发轮次失败: %v", err)
+	}
+	want := fmt.Sprintf(
+		"event=mq_publish_failed component=relay event_type=video.process event_id=evt-22 video_id=%d attempt=1 error=\"broker unavailable\"",
+		row.ID,
+	)
+	if !strings.Contains(logs.String(), want) {
+		t.Fatalf("应记录发布失败日志 got=%q want=%q", logs.String(), want)
+	}
+}
+
+// 测试目标：验证 consumer 重试发布失败记录 component=consumer 与目标重试队列
+// 预期效果：日志携带递增 attempt、重试队列名与 error，原消息不被确认
+func TestConsumerLogsRetryPublishFailure(t *testing.T) {
+	repo := video.NewRepository(testutil.DB(t))
+	publisher := &fakePublisher{err: errors.New("broker unavailable")}
+	consumer := NewConsumer(repo, publisher, t.TempDir())
+	spec := mq.VideoProcessSpec()
+
+	msg := ProcessMessage{SchemaVersion: mq.SchemaVersion, EventID: "evt-retry-log", VideoID: 9}
+	body, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("编码消息失败: %v", err)
+	}
+	recorder := &ackRecorder{}
+	logs := captureWorkerLogs(t)
+
+	if err := consumer.republishRetry(context.Background(), body, 0, recorder.ack); err == nil {
+		t.Fatal("重试投递失败应返回错误")
+	}
+	want := fmt.Sprintf(
+		"event=mq_publish_failed component=consumer event_type=video.process event_id=evt-retry-log video_id=9 attempt=1 queue=%s error=\"broker unavailable\"",
+		spec.RetryQueueName(0),
+	)
+	if !strings.Contains(logs.String(), want) {
+		t.Fatalf("应记录消费端发布失败日志 got=%q want=%q", logs.String(), want)
+	}
+	if recorder.acked {
+		t.Fatal("重试投递失败时不应确认原消息")
+	}
+}
+
+// 测试目标：验证非法载荷、未知版本与重试耗尽的死信日志各自携带对应 reason
+// 预期效果：三种死信决策分别记录 invalid_payload、unsupported_schema_version 与 retry_exhausted
+func TestConsumerLogsDeadLetterReasons(t *testing.T) {
+	db := testutil.DB(t)
+	consumer := NewConsumer(video.NewRepository(db), &fakePublisher{}, t.TempDir())
+	spec := mq.VideoProcessSpec()
+	logs := captureWorkerLogs(t)
+
+	// 测试目标：验证非法 JSON 的死信日志
+	// 预期效果：reason=invalid_payload 且 attempt 为零
+	if result := consumer.handleDelivery(context.Background(), amqp.Delivery{Body: []byte("not-json")}); result != mq.ResultDeadLetter {
+		t.Fatalf("非法载荷应进入死信 got=%v", result)
+	}
+	if !strings.Contains(logs.String(), "event=mq_dead_letter reason=invalid_payload attempt=0") {
+		t.Fatalf("非法载荷应记录 invalid_payload got=%q", logs.String())
+	}
+
+	// 测试目标：验证未知 schema 版本的死信日志
+	// 预期效果：reason=unsupported_schema_version 携带 event_id、video_id 与 schema_version
+	stale := ProcessMessage{SchemaVersion: 99, EventID: "evt-stale-log", VideoID: 7}
+	staleBody, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatalf("编码消息失败: %v", err)
+	}
+	if result := consumer.handleDelivery(context.Background(), amqp.Delivery{Body: staleBody}); result != mq.ResultDeadLetter {
+		t.Fatalf("未知版本应进入死信 got=%v", result)
+	}
+	if !strings.Contains(logs.String(), "reason=unsupported_schema_version event_id=evt-stale-log video_id=7 schema_version=99 attempt=0") {
+		t.Fatalf("未知版本应记录 unsupported_schema_version got=%q", logs.String())
+	}
+
+	// 测试目标：验证重试耗尽的死信日志
+	// 预期效果：reason=retry_exhausted 携带 event_id、video_id、attempt 与底层错误
+	faults := registerFaultInjection(t, db)
+	faults.arm("videos", errors.New("injected database outage"))
+	exhausted := ProcessMessage{SchemaVersion: mq.SchemaVersion, EventID: "evt-exhausted-log", VideoID: 8}
+	exhaustedBody, err := json.Marshal(exhausted)
+	if err != nil {
+		t.Fatalf("编码消息失败: %v", err)
+	}
+	delivery := amqp.Delivery{Body: exhaustedBody, Headers: amqp.Table{retryHeader: int32(spec.Retry.MaxRetries)}}
+	if result := consumer.handleDelivery(context.Background(), delivery); result != mq.ResultDeadLetter {
+		t.Fatalf("重试耗尽应进入死信 got=%v", result)
+	}
+	want := fmt.Sprintf("reason=retry_exhausted event_id=evt-exhausted-log video_id=8 attempt=%d error=\"injected database outage\"", spec.Retry.MaxRetries)
+	if !strings.Contains(logs.String(), want) {
+		t.Fatalf("重试耗尽应记录 retry_exhausted got=%q want=%q", logs.String(), want)
+	}
+	faults.disarm()
 }
