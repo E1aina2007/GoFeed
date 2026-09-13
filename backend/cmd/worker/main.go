@@ -82,8 +82,9 @@ func main() {
 
 	relay := worker.NewRelay(repo, broker)
 	consumer := worker.NewConsumer(repo, broker, workerStorageRoot)
+	observer := worker.NewMQObserver(repo, broker)
 	var workers sync.WaitGroup
-	workers.Add(2)
+	workers.Add(3)
 	go func() {
 		defer workers.Done()
 		relay.Run(ctx)
@@ -92,8 +93,12 @@ func main() {
 		defer workers.Done()
 		consumer.Run(ctx, broker)
 	}()
+	go func() {
+		defer workers.Done()
+		observer.Run(ctx)
+	}()
 
-	log.Println("Worker started - relay and consumer are running")
+	log.Println("Worker started - relay, consumer and MQ observer are running")
 
 	<-ctx.Done()
 	log.Println("Received shutdown signal, draining...")

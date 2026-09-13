@@ -82,6 +82,10 @@ func (r *Relay) dispatchRound(ctx context.Context) error {
 		return err
 	}
 	for _, dispatch := range dispatches {
+		if dispatch.LeaseTakenOver {
+			log.Printf("event=%s event_id=%s video_id=%d attempt=%d",
+				mq.ObservationEventLeaseTakeover, dispatch.Event.EventID, dispatch.Event.VideoID, dispatch.Event.Attempt)
+		}
 		if dispatch.Event.EventType != r.spec.EventType {
 			log.Printf("[relay] 跳过未知类型事件 event_id=%s video_id=%d event_type=%s",
 				dispatch.Event.EventID, dispatch.Event.VideoID, dispatch.Event.EventType)
@@ -109,7 +113,8 @@ func (r *Relay) dispatchRound(ctx context.Context) error {
 			CoverURL:      dispatch.Video.CoverURL,
 		}
 		if err := r.publisher.Publish(ctx, r.spec.Exchange, r.spec.RoutingKey, msg); err != nil {
-			log.Printf("[relay] 派发失败 event_id=%s attempt=%d: %v", dispatch.Event.EventID, dispatch.Event.Attempt, err)
+			log.Printf("event=%s component=relay event_type=%s event_id=%s video_id=%d attempt=%d error=%q",
+				mq.ObservationEventPublishFailed, r.spec.EventType, dispatch.Event.EventID, dispatch.Event.VideoID, dispatch.Event.Attempt, err)
 			r.release(ctx, dispatch, outboxBackoff(dispatch.Event.Attempt), err)
 			continue
 		}
@@ -231,18 +236,20 @@ func (c *Consumer) Run(ctx context.Context, source ConsumerSource) {
 func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery) mq.HandlerResult {
 	var msg ProcessMessage
 	if err := json.Unmarshal(delivery.Body, &msg); err != nil {
-		log.Printf("[consumer] 消息解码失败: %v", err)
+		log.Printf("event=%s reason=invalid_payload attempt=%d error=%q",
+			mq.ObservationEventDeadLetter, deliveryAttempt(delivery), err)
 		return mq.ResultDeadLetter
 	}
 	if msg.SchemaVersion != mq.SchemaVersion {
-		log.Printf("[consumer] 不支持的消息版本 version=%d", msg.SchemaVersion)
+		log.Printf("event=%s reason=unsupported_schema_version event_id=%s video_id=%d schema_version=%d attempt=%d",
+			mq.ObservationEventDeadLetter, msg.EventID, msg.VideoID, msg.SchemaVersion, deliveryAttempt(delivery))
 		return mq.ResultDeadLetter
 	}
 	if err := c.process(ctx, msg); err != nil {
 		attempt := deliveryAttempt(delivery)
 		if c.spec.Retry.Exhausted(attempt) {
-			log.Printf("[consumer] 重试耗尽 event_id=%s video_id=%d attempt=%d err=%v",
-				msg.EventID, msg.VideoID, attempt, err)
+			log.Printf("event=%s reason=retry_exhausted event_id=%s video_id=%d attempt=%d error=%q",
+				mq.ObservationEventDeadLetter, msg.EventID, msg.VideoID, attempt, err)
 			return mq.ResultDeadLetter
 		}
 		log.Printf("[consumer] 处理失败，安排延迟重试 event_id=%s video_id=%d: %v", msg.EventID, msg.VideoID, err)
@@ -268,6 +275,8 @@ func (c *Consumer) republishRetry(ctx context.Context, body []byte, attempt int,
 	if err := c.publisher.PublishWithHeaders(ctx, "", retryQueue, msg, amqp.Table{
 		retryHeader: attempt + 1,
 	}); err != nil {
+		log.Printf("event=%s component=consumer event_type=%s event_id=%s video_id=%d attempt=%d queue=%s error=%q",
+			mq.ObservationEventPublishFailed, c.spec.Event.EventType, msg.EventID, msg.VideoID, attempt+1, retryQueue, err)
 		return err
 	}
 	log.Printf("[consumer] 已投递重试队列 event_id=%s attempt=%d queue=%s",

@@ -11,9 +11,18 @@ import (
 
 // OutboxDispatch 是一条待派发事件及其视频媒体快照
 type OutboxDispatch struct {
-	Event    OutboxEvent
-	Video    Video
-	HasVideo bool
+	Event          OutboxEvent
+	Video          Video
+	HasVideo       bool
+	LeaseTakenOver bool
+}
+
+// OutboxSnapshot 汇总仍待派发的 outbox 状态，供 worker 运维观测使用
+type OutboxSnapshot struct {
+	PendingCount       int64
+	PublishingCount    int64
+	OldestPendingAt    *time.Time
+	OldestPublishingAt *time.Time
 }
 
 // ErrInvalidOutboxLease 表示 claim 或续约传入的租约时长不可用
@@ -33,6 +42,7 @@ func (r *Repository) ClaimPendingOutboxEvents(ctx context.Context, limit int, le
 	}
 
 	var claimed []OutboxEvent
+	takenOver := make(map[uint]bool)
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var candidates []OutboxEvent
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
@@ -53,6 +63,7 @@ func (r *Repository) ClaimPendingOutboxEvents(ctx context.Context, limit int, le
 		ids := make([]uint, 0, len(candidates))
 		for _, event := range candidates {
 			ids = append(ids, event.ID)
+			takenOver[event.ID] = event.Status == OutboxEventStatusPublishing
 		}
 		result := tx.Model(&OutboxEvent{}).
 			Where("id IN ?", ids).
@@ -97,12 +108,31 @@ func (r *Repository) ClaimPendingOutboxEvents(ctx context.Context, limit int, le
 		if !ok {
 			// 视频行已软删除或缺失：仍返回事件并留空快照，由调用方按不一致释放租约，
 			// 避免事件在 publishing 与过期接管之间无限churn
-			dispatches = append(dispatches, OutboxDispatch{Event: event})
+			dispatches = append(dispatches, OutboxDispatch{Event: event, LeaseTakenOver: takenOver[event.ID]})
 			continue
 		}
-		dispatches = append(dispatches, OutboxDispatch{Event: event, Video: row, HasVideo: true})
+		dispatches = append(dispatches, OutboxDispatch{
+			Event:          event,
+			Video:          row,
+			HasVideo:       true,
+			LeaseTakenOver: takenOver[event.ID],
+		})
 	}
 	return dispatches, nil
+}
+
+// GetOutboxSnapshot 返回 pending、publishing 数量及各自最老事件时间
+func (r *Repository) GetOutboxSnapshot(ctx context.Context) (OutboxSnapshot, error) {
+	var snapshot OutboxSnapshot
+	err := r.db.WithContext(ctx).Model(&OutboxEvent{}).
+		Select(`
+			COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS pending_count,
+			COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS publishing_count,
+			MIN(CASE WHEN status = ? THEN created_at END) AS oldest_pending_at,
+			MIN(CASE WHEN status = ? THEN created_at END) AS oldest_publishing_at
+		`, OutboxEventStatusPending, OutboxEventStatusPublishing, OutboxEventStatusPending, OutboxEventStatusPublishing).
+		Scan(&snapshot).Error
+	return snapshot, err
 }
 
 // MarkOutboxDispatched 将确认发布成功且仍持有该次租约的事件标记为已派发；返回是否发生变更

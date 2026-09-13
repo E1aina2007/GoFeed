@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"sync"
+	"time"
 
 	"gofeed/internal/config"
 
@@ -58,10 +60,11 @@ type Runtime struct {
 	cfg  config.RabbitMQConfig
 	dial Dialer
 
-	mu     sync.Mutex
-	conn   BrokerConnection
-	pub    *publisher
-	closed bool
+	mu            sync.Mutex
+	conn          BrokerConnection
+	pub           *publisher
+	closed        bool
+	connectedOnce bool
 }
 
 // NewRuntime 构造运行时；未注入 dialer 时使用真实 AMQP 连接
@@ -132,6 +135,25 @@ func (r *Runtime) ConsumerChannel(prefetch int) (ConsumerChannel, error) {
 	return conn.NewConsumerChannel(prefetch)
 }
 
+// QueueDepth 返回指定队列当前可见消息数，供运维快照采集使用
+func (r *Runtime) QueueDepth(queue string) (int, error) {
+	if r == nil {
+		return 0, errRuntimeNotInitialized
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	conn, err := r.ensureLocked()
+	if err != nil {
+		return 0, err
+	}
+	inspector, ok := conn.(QueueDepthReader)
+	if !ok {
+		return 0, errors.New("mq: broker connection does not support queue inspection")
+	}
+	return inspector.QueueDepth(queue)
+}
+
 // Close 永久关闭 runtime 并释放当前连接，后续调用不会重新建立连接
 func (r *Runtime) Close() error {
 	if r == nil {
@@ -160,15 +182,27 @@ func (r *Runtime) ensureLocked() (BrokerConnection, error) {
 	// 旧连接已失效：先关闭再重建，发布器必须随连接一起丢弃
 	_ = r.dropLocked()
 
+	reconnecting := r.connectedOnce
+	startedAt := time.Now()
 	conn, err := r.dial(r.cfg)
 	if err != nil {
+		if reconnecting {
+			log.Printf("event=%s result=failed duration_ms=%d error=%q", ObservationEventReconnect, time.Since(startedAt).Milliseconds(), err)
+		}
 		return nil, err
 	}
 	if err := conn.DeclareTopology(); err != nil {
 		_ = conn.Close()
+		if reconnecting {
+			log.Printf("event=%s result=failed duration_ms=%d error=%q", ObservationEventReconnect, time.Since(startedAt).Milliseconds(), err)
+		}
 		return nil, err
 	}
 	r.conn = conn
+	r.connectedOnce = true
+	if reconnecting {
+		log.Printf("event=%s result=success duration_ms=%d", ObservationEventReconnect, time.Since(startedAt).Milliseconds())
+	}
 	return conn, nil
 }
 
@@ -258,6 +292,22 @@ func (c *amqpBrokerConnection) Close() error {
 		return nil
 	}
 	return c.conn.Close()
+}
+
+func (c *amqpBrokerConnection) QueueDepth(queue string) (int, error) {
+	if c == nil || c.conn == nil {
+		return 0, errRuntimeNotInitialized
+	}
+	ch, err := c.conn.Channel()
+	if err != nil {
+		return 0, fmt.Errorf("打开队列检查信道失败: %w", err)
+	}
+	defer ch.Close()
+	info, err := ch.QueueInspect(queue)
+	if err != nil {
+		return 0, fmt.Errorf("检查队列 %s 失败: %w", queue, err)
+	}
+	return info.Messages, nil
 }
 
 // amqpConsumerChannel 将 *amqp.Channel 适配为 ConsumerChannel
