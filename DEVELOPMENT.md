@@ -1,8 +1,8 @@
 # GoFeed 开发流程与路线
 
-> 更新日期：2026-09-12
+> 更新日期：2026-09-13
 >
-> 功能快照基线：`7f97382`（`feat: 完善视频处理消息可靠性`）；真实 RabbitMQ 重连回归补充为 `ef94396`，文档提交不单独推进功能状态
+> 功能快照基线：`fb5de22`（`feat: 增加消息队列运维观测`）；专项回归补充为 `6157d66`，文档提交不单独推进功能状态
 
 本文是 GoFeed 后续开发分析和实施的主入口。它把 README 中的开发流程、当前进度、验收规则与下一阶段建议集中在一起，减少每次任务都从头扫描项目的需要。本文记录的是当前 checkout 的快照；开始新任务时仍需先检查工作树，并核对任务涉及的事实来源。
 以下模块状态只统计已提交的提交历史；当前工作树中的未提交改动不计入完成判定。
@@ -75,7 +75,7 @@
 | R3-B rejected 生命周期 | 已提交，迁移与后端回归完成 | `f4fafeb` | rejected 可主动丢弃；按 rejected_at 自动进入 purging；000008 无待执行迁移 |
 | R3-C 前端异步状态 | 已提交，前端门禁未纳入本轮 | `5ada6f9` | 状态查询 API、处理中轮询、拒绝提示和发布页面单测已落地 |
 | M2 遗留：social 列表游标版本化 | 已完成 | `22174a5`、`62313b1` | 评论、关注、粉丝 v1 游标绑定列表类型与视频/目标用户范围；旧格式和跨范围值返回 400 |
-| MQ 可靠性增强 | 核心真实依赖回归通过，运维故障矩阵待收尾 | `7f97382`、`ef94396` | MQ 规格为唯一事实源；runtime 自动重连；outbox 使用 publishing 租约、围栏与退避；consumer 使用 1s/5s/30s 分级重试队列 |
+| MQ 可靠性增强 | 核心真实依赖回归通过；B2 运维观测已提交，真实 broker 观测待补 | `7f97382`、`ef94396`、`fb5de22`、`6157d66` | runtime 自动重连；outbox 租约与分级重试保持不变；新增周期 outbox/DLQ 快照及失败、接管、重连、死信事件 |
 
 ### 已确认的系统边界
 
@@ -191,7 +191,7 @@ RabbitMQ 首个业务闭环只负责视频异步处理；outbox 与草稿清扫�
 3. **R3-A API 异步状态（已提交，`f4fafeb`）**：发布接口返回 `202 + {draft: DraftItem}`；新增作者状态查询端点，顶层固定返回 `status`、`published_at`、`rejected_at`、`rejected_reason`；公开读取继续隐藏 processing/rejected
 4. **R3-B rejected 生命周期（已提交，`f4fafeb`）**：`DELETE /api/video/auth/drafts/:id` 接受 `draft`/`rejected`；`GetExpiredDraftPurgeList` 和 claim 按各自时间基准筛选，`000007` 保持不变，`000008` 回填历史 `rejected_at` 并增加 `(status, rejected_at, id)` 索引
 5. **R3-C 前端异步状态（已提交，`5ada6f9`）**：发布页面消费状态查询接口，轮询 `processing`，展示 `published`/`rejected`，并在组件销毁时取消轮询；提交同时更新视频 API 类型和页面单测
-6. **MQ 可靠性增强（已提交，`7f97382`、`ef94396`）**：`internal/mq` 集中事件与消费规格并由 runtime 管理连接生命周期；`000009` 为 outbox 增加 publishing 租约、attempt 围栏、失败原因和下次尝试时间；relay 批量 claim，consumer 经三个 TTL 重试队列延迟投递，worker 在关闭 broker 前等待 relay/consumer 退出；真实 broker 重连回归由 `ef94396` 补齐
+6. **MQ 可靠性增强（已提交，含 B2 观测）**：`internal/mq` 集中事件与消费规格并由 runtime 管理连接生命周期；`000009` 为 outbox 增加 publishing 租约、attempt 围栏、失败原因和下次尝试时间；relay 批量 claim，consumer 经三个 TTL 重试队列延迟投递，worker 在关闭 broker 前等待 relay/consumer/observer 退出；真实 broker 重连回归由 `ef94396` 补齐。B2 由 `fb5de22`、`6157d66` 提交 `mq_outbox_snapshot`、`mq_reconnect`、`mq_publish_failed`、`mq_lease_takeover`、`mq_dead_letter` 稳定事件，快照字段为 `pending_count`、`publishing_count`、`oldest_pending_age_seconds`、`oldest_publishing_age_seconds`、`dlq_depth`
 
 阶段二已在临时真实 MySQL/RabbitMQ 上验证 `000009` 迁移与回填、并发 claim、租约接管、连接重建后的拓扑恢复、正常消费、重复消息、首档延迟、最终死信、媒体缺失和状态不可逆。剩余收口门槛是目标库升级冒烟、5s/30s 两档真实计时、worker 整进程崩溃窗口，以及 R3-C 的前端门禁记录。
 
@@ -203,7 +203,7 @@ RabbitMQ 首个业务闭环只负责视频异步处理；outbox 与草稿清扫�
 
 ### 阶段二后续：消息队列可靠性（核心实现已提交）
 
-`7f97382` 已实现 `MESSAGE_QUEUE_RELIABILITY_PLAN.md` 的核心代码边界，`ef94396` 补充真实 broker 重连与拓扑恢复回归。临时真实 MySQL/RabbitMQ 已执行核心迁移与消息链路；尚未完成的是目标库升级、完整进程级故障矩阵，以及积压、租约接管、重连和 DLQ 的运维指标。只有指标证明必要时才增加多类型队列。
+`7f97382` 已实现 `MESSAGE_QUEUE_RELIABILITY_PLAN.md` 的核心代码边界，`ef94396` 补充真实 broker 重连与拓扑恢复回归。临时真实 MySQL/RabbitMQ 已执行核心迁移与消息链路；B2 运维观测由 `fb5de22`、`6157d66` 提交 outbox/DLQ 周期快照及发布失败、租约接管、重连、死信事件。常规、race 与隔离 MySQL 回归通过，真实 RabbitMQ QueueInspect/联合快照仍待测试专用 broker 补验。尚未完成的是目标库升级、完整进程级故障矩阵，以及监控平台和告警接入。只有指标证明必要时才增加多类型队列。
 
 ### 阶段三：Redis 定向能力
 
@@ -252,6 +252,7 @@ go test -race -count=1 ./...
 - social 列表游标版本化：`22174a5`、`62313b1` 已提交；2026-09-05 的 `go vet ./...`、`go test -count=1 ./...`、`go test -race -count=1 ./...` 均已在真实 MySQL 下通过。`social` codec/service 测试与 `router.TestSocialCursorScopeContract` 覆盖正常分页、旧格式、跨视频、跨用户和 `followers`/`following` 互换游标的 `400` 语义，未新增迁移或前端改动
 - API 错误处理复用（2026-09-09）：公共契约与 video/user/social 迁移一次交付，未新增迁移或前端改动。本轮按用户要求跳过测试补写，仅执行 `go build ./...`、`go vet ./...` 与既有单测 `go test -count=1 ./internal/error/... ./internal/video/... ./internal/user/... ./internal/social/...`，结果全部通过；`internal/error` 暂无测试文件。新增的 `apierror` 规则矩阵、cause 保留和默认文案断言未补，属未覆盖边界
 - MQ 可靠性增强（2026-09-12）：实现提交为 `7f97382`，真实 broker 重连测试提交为 `ef94396`。加载本地忽略的 `.env` 后，`go test -count=1 -v ./internal/testutil` 在临时真实 MySQL 上通过模型、`000009` 列/默认值/索引及历史 pending 回填；`go test -count=1 -v ./internal/mq` 通过真实 RabbitMQ 意外断线重连与拓扑恢复；`go test -count=1 -v ./internal/worker` 通过正常处理、死信、重试耗尽和 1s TTL 回流。随后 `go vet ./...`、`go test -count=1 ./...`、`go test -race -count=1 ./...` 全部在 MySQL/RabbitMQ 已配置时通过
+- MQ 运维观测 B2（2026-09-13）：生产实现 `fb5de22` 增加 outbox pending/publishing 快照、两种状态的最老年龄、RabbitMQ DLQ 深度、租约接管标识及重连/发布失败/死信稳定事件，worker 启动后立即采集并每 30 秒刷新；专项回归 `6157d66` 覆盖 MySQL 快照、observer 合并与生命周期、队列深度 runtime、接管及日志字段。使用模块专用 `GOCACHE` 执行 `go vet ./...`、定向测试、`go test -count=1 ./...`、`go test -race -count=1 ./...` 均通过，outbox 快照在隔离 MySQL 上实际运行；真实 RabbitMQ QueueInspect/联合快照因未确认测试专用 broker 而明确跳过
 - 阶段状态：Feed 核心可靠性与阶段二代码已提交；`000009` 和 MQ 核心路径已有临时真实依赖证据，目标库升级、5s/30s 计时、进程级故障窗口与前端门禁仍待收口；API 错误复用与 MQ 可靠性核心实现均已完成
 
 ### 前端
