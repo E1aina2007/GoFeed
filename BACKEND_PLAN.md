@@ -172,6 +172,18 @@ M2 只在 `video` 包两个游标列表落地的历史缺口已由 `22174a5` 补
 
 **设计校正**：Redis 客户端属于可由 C1/C2 复用的基础能力，应放在 `internal/redis` 的窄接口后，而非 `internal/middleware/redis`。限流 Lua 必须在一次调用中返回计数和剩余 TTL，`Retry-After` 取向上取整后的正秒数；Redis 故障只 fail-open，不改变 `/ready`。
 
+#### C1-B 契约冻结（待实现）
+
+- 范围只覆盖 `POST /api/user/register` 与 `POST /api/user/login`；限流中间件在 JSON 绑定、注册和认证前执行，因此格式错误和认证失败请求同样计入对应额度
+- 身份维度固定为 `gin.Context.ClientIP()`；当前 router 已设置 `SetTrustedProxies(nil)`，故不信任 `X-Forwarded-For` 或 `X-Real-IP`，部署接入受信任代理时必须先单独调整代理信任配置，不能由限流器自行解析请求头
+- 两个动作各自计数，key 固定为 `rl:v1:register:<ip>` 与 `rl:v1:login:<ip>`；窗口从该 key 的第一次请求起算，注册为每 IP 5 次/1 小时，登录为每 IP 10 次/1 分钟
+- Lua 在一次 `Eval` 中执行 `INCR`，仅当计数为 1 时执行 `PEXPIRE`，随后返回计数和 `PTTL`；中间件以返回的毫秒 TTL 向上取整为至少 1 秒的 `Retry-After`，不得由第二次 Redis 调用查询 TTL
+- 超限响应固定为 `429 Too Many Requests`、`Retry-After: <正整数秒>` 与既有错误体 `{"error":"rate limit exceeded"}`；不返回当前计数、阈值、key 或 Redis 故障细节
+- C1-B 不新增 YAML 或环境变量：注册 5 次/1 小时、登录 10 次/1 分钟作为 `internal/middleware/ratelimit` 的明确策略常量，并由路由装配时传入；Redis 连接继续只使用既有 `RedisConfig`
+- API 启动时 Redis 初始 Ping 失败或请求中的 Eval 失败均 fail-open：记录不含原始 IP 的限流失败事件后继续执行业务；不把失败改写为 429 或 5xx，不影响 `/ready`，也不由 C1-A 客户端决定该策略
+- 实现边界为 `internal/redis` 提供配置驱动的底层客户端，`internal/middleware/cache` 管理共享客户端、故障冷却与单探针恢复，`internal/middleware/ratelimit` 提供策略和 Gin Handler；限流器通过构造函数注入 cache 的脚本执行能力，不写入 Gin Context
+- 实现完成后再由注册路由和登录路由推导更新 `API.md`，并在模块验收记录中逐项标记本轮暂不执行的测试
+
 ### C2 会话校验缓存（评估项）
 
 按 `DEVELOPMENT.md`：由命中率与延迟指标驱动，实现前固定 key 命名、TTL、主动失效（登出/改密/注销时删除）与 Redis 故障回退（查 MySQL）。缓存只记录活动会话校验所需的会话 ID、用户 ID 和有效期，TTL 取访问令牌剩余时间、会话有效期与上限三者最小值；指标不成立则不做。按用户撤销必须在原 MySQL 事务内收集实际撤销的 session ID、提交后逐个失效，不能 Redis `SCAN`；上线前还要验证登录发会话与改密/注销的并发契约，避免撤销后新建的竞争会话被误称已失效。
