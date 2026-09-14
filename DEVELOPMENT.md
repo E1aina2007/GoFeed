@@ -292,3 +292,27 @@ pnpm.cmd run test:e2e -- --project=chromium --project="Mobile Chrome"
 4. 下一模块及其前置决策
 
 README 的“项目进度”只做摘要，并链接到本文；详细路线、验收和风险只在本文维护。若代码与本文冲突，以当前路由、迁移和真实数据库状态为准，并在本模块完成时修正文档。
+
+## C1-A Redis 客户端基础（2026-09-13，无前端影响）
+
+### 设计契约（实现前固定）
+
+- 范围仅为 `backend/internal/redis` 客户端、测试辅助子包及依赖；Redis 表示连接配置和驱动；不接入 router 或业务，不改 HTTP 路由、响应、状态码、`API.md`、迁移、middleware、前端或 Compose；`/ready` 继续仅检查 MySQL
+- `New(ctx, config.RedisConfig) (Client, error)` 创建连接池并执行一次 Ping；失败关闭所建资源并原样返回错误，成功由调用方负责 Close。关闭前由调用方停止并等待自身正在执行的操作，Close 释放连接池，关闭后的调用返回底层关闭错误
+- 对外仅公开接口与构造函数，不暴露 go-redis 具体客户端或命令类型。`Client` 提供 `Ping(ctx) error`、`Close() error`、`Get(ctx, key) (string, error)`、`Set(ctx, key, value, expiration) error`、`Del(ctx, keys...) (int64, error)`、`Eval(ctx, script, keys, args...) (any, error)`
+- Get 缺失键保留 go-redis 的 `redis.Nil` 哨兵错误；Set 使用字符串载荷（可承载序列化会话），expiration 为 time.Duration，0 表示不过期；Del 返回实际删除数量。Eval 直接发送一次 EVAL，保留数组、多值与整数返回，后续 C1-B 可在一次 Lua 调用内返回计数与剩余 TTL；本模块不定义业务脚本、key 命名或限流策略
+- 连接地址、密码和 DB 仅取自现有 RedisConfig；使用 go-redis v9，禁用自动命令重试并启用 context 超时支持，不包装错误、不做 fail-open 或应用层重试；连接失败的业务语义留给 C1-B，不新增 RateLimit 配置
+- `internal/redis/redistest` 提供内存测试替身构造函数，使用 miniredis 运行在临时回环端口，通过同一客户端实现接口，并提供 FastForward 推进 TTL；支持 Lua 和并发原子执行，测试结束自动清理。它是测试辅助能力，不接入运行时，也不能替代真实 Redis 集成验证
+
+### 验证结论
+
+- 已实现 `client.go` 中的 Client/New 和私有 go-redis 适配器，及 `redistest/memory.go` 的 Memory/New 内存替身；新增 `client_test.go`、`integration_test.go`、`redistest/memory_test.go`，并更新 `backend/go.mod`、`backend/go.sum`
+- 选型为 [go-redis v9](https://github.com/redis/go-redis)（锁定 v9.22.0）：Redis 官方组织维护，已有连接池、context、基础 KV 和 EVAL 能力，薄适配即可满足窄接口；测试辅助使用 [miniredis](https://github.com/alicebob/miniredis) v2.39.0，支持内存数据、Lua 和可控 TTL，避免自行仿制脚本语义
+- 除关闭自动命令重试（MaxRetries=-1）外，显式限制拨号为一次尝试（DialerRetries=1），避免库默认拨号重试。错误直接透传，未定义任何业务降级；关闭前排空调用由资源所有者负责，重复 Close 保留底层 ErrClosed
+- `go test -count=1 -v ./internal/redis/...`：6 个单元测试通过；覆盖构造与认证/DB 选择、连接拒绝与 context 取消、KV/错误透传、关闭后所有操作、20 个并发 Lua 调用的计数与 TTL 多值结果、替身过期和实例隔离
+- 本机真实 Redis 可用，设置 `$env:GOFEED_REDIS_INTEGRATION = '1'` 后执行上述定向命令，另有 `TestRealRedis` 通过；使用现有 RedisConfig 与本地环境配置，仅操作随机 `gofeed:test:c1a:` 键，验证 Ping、KV、Lua 多值、毫秒 TTL 和删除，清理完成，未使用 FLUSHDB 或修改服务配置
+- 从 backend 执行 `go vet ./...`、`go test ./...`、`go test -race -count=1 ./...` 全部通过；race 运行显式启用了真实 Redis 集成。默认 Go 缓存可写，无需切换 GOCACHE。现有真实 MySQL 回归未跳过
+- 通过 `go test -json ./...` 核对跳过项：普通运行的 TestRealRedis 因未显式启用而标记“集成跳过”（本轮已另行执行通过）；internal/mq 的 TestRuntimeQueueDepthReadsRealDeadLetterQueue 与 TestRuntimeReconnectsAgainstRealBroker 因未注入 RABBITMQ_HOST 跳过，不能据此声称这两项真实 broker 回归通过
+- `git diff --check` 通过；前端、HTTP 契约、迁移、Compose 不在模块范围，未执行对应专项验证。现有 BACKEND_PLAN.md、README.md 内容校验未变，DEVELOPMENT.md 原有内容完整保留，仅追加本模块。初始工作树未发现 duck-bezier.html，未对其做任何操作
+- 本模块无前端影响，未接入任何业务路径，`/ready` 仍只查 MySQL；没有开始 C1-B。未暂存、未提交，改动保留等待 review
+- 2026-09-14 将 C1-A 固定在 `internal/redis` 的 `redis`：它只负责复用现有 RedisConfig 创建通信客户端。测试包分别为 `redis` 与 `redistest`，不再存在仅靠下划线区分的 `redis_test`。后续运行时缓存适配位于 `internal/middleware/cache`，Gin 限流适配位于 `internal/middleware/ratelimit`；本模块不创建空包或提前接线。`go vet ./...` 与 `go test ./...` 通过。当天 Redis Windows 服务为 Stopped，127.0.0.1 与 ::1 的 6379 均不可达；显式启用 TestRealRedis 因而失败，默认运行保持“集成跳过”。先前真实 Redis 通过记录是历史结果，当前服务恢复后需重跑后才能作为当前集成证据
