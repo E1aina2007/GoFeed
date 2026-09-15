@@ -46,7 +46,7 @@ func TestRuntimeCoolsDownAndUsesSingleRecoveryProbe(t *testing.T) {
 	})
 
 	if err := runtime.EnsureConnected(context.Background()); !errors.Is(err, initialFailure) {
-		t.Fatalf("首次连接错误错误 got=%v", err)
+		t.Fatalf("首次连接错误 got=%v", err)
 	}
 	if err := runtime.EnsureConnected(context.Background()); !errors.Is(err, initialFailure) {
 		t.Fatalf("冷却期应返回首次错误 got=%v", err)
