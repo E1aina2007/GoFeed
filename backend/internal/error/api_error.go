@@ -15,6 +15,7 @@ const (
 	CodeNotFound     Code = "not_found"
 	CodeConflict     Code = "conflict"
 	CodeTooLarge     Code = "too_large"
+	CodeRateLimited  Code = "rate_limited"
 	CodeUnavailable  Code = "unavailable"
 	CodeInternal     Code = "internal"
 )
@@ -79,6 +80,8 @@ func HTTPStatus(code Code) int {
 		return http.StatusConflict
 	case CodeTooLarge:
 		return http.StatusRequestEntityTooLarge
+	case CodeRateLimited:
+		return http.StatusTooManyRequests
 	case CodeUnavailable:
 		return http.StatusServiceUnavailable
 	default:
@@ -120,6 +123,8 @@ func defaultMessage(code Code) string {
 		return "resource conflict"
 	case CodeTooLarge:
 		return "request entity too large"
+	case CodeRateLimited:
+		return "rate limit exceeded"
 	case CodeUnavailable:
 		return "service temporarily unavailable"
 	default:
