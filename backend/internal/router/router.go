@@ -5,6 +5,7 @@ import (
 
 	"gofeed/internal/auth"
 	"gofeed/internal/middleware/jwt"
+	"gofeed/internal/middleware/ratelimit"
 	"gofeed/internal/observability"
 	"gofeed/internal/social"
 	"gofeed/internal/user"
@@ -24,6 +25,8 @@ type Options struct {
 	// Middlewares 附加的全局中间件，在请求日志与恢复中间件之后注册
 	// 主要用于测试注入查询计数等观测探针
 	Middlewares []gin.HandlerFunc
+	// RateLimitCache 为注册与登录限流提供脚本执行能力
+	RateLimitCache ratelimit.Cache
 }
 
 func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
@@ -72,8 +75,8 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 
 	api := r.Group("/api")
 	users := api.Group("/user")
-	users.POST("/register", userCtl.CreateUser)
-	users.POST("/login", userCtl.Login)
+	users.POST("/register", ratelimit.Limit(opts.RateLimitCache, ratelimit.RegisterAction, ratelimit.RegisterMaxRequests, ratelimit.RegisterWindow), userCtl.CreateUser)
+	users.POST("/login", ratelimit.Limit(opts.RateLimitCache, ratelimit.LoginAction, ratelimit.LoginMaxRequests, ratelimit.LoginWindow), userCtl.Login)
 	users.POST("/refresh", userCtl.UpdateRefreshToken)
 	users.GET("", userCtl.GetUserList)
 	users.GET("/:id", userCtl.GetUser)

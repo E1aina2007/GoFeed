@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"gofeed/internal/config"
 	"gofeed/internal/db"
+	"gofeed/internal/middleware/cache"
 	"gofeed/internal/router"
 	"log"
 	"net/http"
@@ -40,6 +41,14 @@ func main() {
 		log.Println("PROD MODE")
 	}
 
+	// Redis 仅为限流提供非权威能力，首次连接失败后仍由运行时在请求期间恢复
+	rateLimitCache := cache.NewRuntime(cfg.Redis)
+	redisCtx, redisCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	if err := rateLimitCache.EnsureConnected(redisCtx); err != nil {
+		log.Printf("event=redis_cache result=initial_connect_failed")
+	}
+	redisCancel()
+
 	// 连接数据库（数据库手动创建，表结构由 migrate 服务自动迁移）
 	DB, err := db.NewDB(cfg.DB)
 	if err != nil {
@@ -49,7 +58,7 @@ func main() {
 	log.Println("Database connected successfully")
 
 	// 装配服务
-	r := router.New(DB, cfg.Dev, router.Options{})
+	r := router.New(DB, cfg.Dev, router.Options{RateLimitCache: rateLimitCache})
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 
 	server := &http.Server{
@@ -76,6 +85,9 @@ func main() {
 
 	if err := server.Shutdown(ctx); err != nil {
 		log.Printf("Server forced to shutdown: %v", err)
+	}
+	if err := rateLimitCache.Close(); err != nil {
+		log.Printf("event=redis_cache result=close_failed")
 	}
 	if err := db.Close(DB); err != nil {
 		log.Printf("Failed to close database: %v", err)
