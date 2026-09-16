@@ -58,6 +58,42 @@ test('registers an account and signs in from the login page', async ({ page }) =
   await expect(page.locator('.account-state__name')).toHaveText('e2e-user')
 })
 
+test('waits out the login rate limit window before a successful retry', async ({ page }) => {
+  let loginAttempts = 0
+  await mockEmptyFeed(page)
+  await page.route('**/api/user/login', async (route) => {
+    loginAttempts += 1
+    if (loginAttempts === 1) {
+      await route.fulfill({
+        status: 429,
+        headers: { 'Retry-After': '3' },
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'rate limit exceeded' }),
+      })
+      return
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(session) })
+  })
+
+  await page.goto('/login')
+  await page.getByLabel('用户名', { exact: true }).fill('e2e-user')
+  await page.getByLabel('密码', { exact: true }).fill('password-123')
+  const submit = page.getByRole('button', { name: '登录', exact: true })
+  await submit.click()
+
+  const alert = page.getByRole('alert')
+  await expect(alert).toHaveText('请求过于频繁，请 3 秒后重试')
+  await expect(submit).toBeDisabled()
+
+  // 等待期结束前保持禁用，倒计时归零后才恢复手动重试
+  await expect(submit).toBeEnabled({ timeout: 5000 })
+  expect(loginAttempts).toBe(1)
+
+  await submit.click()
+  await expect(page).toHaveURL(/\/$/)
+  expect(loginAttempts).toBe(2)
+})
+
 test('rejects mismatched password confirmation without calling the API', async ({ page }) => {
   await page.goto('/register')
   await page.getByLabel('用户名', { exact: true }).fill('e2e-user')
