@@ -1,6 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { createPinia } from 'pinia'
 import type { Router } from 'vue-router'
 
 import { login } from '@/features/auth/session'
@@ -9,6 +8,8 @@ import LoginView from '../LoginView.vue'
 
 const route = vi.hoisted(() => ({ query: {} as Record<string, unknown> }))
 const routerReplace = vi.hoisted(() => vi.fn<Router['replace']>())
+const toastError = vi.hoisted(() => vi.fn<(message: string) => void>())
+const toastSuccess = vi.hoisted(() => vi.fn<(message: string) => void>())
 
 vi.mock('vue-router', () => ({
   RouterLink: { template: '<a><slot /></a>' },
@@ -20,6 +21,11 @@ vi.mock('@/features/auth/session', () => ({
   login: vi.fn<typeof login>(),
 }))
 
+// toast 的自动消失定时器会干扰倒计时断言，这里只断言提示内容
+vi.mock('@/stores/toast', () => ({
+  useToastStore: () => ({ success: toastSuccess, error: toastError }),
+}))
+
 const sessionFixture = {
   access_token: 'access-token',
   refresh_token: 'refresh-token',
@@ -28,7 +34,7 @@ const sessionFixture = {
 }
 
 function mountView() {
-  return mount(LoginView, { global: { plugins: [createPinia()] } })
+  return mount(LoginView)
 }
 
 async function submitWith(wrapper: ReturnType<typeof mountView>, username: string, password: string) {
@@ -43,7 +49,12 @@ describe('LoginView', () => {
   beforeEach(() => {
     route.query = {}
     routerReplace.mockClear()
+    toastError.mockClear()
     vi.mocked(login).mockReset()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   it('shows the registration notice when redirected from the register page', () => {
@@ -81,6 +92,63 @@ describe('LoginView', () => {
 
     expect(wrapper.get('[role="alert"]').text()).toBe('用户名或密码错误')
     expect(routerReplace).not.toHaveBeenCalled()
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('shows the server retry-after countdown after a 429 and blocks duplicate submits', async () => {
+    vi.useFakeTimers()
+    vi.mocked(login).mockRejectedValue(new ApiError(429, 'rate limit exceeded', 3))
+    const wrapper = mountView()
+    await submitWith(wrapper, 'alice', 'password-123')
+
+    expect(login).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[role="alert"]').text()).toBe('请求过于频繁，请 3 秒后重试')
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+    expect(toastError).toHaveBeenCalledWith('请求过于频繁，请 3 秒后重试')
+
+    // 等待期内重复提交不应再消耗服务端登录额度
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(login).toHaveBeenCalledTimes(1)
+
+    vi.advanceTimersByTime(1000)
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toBe('请求过于频繁，请 2 秒后重试')
+
+    vi.advanceTimersByTime(2000)
+    await flushPromises()
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeUndefined()
+
+    // 倒计时结束后沿用按钮本身作为重试入口
+    vi.mocked(login).mockResolvedValue(sessionFixture)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(login).toHaveBeenCalledTimes(2)
+    expect(routerReplace).toHaveBeenCalledWith('/')
+    wrapper.unmount()
+  })
+
+  it('stops the countdown timer when the page unmounts', async () => {
+    vi.useFakeTimers()
+    vi.mocked(login).mockRejectedValue(new ApiError(429, 'rate limit exceeded', 30))
+    const wrapper = mountView()
+    await submitWith(wrapper, 'alice', 'password-123')
+    expect(vi.getTimerCount()).toBe(1)
+
+    wrapper.unmount()
+    expect(vi.getTimerCount()).toBe(0)
+
+    vi.advanceTimersByTime(5000)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps the 429 message without a countdown when the header is unusable', async () => {
+    vi.mocked(login).mockRejectedValue(new ApiError(429, 'rate limit exceeded'))
+    const wrapper = mountView()
+    await submitWith(wrapper, 'alice', 'password-123')
+
+    expect(wrapper.get('[role="alert"]').text()).toBe('请求过于频繁，请稍后重试')
     expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })

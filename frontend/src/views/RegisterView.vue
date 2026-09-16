@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { register } from '@/features/auth/session'
 import { apiUserMessage } from '@/lib/api'
+import { rateLimitMessage, rateLimitRetrySeconds, useRateLimitCountdown } from '@/lib/rateLimit'
 import { useToastStore } from '@/stores/toast'
 
 const route = useRoute()
@@ -14,6 +15,12 @@ const password = ref('')
 const confirmPassword = ref('')
 const isSubmitting = ref(false)
 const errorMessage = ref('')
+const countdown = useRateLimitCountdown()
+const isWaitingForRetry = computed(() => countdown.seconds.value > 0)
+const isSubmitDisabled = computed(() => isSubmitting.value || isWaitingForRetry.value)
+const alertMessage = computed(() =>
+  isWaitingForRetry.value ? rateLimitMessage(countdown.seconds.value) : errorMessage.value,
+)
 
 const redirectPath = computed(() => {
   const redirect = route.query.redirect
@@ -26,6 +33,10 @@ const loginLocation = computed(() => ({
 }))
 
 async function submit() {
+  // 等待期直接忽略重复提交，避免用同一额度继续触发 429
+  if (isSubmitDisabled.value) {
+    return
+  }
   errorMessage.value = ''
   if (password.value !== confirmPassword.value) {
     errorMessage.value = '两次输入的密码不一致'
@@ -44,6 +55,14 @@ async function submit() {
     })
     toast.success('注册成功，请登录')
   } catch (error) {
+    const retryAfterSeconds = rateLimitRetrySeconds(error)
+    if (retryAfterSeconds !== null) {
+      // 限流等待由服务端 Retry-After 决定，界面只展示倒计时并保留手动重试
+      countdown.start(retryAfterSeconds)
+      toast.error(rateLimitMessage(retryAfterSeconds))
+      return
+    }
+
     errorMessage.value = apiUserMessage(error, '注册失败，请检查网络后重试', {
       400: '用户名或密码不符合要求',
       409: '用户名已被占用',
@@ -53,6 +72,8 @@ async function submit() {
     isSubmitting.value = false
   }
 }
+
+onUnmounted(() => countdown.clear())
 </script>
 
 <template>
@@ -78,9 +99,16 @@ async function submit() {
         <input v-model="confirmPassword" name="confirm-password" type="password" autocomplete="new-password" minlength="8" maxlength="72" required>
       </label>
 
-      <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
+      <p
+        v-if="alertMessage"
+        class="form-error"
+        :class="{ 'form-error--waiting': isWaitingForRetry }"
+        role="alert"
+      >
+        {{ alertMessage }}
+      </p>
 
-      <button class="primary-action" type="submit" :disabled="isSubmitting">
+      <button class="primary-action" type="submit" :disabled="isSubmitDisabled">
         {{ isSubmitting ? '正在注册' : '注册' }}
       </button>
 
@@ -155,6 +183,10 @@ async function submit() {
   color: #ae2c20;
   font-size: 0.9rem;
   line-height: 1.45;
+}
+
+.form-error--waiting {
+  color: #8a5a11;
 }
 
 .primary-action {

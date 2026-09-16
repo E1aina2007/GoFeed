@@ -1,11 +1,28 @@
 export class ApiError extends Error {
   readonly status: number
+  readonly retryAfterSeconds: number | null
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, retryAfterSeconds: number | null = null) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.retryAfterSeconds = retryAfterSeconds
   }
+}
+
+// 从 429 响应头读取正整数秒；服务端未给可用值时返回 null，界面不做倒计时
+function readRetryAfterSeconds(response: Response): number | null {
+  const value = response.headers.get('Retry-After')
+  if (!value) {
+    return null
+  }
+
+  const seconds = Number(value.trim())
+  if (!Number.isSafeInteger(seconds) || seconds <= 0) {
+    return null
+  }
+
+  return seconds
 }
 
 type ErrorResponse = {
@@ -28,7 +45,8 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     const message = isErrorResponse(body) && typeof body.error === 'string'
       ? body.error
       : '请求失败，请稍后重试'
-    throw new ApiError(response.status, message)
+    // 限流的 Retry-After 只作为等待提示依据，不在这里自动重试
+    throw new ApiError(response.status, message, readRetryAfterSeconds(response))
   }
 
   return body as T

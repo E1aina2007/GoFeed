@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { RouterLink } from 'vue-router'
 
 import { login } from '@/features/auth/session'
 import { apiUserMessage } from '@/lib/api'
+import { rateLimitMessage, rateLimitRetrySeconds, useRateLimitCountdown } from '@/lib/rateLimit'
 import { useToastStore } from '@/stores/toast'
 
 const route = useRoute()
@@ -14,6 +15,12 @@ const username = ref('')
 const password = ref('')
 const isSubmitting = ref(false)
 const errorMessage = ref('')
+const countdown = useRateLimitCountdown()
+const isWaitingForRetry = computed(() => countdown.seconds.value > 0)
+const isSubmitDisabled = computed(() => isSubmitting.value || isWaitingForRetry.value)
+const alertMessage = computed(() =>
+  isWaitingForRetry.value ? rateLimitMessage(countdown.seconds.value) : errorMessage.value,
+)
 const registrationNotice = computed(() => {
   if (route.query.registered === '1') {
     return '注册成功，请使用新账号登录'
@@ -38,6 +45,10 @@ function redirectPath() {
 }
 
 async function submit() {
+  // 等待期直接忽略重复提交，避免用同一额度继续触发 429
+  if (isSubmitDisabled.value) {
+    return
+  }
   errorMessage.value = ''
   isSubmitting.value = true
 
@@ -46,6 +57,14 @@ async function submit() {
     toast.success('登录成功')
     await router.replace(redirectPath())
   } catch (error) {
+    const retryAfterSeconds = rateLimitRetrySeconds(error)
+    if (retryAfterSeconds !== null) {
+      // 限流等待由服务端 Retry-After 决定，界面只展示倒计时并保留手动重试
+      countdown.start(retryAfterSeconds)
+      toast.error(rateLimitMessage(retryAfterSeconds))
+      return
+    }
+
     errorMessage.value = apiUserMessage(error, '登录失败，请检查网络后重试', {
       401: '用户名或密码错误',
     })
@@ -54,6 +73,8 @@ async function submit() {
     isSubmitting.value = false
   }
 }
+
+onUnmounted(() => countdown.clear())
 </script>
 
 <template>
@@ -76,9 +97,16 @@ async function submit() {
         <input v-model="password" name="password" type="password" autocomplete="current-password" minlength="8" maxlength="72" required>
       </label>
 
-      <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
+      <p
+        v-if="alertMessage"
+        class="form-error"
+        :class="{ 'form-error--waiting': isWaitingForRetry }"
+        role="alert"
+      >
+        {{ alertMessage }}
+      </p>
 
-      <button class="primary-action" type="submit" :disabled="isSubmitting">
+      <button class="primary-action" type="submit" :disabled="isSubmitDisabled">
         {{ isSubmitting ? '正在登录' : '登录' }}
       </button>
 
@@ -153,6 +181,10 @@ async function submit() {
   color: #ae2c20;
   font-size: 0.9rem;
   line-height: 1.45;
+}
+
+.form-error--waiting {
+  color: #8a5a11;
 }
 
 .form-notice {
