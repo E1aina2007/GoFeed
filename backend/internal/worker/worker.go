@@ -99,6 +99,10 @@ func (r *Relay) dispatchRound(ctx context.Context) error {
 			continue
 		}
 		if dispatch.Video.Status != video.VideoStatusProcessing || dispatch.Video.PublishedAt == nil {
+			if dispatch.LeaseTakenOver && isTerminalProcessingResult(dispatch.Video.Status) {
+				r.markDispatched(ctx, dispatch)
+				continue
+			}
 			// 状态异常事件不再重发，但仍要释放租约，避免长期占用 publishing
 			log.Printf("[relay] 跳过状态异常的事件 event_id=%s video_id=%d status=%s",
 				dispatch.Event.EventID, dispatch.Video.ID, dispatch.Video.Status)
@@ -118,16 +122,26 @@ func (r *Relay) dispatchRound(ctx context.Context) error {
 			r.release(ctx, dispatch, outboxBackoff(dispatch.Event.Attempt), err)
 			continue
 		}
-		marked, err := r.repo.MarkOutboxDispatched(ctx, dispatch.Event.ID, dispatch.Event.Attempt)
-		if err != nil {
-			log.Printf("[relay] 标记已派发失败 event_id=%s: %v", dispatch.Event.EventID, err)
-			continue
-		}
-		if !marked {
-			log.Printf("[relay] 租约已被接管或事件已派发 event_id=%s", dispatch.Event.EventID)
-		}
+		r.markDispatched(ctx, dispatch)
 	}
 	return nil
+}
+
+// markDispatched 将当前仍持有租约的事件标记为已派发；失败只记录日志以便后续租约接管
+func (r *Relay) markDispatched(ctx context.Context, dispatch video.OutboxDispatch) {
+	marked, err := r.repo.MarkOutboxDispatched(ctx, dispatch.Event.ID, dispatch.Event.Attempt)
+	if err != nil {
+		log.Printf("[relay] 标记已派发失败 event_id=%s: %v", dispatch.Event.EventID, err)
+		return
+	}
+	if !marked {
+		log.Printf("[relay] 租约已被接管或事件已派发 event_id=%s", dispatch.Event.EventID)
+	}
+}
+
+// isTerminalProcessingResult 返回已经由消费端完成的终态
+func isTerminalProcessingResult(status string) bool {
+	return status == video.VideoStatusPublished || status == video.VideoStatusRejected
 }
 
 // release 把派发失败的事件写回 pending 并按指定时长退避；释放失败只记录日志

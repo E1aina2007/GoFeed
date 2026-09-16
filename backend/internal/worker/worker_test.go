@@ -248,6 +248,49 @@ func TestRelayDispatchRoundMarksDispatched(t *testing.T) {
 	}
 }
 
+// 测试目标：验证过期租约接管已完成视频时收口 outbox 而不再投递
+// 预期效果：published 和 rejected 终态的事件均标记 dispatched，消息发布器不产生重复调用
+func TestRelayMarksTakenOverTerminalEventDispatched(t *testing.T) {
+	db := testutil.DB(t)
+	repo := video.NewRepository(db)
+	for _, status := range []string{video.VideoStatusPublished, video.VideoStatusRejected} {
+		t.Run(status, func(t *testing.T) {
+			publisher := &fakePublisher{}
+			relay := NewRelay(repo, publisher)
+			row := seedProcessingVideo(t, repo, db, int64(len(status)))
+			var event video.OutboxEvent
+			if err := db.First(&event, "video_id = ?", row.ID).Error; err != nil {
+				t.Fatalf("读取初始 outbox 事件失败: %v", err)
+			}
+			claimed, err := repo.ClaimPendingOutboxEvents(context.Background(), 1, time.Minute)
+			if err != nil || len(claimed) != 1 {
+				t.Fatalf("领取初始租约失败 got=%d err=%v", len(claimed), err)
+			}
+			if err := db.Model(&video.Video{}).Where("id = ?", row.ID).Update("status", status).Error; err != nil {
+				t.Fatalf("构造 %s 终态失败: %v", status, err)
+			}
+			if err := db.Model(&video.OutboxEvent{}).Where("id = ?", event.ID).
+				Update("locked_until", gorm.Expr("TIMESTAMPADD(SECOND, -1, NOW(3))")).Error; err != nil {
+				t.Fatalf("构造过期租约失败: %v", err)
+			}
+
+			if err := relay.dispatchRound(context.Background()); err != nil {
+				t.Fatalf("接管终态事件失败: %v", err)
+			}
+			if len(publisher.messages) != 0 {
+				t.Fatalf("终态接管不应重复发布消息 got=%d", len(publisher.messages))
+			}
+			var stored video.OutboxEvent
+			if err := db.First(&stored, event.ID).Error; err != nil {
+				t.Fatalf("读取接管后的 outbox 事件失败: %v", err)
+			}
+			if stored.Status != video.OutboxEventStatusDispatched || stored.Attempt != 2 || stored.DispatchedAt == nil {
+				t.Fatalf("终态接管应收口为 dispatched got=%+v", stored)
+			}
+		})
+	}
+}
+
 // 测试目标：验证发布失败的事件写回 pending 并安排退避，退避到期后可重新派发
 // 预期效果：失败后状态为 pending 且 next_attempt_at 在未来，清除退避后派发成功
 func TestRelayKeepsPendingWhenPublishFails(t *testing.T) {
