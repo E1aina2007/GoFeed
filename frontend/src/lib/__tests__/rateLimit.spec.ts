@@ -127,4 +127,48 @@ describe('useRateLimitCountdown', () => {
     countdown.start(-3)
     expect(countdown.seconds.value).toBe(0)
   })
+
+  // 浏览器在页面繁忙时会节流定时器，等待时间不能被拉长
+  it('keeps the server deadline when the timer fires later than one second', () => {
+    vi.useFakeTimers()
+    const countdown = useRateLimitCountdown()
+
+    countdown.start(3)
+    expect(countdown.seconds.value).toBe(3)
+
+    // 一次回调跨越了整段等待期，倒计时必须直接归零而不是只减一
+    vi.advanceTimersByTime(3000)
+    expect(countdown.seconds.value).toBe(0)
+
+    vi.advanceTimersByTime(4000)
+    expect(countdown.seconds.value).toBe(0)
+  })
+
+  it('uses an absolute deadline instead of counting interval ticks', () => {
+    vi.useFakeTimers()
+    const countdown = useRateLimitCountdown()
+
+    countdown.start(4)
+    // 真实时间已经越过截止点，即使定时器回调被推迟也应立即归零
+    vi.setSystemTime(Date.now() + 4000)
+    vi.advanceTimersByTime(1000)
+    expect(countdown.seconds.value).toBe(0)
+  })
+
+  it('does not let a stale wait deadline shorten a newer wait', () => {
+    vi.useFakeTimers()
+    const countdown = useRateLimitCountdown()
+
+    countdown.start(10)
+    vi.advanceTimersByTime(1000)
+    // 新窗口以新的 startsAt 为基准，旧的截止时间不能提前结束等待
+    countdown.start(2)
+    expect(countdown.seconds.value).toBe(2)
+
+    vi.advanceTimersByTime(1000)
+    expect(countdown.seconds.value).toBe(1)
+
+    vi.advanceTimersByTime(1000)
+    expect(countdown.seconds.value).toBe(0)
+  })
 })
