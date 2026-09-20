@@ -1,31 +1,46 @@
-# ── Git ──
+# All Dockerfiles use the repository root as their build context.
+
+# Repository metadata and documentation
 .git
+.github
+docs
+*.md
 .gitignore
 .gitattributes
-
-# ── IDE ──
-.vscode/
-.idea/
-
-# ── Docs ──
-DESIGN.md
-README.md
-
-# ── Docker ──
-Dockerfile
-.dockerignore
 docker-compose.yml
+Dockerfile
+**/.dockerignore
+**/.idea
+**/.vscode
 
-node_modules/
+# Local dependencies, caches, and runtime data
+**/node_modules
+**/.pnpm-store
+**/.run
+**/tmp
+**/bin
+**/*.log
+**/*.exe
+**/*.out
+**/*.test
+**/*.tsbuildinfo
 
-# ── Secrets ──
-.env
-.env.local
-backend/configs/config.*.yaml
-!backend/configs/config.docker.yaml
+# Build and test output
+frontend/dist
+frontend/dist-ssr
+frontend/coverage
+frontend/playwright-report
+frontend/test-results
+frontend/.eslintcache
+
+# Test-only source and Compose-mounted migrations
+backend/**/*_test.go
+frontend/e2e
+frontend/src/**/__tests__
+backend/db/migrations
+
+# Local configuration and secrets
+**/.env
+**/.env.*
+backend/configs/config*.yaml
 !backend/configs/config.example.yaml
-
-# ── Runtime artifacts ──
-.run/
-*.log
-tmp/
