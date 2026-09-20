@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type APIResponse } from '@playwright/test'
+import { expect, test, type APIRequestContext, type APIResponse, type Locator } from '@playwright/test'
 
 // 该用例会真实占用登录限流额度并按整窗等待，只在显式启用时运行
 const liveAPI = process.env.GOFEED_E2E_REAL_API === '1'
@@ -12,6 +12,22 @@ const loginLimitPerWindow = 10
 
 function alertTextSeconds(text: string) {
   return Number(text.replace(/\D+/g, ''))
+}
+
+// 取一次带数字的倒计时读数，并确认它在同一秒内稳定，避免把每秒一次的字号变化误判为稳定值
+async function stableCountdownSeconds(alert: Locator, deadlineMilliseconds = 5_000) {
+  const deadline = Date.now() + deadlineMilliseconds
+  let previous = ''
+
+  while (Date.now() < deadline) {
+    const current = await alert.innerText()
+    if (current === previous && /\d/.test(current)) {
+      return alertTextSeconds(current)
+    }
+    previous = current
+  }
+
+  return /\d/.test(previous) ? alertTextSeconds(previous) : 0
 }
 
 function retryAfterSecondsOf(response: APIResponse) {
@@ -121,12 +137,13 @@ test.describe('登录限流（真实后端）', () => {
     await expect(submit).toBeDisabled()
 
     // 界面等待时间只能来自服务端 Retry-After，不能自行编造
-    const firstShown = alertTextSeconds(await alert.innerText())
-    expect(firstShown).toBeGreaterThan(0)
+    const firstShown = await stableCountdownSeconds(alert)
+    expect(firstShown, '倒计时读数必须来自服务端 Retry-After，而不是空文案').toBeGreaterThan(0)
     expect(firstShown).toBeLessThanOrEqual(60)
 
-    // 真实窗口按 Redis TTL 到期，倒计时结束后恢复可提交
-    await expect(submit).toBeEnabled({ timeout: (firstShown + 15) * 1000 })
+    // 真实窗口按 Redis TTL 到期；界面显示的是 HTTP 往返前的 TTL，可能大于建键后的剩余窗口，
+    // 因此按“倒计时归零 + 一次采样间隔”等待，而不是按界面首值放大等待
+    await expect(submit).toBeEnabled({ timeout: (firstShown * 1000) + 15_000 })
     await expect(alert).toBeHidden()
 
     await submit.click()

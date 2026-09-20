@@ -143,3 +143,9 @@ jobs:
 
       - name: Build
         run: pnpm run build
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
+
+      - name: Browser regression
+        run: pnpm exec playwright test --project=chromium --project=firefox --project=webkit --project="Mobile Chrome"

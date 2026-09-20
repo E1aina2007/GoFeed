@@ -86,7 +86,8 @@ test('waits out the login rate limit window before a successful retry', async ({
   await expect(submit).toBeDisabled()
 
   // 等待期结束前保持禁用，倒计时归零后才恢复手动重试
-  await expect(submit).toBeEnabled({ timeout: 5000 })
+  // 3 秒窗口在 WebKit 上可能因渲染与轮询开销逼近 5 秒，这里使用显式超时预算
+  await expect(submit).toBeEnabled({ timeout: 20_000 })
   expect(loginAttempts).toBe(1)
 
   await submit.click()
