@@ -176,6 +176,7 @@ const (
 	workerProcessVideoIDEnv    = "GOFEED_WORKER_PROCESS_VIDEO_ID"
 	workerProcessCrashMode     = "crash-after-confirm"
 	workerProcessRecoveryMode  = "recover"
+	workerProcessPipelineMode  = "pipeline"
 	workerProcessRecoveryLimit = 70 * time.Second
 )
 
@@ -552,8 +553,12 @@ func TestWorkerProcessHelper(t *testing.T) {
 		t.Fatalf("worker helper 测试规格非法: %v", err)
 	}
 	videoID, err := strconv.ParseUint(os.Getenv(workerProcessVideoIDEnv), 10, 64)
-	if err != nil || videoID == 0 {
+	if err != nil {
 		t.Fatalf("worker helper 视频标识非法: %v", err)
+	}
+	// 发布闭环模式服务多条视频，不绑定单个视频标识
+	if videoID == 0 && mode != workerProcessPipelineMode {
+		t.Fatal("worker helper 视频标识非法: 不能为零")
 	}
 	repo := video.NewRepository(gdb)
 
@@ -572,9 +577,37 @@ func TestWorkerProcessHelper(t *testing.T) {
 			t.Fatal("worker helper 缺少媒体目录")
 		}
 		runWorkerProcessRecovery(t, gdb, repo, broker, storageRoot, uint(videoID), spec)
+	case workerProcessPipelineMode:
+		storageRoot := os.Getenv(workerProcessStorageEnv)
+		if storageRoot == "" {
+			t.Fatal("worker helper 缺少媒体目录")
+		}
+		// 发布闭环模式由父进程按 API 终态结束子进程，这里只负责运行两个循环
+		runWorkerProcessPipeline(t.Context(), repo, broker, storageRoot, spec)
 	default:
 		t.Fatalf("worker helper 模式未知: %s", mode)
 	}
+}
+
+// 测试目标：在独立进程中运行完整 relay 与 consumer 闭环
+// 预期效果：上下文取消时两个循环先退出，供父进程读到 API 终态后停止子进程
+func runWorkerProcessPipeline(ctx context.Context, repo *video.Repository, broker *mq.Runtime, storageRoot string, spec mq.ConsumerSpec) {
+	relay := NewRelay(repo, broker)
+	relay.spec = spec.Event
+	consumer := NewConsumer(repo, broker, storageRoot)
+	consumer.spec = spec
+
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() {
+		defer workers.Done()
+		relay.Run(ctx)
+	}()
+	go func() {
+		defer workers.Done()
+		consumer.Run(ctx, broker)
+	}()
+	workers.Wait()
 }
 
 // 测试目标：重启后运行 relay 与 consumer 直到故障事件完整收敛
@@ -667,9 +700,10 @@ func retryQueueNames(spec mq.ConsumerSpec) []string {
 func TestProcessingClosureIntegration(t *testing.T) {
 	db := testutil.DB(t)
 	conn := newIntegrationConnection(t)
-	purgeQueues(t, conn)
 	runtime := newIntegrationRuntime(t)
-	spec := mq.VideoProcessSpec()
+	// 测试目标：使用随机专用拓扑承载真实投递
+	// 预期效果：用例不占用共享业务队列，开发机常驻 worker 不会抢走本轮消息
+	spec := declareWorkerProcessTopology(t, conn)
 
 	repo := video.NewRepository(db)
 	root := t.TempDir()
@@ -677,7 +711,9 @@ func TestProcessingClosureIntegration(t *testing.T) {
 	writeMediaFile(t, root, "videos/1/20260801/clip.mp4", []byte{0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'})
 	writeMediaFile(t, root, "covers/1/20260801/cover.png", []byte{0x89, 'P', 'N', 'G'})
 
-	if err := NewRelay(repo, runtime).dispatchRound(context.Background()); err != nil {
+	// 测试目标：在专用拓扑上完成一轮 relay 派发
+	// 预期效果：事件被 claim 并标记 dispatched，消息进入专用主队列
+	if err := dispatchIntegrationRound(repo, runtime, spec); err != nil {
 		t.Fatalf("派发轮次失败: %v", err)
 	}
 	var event video.OutboxEvent
@@ -698,6 +734,7 @@ func TestProcessingClosureIntegration(t *testing.T) {
 	}
 
 	consumer := NewConsumer(repo, runtime, root)
+	consumer.spec = spec
 	if err := consumer.process(context.Background(), msg); err != nil {
 		t.Fatalf("消费处理失败: %v", err)
 	}
@@ -713,14 +750,23 @@ func TestProcessingClosureIntegration(t *testing.T) {
 	}
 }
 
+// 测试目标：在指定随机拓扑上执行一轮 relay 派发
+// 预期效果：用例使用真实 relay 代码路径但不触碰共享业务拓扑
+func dispatchIntegrationRound(repo *video.Repository, runtime *mq.Runtime, spec mq.ConsumerSpec) error {
+	relay := NewRelay(repo, runtime)
+	relay.spec = spec.Event
+	return relay.dispatchRound(context.Background())
+}
+
 // 测试目标：验证无法处理的消息经死信拓扑进入死信队列
 // 预期效果：未知版本消息被 nack 后可在死信队列读取
 func TestDeadLetterIntegration(t *testing.T) {
 	db := testutil.DB(t)
 	conn := newIntegrationConnection(t)
-	purgeQueues(t, conn)
 	runtime := newIntegrationRuntime(t)
-	spec := mq.VideoProcessSpec()
+	// 测试目标：使用随机专用拓扑承载死信投递
+	// 预期效果：用例只操作自身队列，不消费共享业务队列的历史消息
+	spec := declareWorkerProcessTopology(t, conn)
 
 	stale := ProcessMessage{SchemaVersion: 99, EventID: "evt-stale", VideoID: 1}
 	if err := runtime.Publish(context.Background(), spec.Event.Exchange, spec.Event.RoutingKey, stale); err != nil {
@@ -729,6 +775,7 @@ func TestDeadLetterIntegration(t *testing.T) {
 
 	delivery := consumeDelivery(t, conn, spec.Queue)
 	consumer := NewConsumer(video.NewRepository(db), runtime, t.TempDir())
+	consumer.spec = spec
 	if result := consumer.handleDelivery(context.Background(), delivery); result != mq.ResultDeadLetter {
 		t.Fatalf("未知版本应进入死信 got=%v", result)
 	}
@@ -754,9 +801,10 @@ func TestDeadLetterIntegration(t *testing.T) {
 func TestExhaustedRetryDeadLetterIntegration(t *testing.T) {
 	db := testutil.DB(t)
 	conn := newIntegrationConnection(t)
-	purgeQueues(t, conn)
 	runtime := newIntegrationRuntime(t)
-	spec := mq.VideoProcessSpec()
+	// 测试目标：使用随机专用拓扑承载重试耗尽投递
+	// 预期效果：用例只操作自身队列与死信队列，不消费共享业务队列
+	spec := declareWorkerProcessTopology(t, conn)
 
 	repo := video.NewRepository(db)
 	root := t.TempDir()
@@ -779,6 +827,7 @@ func TestExhaustedRetryDeadLetterIntegration(t *testing.T) {
 	}
 
 	consumer := NewConsumer(repo, runtime, root)
+	consumer.spec = spec
 	if result := consumer.handleDelivery(context.Background(), delivery); result != mq.ResultDeadLetter {
 		t.Fatalf("重试耗尽且处理失败应进入死信 got=%v", result)
 	}
@@ -804,9 +853,10 @@ func TestExhaustedRetryDeadLetterIntegration(t *testing.T) {
 func TestRetryQueueIntegration(t *testing.T) {
 	db := testutil.DB(t)
 	conn := newIntegrationConnection(t)
-	purgeQueues(t, conn)
 	runtime := newIntegrationRuntime(t)
-	spec := mq.VideoProcessSpec()
+	// 测试目标：使用随机专用拓扑承载重试回流
+	// 预期效果：用例的重试队列与主队列都带随机前缀，不影响共享业务拓扑
+	spec := declareWorkerProcessTopology(t, conn)
 
 	repo := video.NewRepository(db)
 	root := t.TempDir()
@@ -819,6 +869,7 @@ func TestRetryQueueIntegration(t *testing.T) {
 
 	msg := ProcessMessage{SchemaVersion: mq.SchemaVersion, EventID: "evt-retry-real", VideoID: row.ID, PlayURL: row.PlayURL, CoverURL: row.CoverURL}
 	consumer := NewConsumer(repo, runtime, root)
+	consumer.spec = spec
 
 	// 测试目标：经业务 runtime 发布主消息
 	// 预期效果：消息进入处理队列并可被消费端按暂态故障转入第一档重试队列
