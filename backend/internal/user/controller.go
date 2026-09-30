@@ -138,13 +138,31 @@ func (ctl *Controller) GetUser(c *gin.Context) {
 }
 
 // 处理用户列表读取请求
+// 无分页参数时保留历史全量读取契约；任一分页参数存在时启用 keyset 分页
 func (ctl *Controller) GetUserList(c *gin.Context) {
+	rawLimit, hasLimit := c.GetQuery("limit")
+	rawCursor, hasCursor := c.GetQuery("cursor")
+	if hasLimit || hasCursor {
+		limit, err := parseUserListLimit(rawLimit, hasLimit)
+		if err != nil {
+			handleUserError(c, err)
+			return
+		}
+		page, err := ctl.Srv.GetUserListPage(c.Request.Context(), rawCursor, limit)
+		if err != nil {
+			handleUserError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, userListResponse(page))
+		return
+	}
+
 	users, err := ctl.Srv.GetUserList(c.Request.Context())
 	if err != nil {
 		handleUserError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"users": users})
+	c.JSON(http.StatusOK, userListResponse(UserListPage{Users: users}))
 }
 
 // 处理用户名修改请求
@@ -311,6 +329,19 @@ func publicUser(user *User) FindByIDResponse {
 	return FindByIDResponse{ID: user.ID, Username: user.Username, AvatarURL: user.AvatarURL, Bio: user.Bio}
 }
 
+type userListHTTPResponse struct {
+	Users      []FindByIDResponse `json:"users"`
+	NextCursor string             `json:"next_cursor,omitempty"`
+}
+
+func userListResponse(page UserListPage) userListHTTPResponse {
+	users := make([]FindByIDResponse, 0, len(page.Users))
+	for _, account := range page.Users {
+		users = append(users, publicUser(account))
+	}
+	return userListHTTPResponse{Users: users, NextCursor: page.NextCursor}
+}
+
 func loginResponse(pair *authn.TokenPair, user *User) LoginResponse {
 	return LoginResponse{
 		AccessToken:  pair.AccessToken,
@@ -322,7 +353,7 @@ func loginResponse(pair *authn.TokenPair, user *User) LoginResponse {
 
 // userErrorRules 按从最具体到最通用排列，决定用户模块领域错误的公共类别与对外文案
 var userErrorRules = []apierror.Rule{
-	{Match: apierror.Is(ErrInvalidUserID, ErrNewUserNameRequired, ErrInvalidInput, ErrNothingToUpdate, ErrInvalidAvatar), Code: apierror.CodeInvalid, UseErrorText: true},
+	{Match: apierror.Is(ErrInvalidUserID, ErrInvalidUserListLimit, ErrInvalidUserCursor, ErrNewUserNameRequired, ErrInvalidInput, ErrNothingToUpdate, ErrInvalidAvatar), Code: apierror.CodeInvalid, UseErrorText: true},
 	{Match: apierror.Is(ErrAvatarTooLarge), Code: apierror.CodeTooLarge, UseErrorText: true},
 	{Match: apierror.Is(ErrUsernameTaken), Code: apierror.CodeConflict, UseErrorText: true},
 	{Match: apierror.Is(ErrWrongPassword), Code: apierror.CodeForbidden, UseErrorText: true},
@@ -338,4 +369,21 @@ func handleLoginError(c *gin.Context, err error) {
 
 func handleUserError(c *gin.Context, err error) {
 	apierror.Write(c, err, "user operation failed", userErrorRules...)
+}
+
+func parseUserListLimit(raw string, supplied bool) (int, error) {
+	if !supplied {
+		return 0, nil
+	}
+	if raw == "" {
+		return 0, ErrInvalidUserListLimit
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, ErrInvalidUserListLimit
+	}
+	if limit < 1 || limit > maxUserListLimit {
+		return 0, ErrInvalidUserListLimit
+	}
+	return limit, nil
 }

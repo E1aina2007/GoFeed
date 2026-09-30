@@ -35,6 +35,8 @@ var (
 	ErrWrongPassword           = errors.New("wrong password")
 	ErrInvalidCredentials      = errors.New("invalid username or password")
 	ErrInvalidUserID           = errors.New("invalid user id")
+	ErrInvalidUserListLimit    = errors.New("invalid user list limit")
+	ErrInvalidUserCursor       = errors.New("invalid user cursor")
 	ErrInvalidInput            = errors.New("invalid user input")
 	ErrVideoCounterUnavailable = errors.New("video counter unavailable")
 )
@@ -185,4 +187,38 @@ func (s *Service) DeleteUser(ctx context.Context, id uint) error {
 
 func (s *Service) GetUserList(ctx context.Context) ([]*User, error) {
 	return s.Repo.GetUserList(ctx)
+}
+
+// GetUserListPage 按用户 ID 正序读取一页活跃用户
+// 调用方仅在显式请求分页时使用它，避免改变旧的无参数全量读取契约
+func (s *Service) GetUserListPage(ctx context.Context, rawCursor string, limit int) (UserListPage, error) {
+	limit, err := normalizeUserListLimit(limit)
+	if err != nil {
+		return UserListPage{}, err
+	}
+
+	cursor, err := decodeUserCursor(rawCursor)
+	if err != nil {
+		return UserListPage{}, err
+	}
+	users, err := s.Repo.GetUserListPage(ctx, cursor, limit+1)
+	if err != nil {
+		return UserListPage{}, err
+	}
+
+	page := UserListPage{Users: users}
+	if len(users) <= limit {
+		return page, nil
+	}
+
+	page.Users = users[:limit]
+	page.NextCursor, err = encodeUserCursor(&UserCursor{
+		Version: userListCursorVersion,
+		Kind:    userListCursorKind,
+		ID:      page.Users[len(page.Users)-1].ID,
+	})
+	if err != nil {
+		return UserListPage{}, err
+	}
+	return page, nil
 }

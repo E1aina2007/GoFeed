@@ -38,6 +38,21 @@ type FindByIDResponse struct {
 	Bio       string `json:"bio,omitempty"`
 }
 
+// UserCursor 记录用户列表分页位置及固定的列表范围
+// 游标由服务端签发，客户端只可原样传回同一列表
+type UserCursor struct {
+	Version int    `json:"v"`
+	Kind    string `json:"k"`
+	ID      uint   `json:"i"`
+}
+
+// UserListPage 表示用户分页读取的内部结果
+// HTTP 层负责将用户实体转换成公开响应字段
+type UserListPage struct {
+	Users      []*User
+	NextCursor string
+}
+
 type FindByUsernameRequest struct {
 	Username string `json:"username"`
 }

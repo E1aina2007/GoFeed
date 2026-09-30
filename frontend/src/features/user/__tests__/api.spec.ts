@@ -34,6 +34,20 @@ describe('user api', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/user/1/profile', expect.any(Object))
   })
 
+  it('uses explicit cursor pagination for the user list while preserving legacy requests', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ users: [{ id: 1, username: 'alice' }] }))
+      .mockResolvedValueOnce(jsonResponse({ users: [{ id: 2, username: 'bob' }], next_cursor: 'next-users' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(listUsers()).resolves.toEqual({ users: [{ id: 1, username: 'alice' }] })
+    await expect(listUsers({ cursor: 'current-users', limit: 5 })).resolves.toMatchObject({ next_cursor: 'next-users' })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/user', expect.any(Object))
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/user?limit=5&cursor=current-users', expect.any(Object))
+    expect(() => listUsers({ limit: 51 })).toThrow(new ApiError(400, '分页大小无效'))
+  })
+
   it('updates the authenticated account and clears it after account deletion', async () => {
     const session = {
       access_token: 'access-token',

@@ -72,6 +72,41 @@ test('merges a paginated overlap without duplicate videos', async ({ page }) => 
   await expect(feed.locator('.short-video')).toHaveCount(2)
 })
 
+test('loads more public users with the versioned pagination contract', async ({ page }) => {
+  const requests: string[] = []
+  await page.route(
+    (url) => url.pathname === '/api/user',
+    async (route) => {
+      const url = new URL(route.request().url())
+      requests.push(url.search)
+      const body = url.searchParams.get('cursor') === 'users-page-2'
+        ? {
+            users: [
+              { id: 2, username: 'bob' },
+              { id: 3, username: 'cora', bio: '第二页用户' },
+            ],
+          }
+        : {
+            users: [
+              { id: 1, username: 'alice' },
+              { id: 2, username: 'bob' },
+            ],
+            next_cursor: 'users-page-2',
+          }
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
+    },
+  )
+  await page.goto('/users')
+
+  await expect(page.getByRole('heading', { name: '用户' })).toBeVisible()
+  await expect(page.locator('.user-item')).toHaveCount(2)
+  await page.getByRole('button', { name: '加载更多用户' }).click()
+
+  await expect(page.getByText('@cora')).toBeVisible()
+  await expect(page.locator('.user-item')).toHaveCount(3)
+  expect(requests).toEqual(['?limit=20', '?limit=20&cursor=users-page-2'])
+})
+
 test('redirects an anonymous like to sign in with the feed as return target', async ({ page }) => {
   await mockPublicFeed(page)
   await page.goto('/')

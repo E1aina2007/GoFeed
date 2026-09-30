@@ -126,6 +126,28 @@ func (r *Repository) GetUserList(ctx context.Context) ([]*User, error) {
 	return users, nil
 }
 
+// GetUserListPage 使用主键 keyset 查询活跃用户
+// GORM 的默认软删除作用域会自动排除已注销账号
+func (r *Repository) GetUserListPage(ctx context.Context, cursor *UserCursor, limit int) ([]*User, error) {
+	if limit <= 0 {
+		return []*User{}, nil
+	}
+
+	query := r.db.WithContext(ctx).
+		Select("id", "username", "avatar_url", "bio").
+		Order("id ASC").
+		Limit(limit)
+	if cursor != nil {
+		query = query.Where("id > ?", cursor.ID)
+	}
+
+	var users []*User
+	if err := query.Find(&users).Error; err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
 // 软删除用户
 func (r *Repository) DeleteUser(ctx context.Context, id uint) error {
 	result := r.db.WithContext(ctx).Delete(&User{}, id)

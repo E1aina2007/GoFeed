@@ -16,6 +16,12 @@ export type UserProfile = {
 
 export type UserListResponse = {
   users: PublicUser[]
+  next_cursor?: string
+}
+
+export type UserListOptions = {
+  cursor?: string
+  limit?: number
 }
 
 function validateID(id: number) {
@@ -24,8 +30,25 @@ function validateID(id: number) {
   }
 }
 
-export function listUsers() {
-  return request<UserListResponse>('/api/user')
+function userListQuery({ cursor, limit = 20 }: UserListOptions) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+    throw new ApiError(400, '分页大小无效')
+  }
+
+  const query = new URLSearchParams({ limit: String(limit) })
+  if (cursor) {
+    query.set('cursor', cursor)
+  }
+  return query.toString()
+}
+
+// 不传 options 时保留旧客户端的全量读取请求
+// 用户列表页显式传入 limit，以使用后端的兼容分页契约
+export function listUsers(options?: UserListOptions) {
+  if (!options) {
+    return request<UserListResponse>('/api/user')
+  }
+  return request<UserListResponse>(`/api/user?${userListQuery(options)}`)
 }
 
 export function getUser(id: number) {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { listUsers, type PublicUser } from '@/features/user/api'
@@ -7,18 +7,63 @@ import { apiUserMessage } from '@/lib/api'
 
 const users = ref<PublicUser[]>([])
 const isLoading = ref(true)
+const isLoadingMore = ref(false)
 const errorMessage = ref('')
+const loadMoreError = ref('')
+const nextCursor = ref<string>()
+let listRequestID = 0
 
-async function load() {
-  isLoading.value = true
-  errorMessage.value = ''
-  try {
-    users.value = (await listUsers()).users
-  } catch (error) {
-    errorMessage.value = apiUserMessage(error, '用户列表加载失败，请稍后重试')
-  } finally {
-    isLoading.value = false
+const hasMore = computed(() => Boolean(nextCursor.value))
+
+function mergeUsers(current: PublicUser[], incoming: PublicUser[]) {
+  const seen = new Set(current.map((user) => user.id))
+  return [...current, ...incoming.filter((user) => !seen.has(user.id))]
+}
+
+async function load(cursor?: string) {
+  const requestID = ++listRequestID
+  if (cursor) {
+    isLoadingMore.value = true
+    loadMoreError.value = ''
+  } else {
+    isLoading.value = true
+    errorMessage.value = ''
+    loadMoreError.value = ''
   }
+
+  try {
+    const response = await listUsers({ cursor })
+    if (requestID !== listRequestID) {
+      return
+    }
+    users.value = cursor ? mergeUsers(users.value, response.users) : response.users
+    nextCursor.value = response.next_cursor
+  } catch (error) {
+    if (requestID === listRequestID) {
+      const message = apiUserMessage(error, '用户列表加载失败，请稍后重试')
+      if (cursor) {
+        loadMoreError.value = message
+      } else {
+        errorMessage.value = message
+      }
+    }
+  } finally {
+    if (requestID === listRequestID) {
+      isLoading.value = false
+      isLoadingMore.value = false
+    }
+  }
+}
+
+function loadMore() {
+  if (!nextCursor.value || isLoadingMore.value) {
+    return
+  }
+  void load(nextCursor.value)
+}
+
+function retry() {
+  void load()
 }
 
 onMounted(load)
@@ -35,7 +80,7 @@ onMounted(load)
     <section v-if="isLoading" class="state-message" role="status">正在加载用户</section>
     <section v-else-if="errorMessage" class="state-message" role="alert">
       <p>{{ errorMessage }}</p>
-      <button class="secondary-action" type="button" @click="load">重试</button>
+      <button class="secondary-action" type="button" @click="retry">重试</button>
     </section>
     <section v-else-if="users.length" class="user-list">
       <RouterLink v-for="user in users" :key="user.id" class="user-item" :to="{ name: 'user-profile', params: { id: user.id } }">
@@ -48,6 +93,18 @@ onMounted(load)
           <small>{{ user.bio || '暂无简介' }}</small>
         </span>
       </RouterLink>
+      <p v-if="loadMoreError" class="inline-error" role="alert">
+        {{ loadMoreError }}
+      </p>
+      <button
+        v-if="hasMore"
+        class="secondary-action more-button"
+        type="button"
+        :disabled="isLoadingMore"
+        @click="loadMore"
+      >
+        {{ isLoadingMore ? '正在加载' : loadMoreError ? '重试加载更多' : '加载更多用户' }}
+      </button>
     </section>
     <section v-else class="state-message">暂时没有用户</section>
   </main>
@@ -169,6 +226,22 @@ onMounted(load)
 .secondary-action:hover {
   border-color: var(--content-accent-strong);
   background: var(--content-surface-raised);
+}
+
+.more-button {
+  display: block;
+  margin: 18px auto 0;
+}
+
+.secondary-action:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.inline-error {
+  margin: 18px 0 0;
+  color: var(--content-danger);
+  text-align: center;
 }
 
 @media (max-width: 640px) {
