@@ -58,19 +58,7 @@ func (r *Repository) ListTimelinePage(ctx context.Context, cursor *domainfeed.Ti
 		page.Items = append(page.Items, domainfeed.FeedPageItem{
 			VideoID: row.ID, AuthorID: row.AuthorID, PublishedAt: *row.PublishedAt,
 		})
-		page.Cards[row.ID] = domainfeed.FeedCard{
-			VideoID:           row.ID,
-			AuthorID:          row.AuthorID,
-			Title:             row.Title,
-			Description:       row.Description,
-			PlayURL:           row.PlayURL,
-			PlayFileName:      row.PlayFileName,
-			PlayOriginalName:  row.PlayOriginalName,
-			CoverURL:          row.CoverURL,
-			CoverFileName:     row.CoverFileName,
-			CoverOriginalName: row.CoverOriginalName,
-			PublishedAt:       *row.PublishedAt,
-		}
+		page.Cards[row.ID] = feedCardFromVideo(row)
 	}
 	return page, nil
 }

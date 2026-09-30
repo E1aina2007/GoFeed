@@ -9,4 +9,5 @@ var (
 	ErrInvalidCursor     = errors.New("invalid feed cursor")
 	ErrUnavailable       = errors.New("feed temporarily unavailable")
 	ErrInvalidReadResult = errors.New("invalid feed read result")
+	ErrInvalidCardBatch  = errors.New("invalid feed card batch")
 )

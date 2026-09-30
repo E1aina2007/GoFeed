@@ -4,6 +4,9 @@ import "time"
 
 const MaxLimit = 50
 
+// MaxCardBatchSize 包含页大小上限与一条下一页探测记录
+const MaxCardBatchSize = MaxLimit + 1
+
 type Scene string
 
 const (

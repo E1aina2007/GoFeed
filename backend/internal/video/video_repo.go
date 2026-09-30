@@ -17,6 +17,11 @@ type Repository struct {
 
 var ErrInvalidDraftPurgeLease = errors.New("invalid draft purge lease")
 
+// MaxPublishedVideoBatchSize 包含列表上限与一条下一页探测记录
+const MaxPublishedVideoBatchSize = MaxListLimit + 1
+
+var ErrInvalidPublishedVideoBatch = errors.New("invalid published video batch")
+
 func NewRepository(db *gorm.DB) *Repository {
 	return &Repository{db: db}
 }
@@ -183,6 +188,39 @@ func (r *Repository) GetPublishedByID(ctx context.Context, id uint) (*Video, err
 		return nil, err
 	}
 	return &video, nil
+}
+
+// GetPublishedByIDs 按去重后的有效 ID 一次批量读取当前公开视频
+// 未找到、未发布、已软删除或媒体不完整的视频不返回，结果顺序不保证与输入一致
+func (r *Repository) GetPublishedByIDs(ctx context.Context, ids []uint) ([]Video, error) {
+	capacity := min(len(ids), MaxPublishedVideoBatchSize)
+	queried := make([]uint, 0, capacity)
+	seen := make(map[uint]struct{}, capacity)
+	for _, id := range ids {
+		if id == 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		if len(queried) == MaxPublishedVideoBatchSize {
+			return nil, ErrInvalidPublishedVideoBatch
+		}
+		seen[id] = struct{}{}
+		queried = append(queried, id)
+	}
+	videos := make([]Video, 0, len(queried))
+	if len(queried) == 0 {
+		return videos, nil
+	}
+	if err := PublicVideoQuery(r.db.WithContext(ctx)).
+		Select("id", "author_id", "title", "description", "status", "published_at", "deleted_at",
+			"play_url", "play_file_name", "play_original_name", "cover_url", "cover_file_name", "cover_original_name").
+		Where("id IN ?", queried).
+		Find(&videos).Error; err != nil {
+		return nil, err
+	}
+	return filterPublicVideos(videos), nil
 }
 
 // 按发布时间查询已发布视频

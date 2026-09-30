@@ -233,9 +233,10 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 ## 当前工作与后续
 
 - F0 后端已分模块提交：领域与应用逻辑 `8394035`、既有仓储适配 `224d8ff`、HTTP 入口与 API 契约 `7541269`。新增 `GET /api/feed?scene=timeline`，按 GCFeed 的 `domain/feed`、`application/feed`、`infra/persistence/feed`、`interfaces/http/feed` 目录分层。Feed 用例已接管分页和批量组装，外层适配器复用原仓储及公开规则，HTTP DTO 单独转换；不再调用旧视频 Service。省略场景默认 Timeline，新旧游标不可混用，未启用场景返回 `501`。契约见 [`API.md`](./API.md)。
+- F1-A 后端已完成批量公开卡片读取：增加 `video.Repository.GetPublishedByIDs` 与独立 Feed `CardReader`，最多读取 51 个去重后的有效视频 ID，沿用公开规则并共享字段转换；当前请求用例尚未调用该能力。编译通过，未进行测试或真实 MySQL 验收；具体边界见 [F1 小步模块与 F1-A 读取契约](./FEED_CORE_EVOLUTION_PLAN.md#f1-小步模块与-f1-a-读取契约)。
 - 本轮只完成后端与文档，前端代码和 `*_test.go` 均未改动，未运行测试或联调。实现状态不代表真实 MySQL 或联合验收通过；暂缓项已在 [F0 完成项与本轮暂缓项](./FEED_CORE_EVOLUTION_PLAN.md#f0-完成项与本轮暂缓项) 列明，补齐后再按实际结果更新。
 - **待补：前端改动**（Feed 请求切换新入口及对应交互接入）、**后端与前端单元测试**（新契约、分页、组装及失败处理）、真实 MySQL/页面联合验收；前端当前仍请求 `/api/video`。
 - 会话校验缓存继续延后，只有可量化收益时才立项。共享存储、时区一致性、`observe.pprof` 与 `gorm.io/gen` 保持独立设计。
-- 后续先 review F0 后端，再单独安排所需验收及前端接入；下一项后端能力为 F1 Timeline cache-aside。F1–F6 仍为规划，Feed Redis 缓存、Following、Hot、推荐和 Reconciler 尚不存在。
+- 后续先 review F0 与 F1-A 后端，再单独安排所需验收及前端接入；下一项后端模块为 F1-B 页缓存读写适配，随后 F1-C 接入新 Feed 用例。Feed Redis 缓存、Following、Hot、推荐和 Reconciler 尚不存在，F2–F6 仍为规划。
 
 每个后续模块均按“设计契约 → 实现 → 验证 → 独立提交 → review”推进；开始前检查工作树、当前路由、迁移和 [`AGENTS.md`](./AGENTS.md)。
