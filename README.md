@@ -1,6 +1,8 @@
 # GoFeed —— 一个视频feed流系统
 
-开发流程、当前路线和模块验收规则见 [`DEVELOPMENT.md`](./DEVELOPMENT.md)。
+接口的当前路径、请求和响应以 [`API.md`](./API.md) 及 `backend/internal/router/router.go` 为准；开发、迁移、配置和提交约束见 [`AGENTS.md`](./AGENTS.md)。
+
+Feed 的下一阶段设计（F0–F6：Timeline 兼容边界、缓存、派生事件、Following、Hot、规则推荐和重建）见 [`FEED_CORE_EVOLUTION_PLAN.md`](./FEED_CORE_EVOLUTION_PLAN.md)。该文档是规划，不代表 `/api/feed`、`internal/feed` 或 Feed 缓存已经实现；当前公共入口仍是 `GET /api/video`。
 
 ## 快速开始（Docker）
 
@@ -100,6 +102,16 @@ pnpm dev
 
 前端开发服务器会代理 `/api` 和 `/static` 到本机后端 `http://localhost:8080`。日常修改 Go 或 Vue 源码不涉及 Docker 镜像；仅新增数据库迁移时运行一次 `migrate ... up`。
 
+### Windows 一键启动四个开发进程
+
+基础设施已启动、`backend/.env` 已配置且前端依赖已安装后，从仓库根目录执行：
+
+```powershell
+.\scripts\dev.ps1
+```
+
+脚本会分别打开 API、前端、worker 和 sweeper 四个 PowerShell 终端，日志保留在各自窗口中。它不会自动安装依赖、执行迁移或启动 MySQL、Redis、RabbitMQ；这些基础设施仍按上文独立管理。每个窗口可用 `Ctrl+C` 停止对应任务。
+
 ## 前端开发（pnpm）
 
 前置：npm，并安装 pnpm：
@@ -136,7 +148,7 @@ pnpm preview        # 本地预览构建产物
 
 ## 配置
 
-配置加载顺序：先读取 `CONFIG_PATH` 指定的 YAML（默认 `configs/config.dev.yaml`），再用环境变量覆盖，环境变量优先级最高。数据库、Redis、RabbitMQ 的密码、JWT 密钥和运行模式只从环境变量读取，YAML 中即使存在同名字段也会被忽略。`redis` 和 `rabbitmq` 配置已由加载器读取；worker 通过可重连 runtime 建立 RabbitMQ 连接并运行 relay/consumer，API 与 sweeper 不建立 MQ 连接，当前仍无 Redis 客户端。`observe.pprof` 仍是后续功能预留，当前加载器不读取它，现有 `/ready` 只依赖 MySQL。
+配置加载顺序：先读取 `CONFIG_PATH` 指定的 YAML（默认 `configs/config.dev.yaml`），再用环境变量覆盖，环境变量优先级最高。数据库、Redis、RabbitMQ 的密码、JWT 密钥和运行模式只从环境变量读取，YAML 中即使存在同名字段也会被忽略。API 已创建可恢复 cache Runtime 并将其接入注册/登录限流；Redis 初始连接失败只记录脱敏事件，API 仍会启动，后续请求由 Runtime 按冷却和单探针机制恢复。worker 通过可重连 runtime 建立 RabbitMQ 连接并运行 relay/consumer，API 与 sweeper 不建立 MQ 连接。`observe.pprof` 仍是后续功能预留，当前加载器不读取它，现有 `/ready` 只依赖 MySQL。
 
 当前生效的配置项：
 
@@ -154,11 +166,12 @@ pnpm preview        # 本地预览构建产物
 | 注销保留天数 | `RETENTION_USER_DELETED_DAYS` | 默认 `7`；注销账号软删除后经过该天数由 sweeper 硬删除 |
 | 视频删除保留天数 | `RETENTION_VIDEO_DELETED_DAYS` | 默认 `7`；视频软删除后经过该天数由 sweeper 删除视频/封面文件并硬删除记录 |
 | 草稿/拒绝视频保留时长 | `RETENTION_VIDEO_DRAFT_HOURS` | 默认 `24`；草稿从创建、rejected 视频从 `rejected_at` 起计算，届满后进入不可逆清扫 |
-| 清扫间隔 | `SWEEPER_INTERVAL_MINUTES` | 默认 `60`；sweeper 执行用户、已发布视频以及草稿/拒绝视频清扫的间隔分钟数 |
+| 媒体孤儿文件宽限时长 | `RETENTION_MEDIA_ORPHAN_HOURS` | 默认 `24`；仅回收本地受控目录中超过该时长、且不再被任一用户或视频记录引用的对象 |
+| 清扫间隔 | `SWEEPER_INTERVAL_MINUTES` | 默认 `60`；sweeper 执行用户、已发布视频、草稿/拒绝视频和媒体孤儿清扫的间隔分钟数 |
 | 草稿清扫租约 | `SWEEPER_DRAFT_PURGE_LEASE_MINUTES` | 默认 `15`；单条草稿或拒绝视频的 token 围栏租约，过期后可由其他 sweeper 接管 |
 | Redis 主机 | `REDIS_HOST` | 本地默认 `localhost`；Docker 容器由 Compose 覆盖为 `redis` |
 | Redis 端口 | `REDIS_PORT` | `6379` |
-| Redis DB | `REDIS_DB` | `0`；仅供后续 Redis 客户端选择逻辑库 |
+| Redis DB | `REDIS_DB` | `0`；供注册/登录限流 Runtime 选择逻辑库 |
 | Redis 密码 | `REDIS_PASSWORD` | 仅从环境变量读取；Compose Redis 将其传给 `requirepass` |
 | RabbitMQ 主机 | `RABBITMQ_HOST` | 本地默认 `localhost`；Docker 容器由 Compose 覆盖为 `rabbitmq` |
 | RabbitMQ 端口 | `RABBITMQ_PORT` | `5672` |
@@ -167,7 +180,7 @@ pnpm preview        # 本地预览构建产物
 
 ### 本地开发配置
 
-本机 MySQL 的完整初始化、迁移和直接启动流程见上方「本地开发（不使用 Compose）」。`backend/.env` 存放数据库和中间件密码及固定 `JWT_SECRET`，`backend/configs/config.dev.yaml` 存放非敏感配置；从 `backend` 目录运行的 API 和 worker 都会读取这些配置。仅启动 API 仍只要求 MySQL；要验证异步发布闭环，需在填好 `backend/.env` 后启动 RabbitMQ 并运行 worker（可执行 `docker compose up -d rabbitmq`，再直接运行 worker）。Redis 当前没有 Go 客户端，非限流开发不需要启动它。
+本机 MySQL 的完整初始化、迁移和直接启动流程见上方「本地开发（不使用 Compose）」。`backend/.env` 存放数据库和中间件密码及固定 `JWT_SECRET`，`backend/configs/config.dev.yaml` 存放非敏感配置；从 `backend` 目录运行的 API 和 worker 都会读取这些配置。仅启动 API 仍只要求 MySQL；Redis 已接入注册/登录限流，但不可用时 API 启动和这两个业务接口均按 fail-open 继续。要验证异步发布闭环，需在填好 `backend/.env` 后启动 RabbitMQ 并运行 worker（可执行 `docker compose up -d rabbitmq`，再直接运行 worker）。
 
 ### Docker 部署
 
@@ -190,6 +203,7 @@ MYSQL_DATABASE=feedsystem
 RETENTION_USER_DELETED_DAYS=7
 RETENTION_VIDEO_DELETED_DAYS=7
 RETENTION_VIDEO_DRAFT_HOURS=24
+RETENTION_MEDIA_ORPHAN_HOURS=24
 SWEEPER_INTERVAL_MINUTES=60
 SWEEPER_DRAFT_PURGE_LEASE_MINUTES=15
 REDIS_HOST=localhost
@@ -206,20 +220,19 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 ### 观测与健康检查
 
-`GET /health` 只检查 API 进程存活，`GET /ready` 还会在 2 秒内探测 MySQL，数据库不可用时返回 `503`。Compose 使用 `/ready` 作为 backend 健康检查，frontend 仅在 backend 健康后启动；Redis/RabbitMQ 各自有容器健康检查，但尚未进入 API 就绪条件。每个响应会返回 `X-Request-ID`；客户端可复用该请求头值关联服务端的 `http_request`、`http_request_error` 和 `readiness_check` 日志。sweeper 每项清扫和每轮汇总都会记录事件、结果、耗时、删除数量及失败数量。当前未启用或暴露 pprof；后续实现会参考 `feedsystem` 的隔离模式，以独立 `ServeMux`、仅回环监听、显式开关和独立关闭生命周期提供诊断端点，而不将其注册到 Gin 路由。
+`GET /health` 只检查 API 进程存活，`GET /ready` 还会在 2 秒内探测 MySQL，数据库不可用时返回 `503`。Compose 使用 `/ready` 作为 backend 健康检查，frontend 仅在 backend 健康后启动；Redis/RabbitMQ 各自有容器健康检查，但 Redis 的限流 Runtime 不进入 API 就绪条件。每个响应会返回 `X-Request-ID`；客户端可复用该请求头值关联服务端的 `http_request`、`http_request_error` 和 `readiness_check` 日志。sweeper 每项清扫和每轮汇总都会记录事件、结果、耗时、删除数量及失败数量。当前未启用或暴露 pprof；后续实现会参考 `feedsystem` 的隔离模式，以独立 `ServeMux`、仅回环监听、显式开关和独立关闭生命周期提供诊断端点，而不将其注册到 Gin 路由。
 
-## 项目进度
+## 已完成能力概述
 
-当前主线：发布体验与运维。后端已完成草稿聚合上传、发布、公开列表与详情、我的视频、作者删除、头像上传，并接入会话鉴权；用户主页会统计满足公开数据不变量的已发布视频数量。公开视频查询统一排除软删除、缺少发布时间或任一视频/封面媒体字段的记录，服务层也会对异常实体 fail-closed；视频列表与 social 评论、粉丝、关注列表均使用绑定列表类型与资源范围的 v1 游标，跨范围或旧格式值统一返回 `400`（social 实现与范围回归已由 `22174a5`、`62313b1` 提交）。存储侧将清洗后的物理名与用户指定名分离，并为每次保存附加不可复用对象键；DB 只存相对路径。视频异步发布已提供 `202` 受理响应和作者状态查询；MQ 可靠性核心由 `7f97382`、`ef94396` 提交，B2 运维观测由 `fb5de22`、`6157d66` 提交，MySQL outbox 使用 `pending → publishing → dispatched` 租约状态、attempt 围栏和失败退避，RabbitMQ runtime 支持意外断线重连，consumer 使用 1s/5s/30s 三档延迟重试后进入死信。草稿恢复后端已提供主动丢弃，`rejected` 视频也可主动或按 `rejected_at` 到期转入 `purging`，由 sweeper 用 token 租约逐媒体持久化删除进度，最后硬删除；任何失败都不会把 `purging` 记录恢复为可写状态。账号和已发布视频删除仍采用软删除 + 7 天宽限期。
+- 已具备匿名短视频流、账户与会话、视频草稿上传/发布、公开详情、个人主页、我的视频、头像和互动（点赞、评论、关注）。当前 API 契约见 [`API.md`](./API.md)。
+- 已具备可靠异步发布：MySQL 事务写入 Outbox，Worker 经 RabbitMQ 完成媒体处理；relay 以确认、租约和退避恢复，consumer 使用 CAS 幂等及 `1s/5s/30s` 重试/DLQ。
+- 已具备媒体与数据清扫、公开视频完整性过滤、游标分页、请求观测与 MySQL 就绪检查；Redis 仅用于登录/注册限流，故障时 fail-open，`/ready` 仍只依赖 MySQL。
+- 前端已提供 Feed、登录/注册、发布、详情、用户/个人主页、我的视频和账户设置；网络暂态失败可恢复，登录/注册限流会展示服务端 `Retry-After`。
 
-后端 CRUD 方法命名已统一为 `Get`、`Get...List`、`Create`、`Update`，涉及硬删除的操作使用 `Remove`（提交 `240f3fa`）。互动后端已完成点赞、评论、关注的模型、鉴权接口和软删除语义（提交 `589ec78`，评论删除命名修正提交 `6425fe3`）；`1298b2f` 只将服务依赖接口命名为 `Repo` 并清理注释，`22174a5`、`62313b1` 完成 social v1 游标及其范围回归。当前功能基线为 `fb5de22`，B2 专项回归补充为 `6157d66`。互动前端已接入 Feed、详情和作者主页（提交 `bfe518b`）。接口明细以根目录 [`API.md`](./API.md) 和后端注册路由为准。
+## 当前工作与后续
 
-前端已完成基础页面和请求层：短视频 Feed、登录、注册、发布、视频详情、用户列表、用户主页、我的视频、账户设置和头像上传；全局操作提示已覆盖登录注册、发布、视频删除和账户资料操作。Feed 已完成请求取消、分页并发控制、ID 去重、页面失焦暂停播放及桌面/移动端回归；对网络错误和临时 `408`/`429`/`5xx` 还会进行最多两次退避重试，页面离开时会取消等待中的恢复请求，重试耗尽后沿用现有错误与手动重试界面。异步发布状态适配已在 `5ada6f9` 完成，发布页会轮询 `processing` 并展示 `published`/`rejected`；基础 Feed 全链路回归已补齐。接口明细以根目录 [`API.md`](./API.md) 和后端注册路由为准。
+- 用户列表兼容分页和媒体孤儿文件回收已在工作区完成，仍待 review/提交；旧的无参数用户列表读取保持兼容。
+- 会话校验缓存继续延后，只有可量化收益时才立项。共享存储、时区一致性、`observe.pprof` 与 `gorm.io/gen` 保持独立设计。
+- 下一条新能力是 Feed F0：先冻结兼容 Timeline 契约并建立最小 `internal/feed` 边界。完整 F0–F6 路线见 [`FEED_CORE_EVOLUTION_PLAN.md`](./FEED_CORE_EVOLUTION_PLAN.md)；在 F0 实现前，`/api/feed`、Feed Redis 缓存、Following、Hot、推荐和 Reconciler 均不存在。
 
-## 开发流程与下一步路线
-
-完整的模块开发流程、当前快照、事实来源、下一步路线、验收清单和已知风险统一维护在 [`DEVELOPMENT.md`](./DEVELOPMENT.md)。后续分析先读该文档，再沿任务对应的路由、迁移、源码和测试增量核对，避免重复扫描整个项目。
-
-模块按“设计契约 → 实现 → 自动化验证 → 页面验收 → 独立提交 → review 暂停”推进；提交范围和验证细则见上述文档。
-
-当前 **Feed 数据不变量与查询边界** 已完成并提交 `c79100c`，**模型绑定的公开视频查询入口** 已完成并提交 `0842820`，**视频游标契约** 已完成并提交 `61fb00e`，**作者批量补全** 已完成并提交 `4e253f9`，**互动统计故障语义** 已完成并提交 `fb867c8`，**可观测性与查询预算** 已完成并提交 `69a08c1`，**并发与异常测试收尾** 已完成并提交 `d185645`；**social 评论/关注/粉丝 v1 游标** 已由 `22174a5`、`62313b1` 提交。阶段二的状态机、relay/worker、异步状态页面与 rejected 生命周期均已提交；**MQ 可靠性增强** 已由 `7f97382` 提交，真实 RabbitMQ 重连回归补充为 `ef94396`。2026-09-12 已在临时真实 MySQL/RabbitMQ 上通过 `000009` 结构对齐、MQ/worker 定向集成、后端 `go vet ./...`、`go test -count=1 ./...` 和 `go test -race -count=1 ./...`；剩余边界是目标业务库升级、5s/30s 实际计时、整进程故障窗口和前端门禁，不能据此宣称生产运行时已全部验收。**API 错误处理复用** 已于 2026-09-09 实现并保持既有状态码与响应形状。下一步与完整验收边界见 [`DEVELOPMENT.md`](./DEVELOPMENT.md)。
+每个后续模块均按“设计契约 → 实现 → 验证 → 独立提交 → review”推进；开始前检查工作树、当前路由、迁移和 [`AGENTS.md`](./AGENTS.md)。
