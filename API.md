@@ -37,6 +37,7 @@
 | PUT | `/api/user/auth/:id/follow` | 是 | 关注指定用户 |
 | DELETE | `/api/user/auth/:id/follow` | 是 | 取消关注指定用户 |
 | DELETE | `/api/user/auth` | 是 | 注销当前账号 |
+| GET | `/api/feed` | 否 | 查询 Feed（当前仅启用 Timeline） |
 | GET | `/api/video` | 否 | 查询公开视频流 |
 | GET | `/api/video/:id` | 否 | 查询公开视频详情 |
 | GET | `/api/video/:id/comments` | 否 | 查询公开视频评论 |
@@ -535,6 +536,60 @@ Redis 不可用时限流会 fail-open，注册或登录继续按原有业务契�
 账号会被软删除，并撤销该账号的全部会话。软删除后公开用户接口和登录接口均不可再访问该账号；后台清扫任务会在保留期结束后彻底清除记录。
 
 常见失败：`401` 未认证或令牌已失效。
+
+## Feed 接口
+
+### 查询 Feed
+
+`GET /api/feed`
+
+F0 仅启用匿名 `timeline`，按 `(published_at DESC, id DESC)` 排序。Feed 应用层负责分页与批量组装，基础设施适配器复用现有 MySQL 仓储、作者读取和互动聚合。只返回已发布、未软删除且具备完整媒体字段及发布时间的视频；HTTP DTO 保持现有展示字段。携带 `Authorization` 不改变 Timeline 结果，不返回用户专属点赞或关注状态。
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `scene` | string | 否 | 省略或空值时为 `timeline`；`following`、`hot`、`recommend` 已规划但尚未启用 |
+| `limit` | int | 否 | 范围 1-50，省略时默认 20；显式空值或 0 均无效 |
+| `cursor` | string | 否 | 当前场景上一次响应的 `next_cursor`；省略或空值表示第一页 |
+
+只接受上述三个参数，每个参数最多出现一次。未知参数（包括 `author_id`）、重复参数或无法解析的查询字符串返回 `400`；按作者读取继续使用 `/api/video?author_id=...`。
+
+成功返回 `200 OK`，响应字段与 `VideoListResponse` 相同：
+
+```json
+{
+  "items": []
+}
+```
+
+示例展示空列表；非空列表的每项采用 `VideoItem`，存在后续页面时另返回字符串字段 `next_cursor`，没有后续页面时省略它。客户端应直接复用展示字段并原样回传游标。
+
+Feed 游标版本为 `1`，独立绑定 `timeline` 场景、排序版本 `1`（发布时间与 ID 倒序）和分页位置。不能与 `/api/video` 的 `public`、`author`、`mine` 游标互换；结构、版本、场景、排序版本或位置不合法、含未知字段、编码不正确或长度超过 1024 字符时返回 `400`。该接口为匿名全局读取，游标不绑定用户；后续个性化场景需另行定义用户范围。
+
+游标由以下 JSON 载荷经过 Base64 URL 编码生成；字段说明用于后端维护，客户端仍应原样回传游标：
+
+| JSON 字段 | 含义 |
+|---|---|
+| `version` | 游标载荷结构版本，当前为 `1` |
+| `scene` | 游标所属 Feed 场景，当前为 `timeline` |
+| `sort_version` | 排序规则版本，当前为 `1`，对应 `(published_at DESC, id DESC)` |
+| `published_at` | 上一页最后一条视频的发布时间 |
+| `video_id` | 上一页最后一条视频的 ID，与发布时间共同确定下一页读取位置 |
+
+新 Feed 游标统一使用上述完整字段名，不接受此前开发过程中的单字母字段名；既有 `/api/video` 游标格式不变。
+
+| 状态码 | 条件 | 错误响应 |
+| --- | --- | --- |
+| `400` | 未知场景 | `{"error":"invalid feed scene"}` |
+| `400` | 数量不合法 | `{"error":"invalid limit"}` |
+| `400` | 游标不合法 | `{"error":"invalid feed cursor"}` |
+| `400` | 查询参数结构不合法 | `{"error":"invalid feed query"}` |
+| `501` | 合法参数请求尚未启用的 `following`、`hot` 或 `recommend` | `{"error":"feed scene is not enabled"}`，并设置 `Cache-Control: no-store` |
+| `503` | 视频、作者或互动统计读取不可用 | `{"error":"feed temporarily unavailable"}` |
+| `500` | 未预期的内部错误 | `{"error":"feed operation failed"}` |
+
+处理顺序为查询字符串和数量校验、场景选择、Timeline 游标校验及读取。未启用场景返回 `501`，不会读取数据库或静默返回 Timeline。内部读取错误不回显给客户端。
+
+当前前端仍使用 `/api/video`，切换新入口及相应单元测试列为待办。本轮未编写或运行测试、未联调，接口描述来自源码。F0 不新增数据库迁移、Feed Redis 缓存或 Feed MQ 事件，旧接口参数、响应和游标保持兼容。
 
 ## 视频接口
 

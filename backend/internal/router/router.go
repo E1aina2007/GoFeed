@@ -3,7 +3,10 @@ package router
 import (
 	"log"
 
+	applicationfeed "gofeed/internal/application/feed"
 	"gofeed/internal/auth"
+	infrafeed "gofeed/internal/infra/persistence/feed"
+	interfaceshttpfeed "gofeed/internal/interfaces/http/feed"
 	"gofeed/internal/middleware/jwt"
 	"gofeed/internal/middleware/ratelimit"
 	"gofeed/internal/observability"
@@ -99,10 +102,12 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	}
 
 	// 视频路由的公开读取和认证写入操作使用不同分组
-	videoCtl := video.NewController(
-		video.NewService(videoRepo, video.NewUserAuthorReader(userRepo), socialRepo),
-		mediaStorage,
-	)
+	authorReader := video.NewUserAuthorReader(userRepo)
+	videoService := video.NewService(videoRepo, authorReader, socialRepo)
+	videoCtl := video.NewController(videoService, mediaStorage)
+	feedRepo := infrafeed.New(videoRepo, authorReader, socialRepo)
+	feedHandler := interfaceshttpfeed.New(applicationfeed.New(feedRepo))
+	api.GET("/feed", feedHandler.GetFeed)
 	videos := api.Group("/video")
 	videos.GET("", videoCtl.GetVideoList)
 	videos.GET("/:id", videoCtl.GetVideo)
