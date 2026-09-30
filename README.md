@@ -2,7 +2,7 @@
 
 接口的当前路径、请求和响应以 [`API.md`](./API.md) 及 `backend/internal/router/router.go` 为准；开发、迁移、配置和提交约束见 [`AGENTS.md`](./AGENTS.md)。
 
-Feed 的下一阶段设计（F0–F6：Timeline 兼容边界、缓存、派生事件、Following、Hot、规则推荐和重建）见 [`FEED_CORE_EVOLUTION_PLAN.md`](./FEED_CORE_EVOLUTION_PLAN.md)。该文档是规划，不代表 `/api/feed`、`internal/feed` 或 Feed 缓存已经实现；当前公共入口仍是 `GET /api/video`。
+Feed 的分阶段设计与进度（F0–F6：Timeline 兼容边界、缓存、派生事件、Following、Hot、规则推荐和重建）见 [`FEED_CORE_EVOLUTION_PLAN.md`](./FEED_CORE_EVOLUTION_PLAN.md)。F0 后端已分模块提交 `GET /api/feed` 的匿名 Timeline，尚未完成运行验收；旧的 `GET /api/video` 保持兼容，当前前端仍使用旧入口。Feed 缓存和其他场景尚未实现。
 
 ## 快速开始（Docker）
 
@@ -227,12 +227,15 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 - 已具备匿名短视频流、账户与会话、视频草稿上传/发布、公开详情、个人主页、我的视频、头像和互动（点赞、评论、关注）。当前 API 契约见 [`API.md`](./API.md)。
 - 已具备可靠异步发布：MySQL 事务写入 Outbox，Worker 经 RabbitMQ 完成媒体处理；relay 以确认、租约和退避恢复，consumer 使用 CAS 幂等及 `1s/5s/30s` 重试/DLQ。
 - 已具备媒体与数据清扫、公开视频完整性过滤、游标分页、请求观测与 MySQL 就绪检查；Redis 仅用于登录/注册限流，故障时 fail-open，`/ready` 仍只依赖 MySQL。
+- 用户列表兼容分页（后端及前端）已提交为 `455849e`，旧的无参数读取保持兼容；过期本地媒体孤儿回收已提交为 `d0902a3`，由 sweeper 按配置宽限期执行。
 - 前端已提供 Feed、登录/注册、发布、详情、用户/个人主页、我的视频和账户设置；网络暂态失败可恢复，登录/注册限流会展示服务端 `Retry-After`。
 
 ## 当前工作与后续
 
-- 用户列表兼容分页和媒体孤儿文件回收已在工作区完成，仍待 review/提交；旧的无参数用户列表读取保持兼容。
+- F0 后端已分模块提交：领域与应用逻辑 `8394035`、既有仓储适配 `224d8ff`、HTTP 入口与 API 契约 `7541269`。新增 `GET /api/feed?scene=timeline`，按 GCFeed 的 `domain/feed`、`application/feed`、`infra/persistence/feed`、`interfaces/http/feed` 目录分层。Feed 用例已接管分页和批量组装，外层适配器复用原仓储及公开规则，HTTP DTO 单独转换；不再调用旧视频 Service。省略场景默认 Timeline，新旧游标不可混用，未启用场景返回 `501`。契约见 [`API.md`](./API.md)。
+- 本轮只完成后端与文档，前端代码和 `*_test.go` 均未改动，未运行测试或联调。实现状态不代表真实 MySQL 或联合验收通过；暂缓项已在 [F0 完成项与本轮暂缓项](./FEED_CORE_EVOLUTION_PLAN.md#f0-完成项与本轮暂缓项) 列明，补齐后再按实际结果更新。
+- **待补：前端改动**（Feed 请求切换新入口及对应交互接入）、**后端与前端单元测试**（新契约、分页、组装及失败处理）、真实 MySQL/页面联合验收；前端当前仍请求 `/api/video`。
 - 会话校验缓存继续延后，只有可量化收益时才立项。共享存储、时区一致性、`observe.pprof` 与 `gorm.io/gen` 保持独立设计。
-- 下一条新能力是 Feed F0：先冻结兼容 Timeline 契约并建立最小 `internal/feed` 边界。完整 F0–F6 路线见 [`FEED_CORE_EVOLUTION_PLAN.md`](./FEED_CORE_EVOLUTION_PLAN.md)；在 F0 实现前，`/api/feed`、Feed Redis 缓存、Following、Hot、推荐和 Reconciler 均不存在。
+- 后续先 review F0 后端，再单独安排所需验收及前端接入；下一项后端能力为 F1 Timeline cache-aside。F1–F6 仍为规划，Feed Redis 缓存、Following、Hot、推荐和 Reconciler 尚不存在。
 
 每个后续模块均按“设计契约 → 实现 → 验证 → 独立提交 → review”推进；开始前检查工作树、当前路由、迁移和 [`AGENTS.md`](./AGENTS.md)。
