@@ -21,6 +21,7 @@ import (
 const (
 	defaultRetentionDays          = 7
 	defaultDraftRetentionHours    = 24
+	defaultMediaOrphanHours       = 24
 	defaultDraftPurgeLeaseMinutes = 15
 	defaultSweepIntervalMinutes   = 60
 )
@@ -60,6 +61,10 @@ func main() {
 	if draftRetentionHours <= 0 {
 		draftRetentionHours = defaultDraftRetentionHours
 	}
+	mediaOrphanHours := cfg.Retention.MediaOrphanHours
+	if mediaOrphanHours <= 0 {
+		mediaOrphanHours = defaultMediaOrphanHours
+	}
 	draftPurgeLeaseMinutes := cfg.Sweeper.DraftPurgeLeaseMinutes
 	if draftPurgeLeaseMinutes <= 0 {
 		draftPurgeLeaseMinutes = defaultDraftPurgeLeaseMinutes
@@ -79,6 +84,10 @@ func main() {
 	draftRetention, err := positiveDuration(draftRetentionHours, time.Hour)
 	if err != nil {
 		log.Fatalf("Invalid draft retention: %v", err)
+	}
+	mediaOrphanRetention, err := positiveDuration(mediaOrphanHours, time.Hour)
+	if err != nil {
+		log.Fatalf("Invalid media orphan retention: %v", err)
 	}
 	draftPurgeLease, err := positiveDuration(draftPurgeLeaseMinutes, time.Minute)
 	if err != nil {
@@ -102,9 +111,15 @@ func main() {
 		draftRetention,
 		draftPurgeLease,
 	)
+	mediaOrphanPurgeJob := sweeper.NewMediaOrphanPurgeJob(
+		sweeper.NewMediaReferenceRepository(dbConn),
+		mediaStorage,
+		mediaStorage,
+		mediaOrphanRetention,
+	)
 	run := func() {
 		started := time.Now()
-		results := make([]purgeSummary, 0, 3)
+		results := make([]purgeSummary, 0, 4)
 
 		purged, err := userPurgeJob.Run(ctx)
 		logPurgeResult("User", "accounts", purged, err)
@@ -117,10 +132,14 @@ func main() {
 		purged, err = draftPurgeJob.Run(ctx)
 		logPurgeResult("Draft", "drafts", purged, err)
 		results = append(results, purgeSummary{kind: "draft", object: "drafts", purged: purged, err: err})
+
+		purged, err = mediaOrphanPurgeJob.Run(ctx)
+		logPurgeResult("Media orphan", "media objects", purged, err)
+		results = append(results, purgeSummary{kind: "media_orphan", object: "media_objects", purged: purged, err: err})
 		logSweepCycle(started, results)
 	}
 
-	log.Printf("Sweeper started: user retention=%dd video retention=%dd draft retention=%dh draft lease=%dm interval=%dm", userRetentionDays, videoRetentionDays, draftRetentionHours, draftPurgeLeaseMinutes, intervalMinutes)
+	log.Printf("Sweeper started: user retention=%dd video retention=%dd draft retention=%dh orphan media retention=%dh draft lease=%dm interval=%dm", userRetentionDays, videoRetentionDays, draftRetentionHours, mediaOrphanHours, draftPurgeLeaseMinutes, intervalMinutes)
 	run()
 	sweeper.RunEvery(ctx, interval, run)
 
@@ -153,10 +172,10 @@ func logPurgeResult(kind, object string, purged int64, err error) {
 // logSweepCycle 输出一轮清扫的耗时和汇总结果，便于定位慢任务与连续失败
 func logSweepCycle(started time.Time, results []purgeSummary) {
 	var (
-		purged                  int64
-		failed                  int
-		userPurged, videoPurged int64
-		draftPurged             int64
+		purged                    int64
+		failed                    int
+		userPurged, videoPurged   int64
+		draftPurged, orphanPurged int64
 	)
 	for _, result := range results {
 		purged += result.purged
@@ -167,19 +186,22 @@ func logSweepCycle(started time.Time, results []purgeSummary) {
 			videoPurged += result.purged
 		case "draft":
 			draftPurged += result.purged
+		case "media_orphan":
+			orphanPurged += result.purged
 		}
 		if result.err != nil {
 			failed++
 		}
 	}
 	log.Printf(
-		"event=sweeper_cycle result=%s duration_ms=%d purged=%d user_purged=%d video_purged=%d draft_purged=%d failed=%d",
+		"event=sweeper_cycle result=%s duration_ms=%d purged=%d user_purged=%d video_purged=%d draft_purged=%d orphan_media_purged=%d failed=%d",
 		cycleResult(failed),
 		time.Since(started).Milliseconds(),
 		purged,
 		userPurged,
 		videoPurged,
 		draftPurged,
+		orphanPurged,
 		failed,
 	)
 }

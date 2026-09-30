@@ -12,6 +12,7 @@ func TestOverrideWithEnvVideoRetention(t *testing.T) {
 	t.Setenv("RETENTION_USER_DELETED_DAYS", "14")
 	t.Setenv("RETENTION_VIDEO_DELETED_DAYS", "3")
 	t.Setenv("RETENTION_VIDEO_DRAFT_HOURS", "36")
+	t.Setenv("RETENTION_MEDIA_ORPHAN_HOURS", "48")
 	t.Setenv("SWEEPER_DRAFT_PURGE_LEASE_MINUTES", "15")
 
 	cfg := Config{}
@@ -25,6 +26,9 @@ func TestOverrideWithEnvVideoRetention(t *testing.T) {
 	}
 	if cfg.Retention.VideoDraftHours != 36 {
 		t.Fatalf("草稿保留期错误 got=%d want=36", cfg.Retention.VideoDraftHours)
+	}
+	if cfg.Retention.MediaOrphanHours != 48 {
+		t.Fatalf("媒体孤儿保留期错误 got=%d want=48", cfg.Retention.MediaOrphanHours)
 	}
 	if cfg.Sweeper.DraftPurgeLeaseMinutes != 15 {
 		t.Fatalf("草稿清扫租约错误 got=%d want=15", cfg.Sweeper.DraftPurgeLeaseMinutes)
@@ -77,6 +81,7 @@ func TestLoadEnvironmentOnlyFields(t *testing.T) {
 		"RETENTION_USER_DELETED_DAYS",
 		"RETENTION_VIDEO_DELETED_DAYS",
 		"RETENTION_VIDEO_DRAFT_HOURS",
+		"RETENTION_MEDIA_ORPHAN_HOURS",
 		"SWEEPER_INTERVAL_MINUTES",
 		"SWEEPER_DRAFT_PURGE_LEASE_MINUTES",
 	} {

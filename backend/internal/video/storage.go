@@ -68,6 +68,12 @@ type MediaRemover interface {
 	Remove(ctx context.Context, publicURL string) error
 }
 
+// MediaCandidateLister 枚举本地存储中早于截止时间的受控媒体对象
+// 只返回当前 Save 规则生成的对象 URL，不扫描或处理未知文件
+type MediaCandidateLister interface {
+	ListMediaCandidates(ctx context.Context, cutoff time.Time, limit int) ([]string, error)
+}
+
 // LocalStorage 将媒体文件保存到本地 .run/uploads 目录，并通过 /static 暴露
 type LocalStorage struct {
 	root        string
@@ -181,6 +187,139 @@ func (s *LocalStorage) Remove(_ context.Context, publicURL string) error {
 		return err
 	}
 	return nil
+}
+
+// ListMediaCandidates 返回受 LocalStorage 管理、且修改时间不晚于 cutoff 的对象 URL
+// 目录、符号链接、非规范路径及非当前对象键格式的文件一律跳过，避免将人工文件误作可回收对象
+func (s *LocalStorage) ListMediaCandidates(ctx context.Context, cutoff time.Time, limit int) ([]string, error) {
+	if limit <= 0 {
+		return []string{}, nil
+	}
+
+	byKind := make([][]string, 0, 3)
+	for _, kind := range []MediaKind{MediaVideo, MediaCover, MediaAvatar} {
+		candidates := make([]string, 0, limit)
+		if err := s.listMediaKindCandidates(ctx, kind, cutoff, limit, &candidates); err != nil {
+			return nil, err
+		}
+		byKind = append(byKind, candidates)
+	}
+	return interleaveMediaCandidates(byKind, limit), nil
+}
+
+// interleaveMediaCandidates 让视频、封面和头像候选在有界批次中轮换，避免一种类型长期占满批次
+func interleaveMediaCandidates(byKind [][]string, limit int) []string {
+	result := make([]string, 0, limit)
+	for index := 0; len(result) < limit; index++ {
+		added := false
+		for _, candidates := range byKind {
+			if index >= len(candidates) {
+				continue
+			}
+			result = append(result, candidates[index])
+			added = true
+			if len(result) == limit {
+				break
+			}
+		}
+		if !added {
+			break
+		}
+	}
+	return result
+}
+
+func (s *LocalStorage) listMediaKindCandidates(ctx context.Context, kind MediaKind, cutoff time.Time, limit int, candidates *[]string) error {
+	owners, err := os.ReadDir(filepath.Join(s.root, string(kind)))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	for _, owner := range owners {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !regularDirectory(owner) {
+			continue
+		}
+		ownerID, err := strconv.ParseUint(owner.Name(), 10, 64)
+		if err != nil || ownerID == 0 {
+			continue
+		}
+
+		dates, err := os.ReadDir(filepath.Join(s.root, string(kind), owner.Name()))
+		if err != nil {
+			return err
+		}
+		for _, date := range dates {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if !regularDirectory(date) {
+				continue
+			}
+			if _, err := time.Parse("20060102", date.Name()); err != nil {
+				continue
+			}
+
+			files, err := os.ReadDir(filepath.Join(s.root, string(kind), owner.Name(), date.Name()))
+			if err != nil {
+				return err
+			}
+			for _, file := range files {
+				if len(*candidates) == limit {
+					return nil
+				}
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if file.Type()&os.ModeSymlink != 0 || !generatedObjectName(kind, file.Name()) {
+					continue
+				}
+				info, err := file.Info()
+				if err != nil {
+					return err
+				}
+				if !info.Mode().IsRegular() || info.ModTime().After(cutoff) {
+					continue
+				}
+				publicURL := fmt.Sprintf("/static/%s/%s/%s/%s", kind, owner.Name(), date.Name(), file.Name())
+				if _, err := s.pathForPublicURL(publicURL); err != nil {
+					continue
+				}
+				*candidates = append(*candidates, publicURL)
+			}
+		}
+	}
+	return nil
+}
+
+func regularDirectory(entry os.DirEntry) bool {
+	return entry.Type()&os.ModeSymlink == 0 && entry.IsDir()
+}
+
+func generatedObjectName(kind MediaKind, name string) bool {
+	if name == "" || sanitizeFilename(name) != name {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(name))
+	if !allowedExt(kind, ext) {
+		return false
+	}
+	stem := strings.TrimSuffix(name, ext)
+	separator := strings.LastIndex(stem, "_")
+	if separator <= 0 {
+		return false
+	}
+	objectID := stem[separator+1:]
+	if len(objectID) != storageObjectIDBytes*2 || objectID != strings.ToLower(objectID) {
+		return false
+	}
+	_, err := hex.DecodeString(objectID)
+	return err == nil
 }
 
 func (s *LocalStorage) pathForPublicURL(publicURL string) (string, error) {

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func requireObjectName(t *testing.T, got, stem, ext string) {
@@ -329,6 +330,63 @@ func TestLocalStorageRemoveRejectsUnsafePath(t *testing.T) {
 	}
 	if data, err := os.ReadFile(outside); err != nil || string(data) != "keep" {
 		t.Fatalf("根目录外文件不应被删除 data=%q err=%v", data, err)
+	}
+}
+
+// 测试目标：验证孤儿候选枚举只返回超过宽限期的规范本地对象
+// 预期效果：新文件、人工文件和未知目录不会进入清扫候选列表
+func TestLocalStorageListMediaCandidatesFiltersManagedExpiredFiles(t *testing.T) {
+	root := t.TempDir()
+	storage := NewLocalStorage(root)
+	content := []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
+	oldSaved, err := storage.Save(context.Background(), 7, MediaVideo, "old.mp4", bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("保存旧媒体失败: %v", err)
+	}
+	freshSaved, err := storage.Save(context.Background(), 7, MediaVideo, "fresh.mp4", bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("保存新媒体失败: %v", err)
+	}
+
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	oldPath := filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(oldSaved.PublicURL, "/static/")))
+	if err := os.Chtimes(oldPath, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+		t.Fatalf("设置旧媒体时间失败: %v", err)
+	}
+	freshPath := filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(freshSaved.PublicURL, "/static/")))
+	if err := os.Chtimes(freshPath, now, now); err != nil {
+		t.Fatalf("设置新媒体时间失败: %v", err)
+	}
+	manualPath := filepath.Join(filepath.Dir(oldPath), "manual_0123456789abcdef0123456789abcdef.txt")
+	if err := os.WriteFile(manualPath, []byte("keep"), 0o644); err != nil {
+		t.Fatalf("写入人工文件失败: %v", err)
+	}
+
+	candidates, err := storage.ListMediaCandidates(context.Background(), now.Add(-time.Hour), 10)
+	if err != nil {
+		t.Fatalf("ListMediaCandidates: %v", err)
+	}
+	if len(candidates) != 1 || candidates[0] != oldSaved.PublicURL {
+		t.Fatalf("候选列表错误 got=%v want=[%s]", candidates, oldSaved.PublicURL)
+	}
+}
+
+// 测试目标：验证有界候选批次不会被单一媒体类型长期占满
+// 预期效果：视频、封面和头像按各自稳定顺序交错输出
+func TestInterleaveMediaCandidates(t *testing.T) {
+	got := interleaveMediaCandidates([][]string{
+		{"video-1", "video-2", "video-3"},
+		{"cover-1", "cover-2"},
+		{"avatar-1"},
+	}, 5)
+	want := []string{"video-1", "cover-1", "avatar-1", "video-2", "cover-2"}
+	if len(got) != len(want) {
+		t.Fatalf("交错候选数量错误 got=%v want=%v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("交错候选顺序错误 got=%v want=%v", got, want)
+		}
 	}
 }
 

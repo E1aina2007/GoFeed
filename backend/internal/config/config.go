@@ -56,6 +56,8 @@ type RetentionConfig struct {
 	VideoDeletedDays int `yaml:"video_deleted_days"`
 	// VideoDraftHours 未完成草稿从创建到清扫媒体和硬删除记录的保留小时数
 	VideoDraftHours int `yaml:"video_draft_hours"`
+	// MediaOrphanHours 媒体落盘后未被任一记录引用时的最小保留时长
+	MediaOrphanHours int `yaml:"media_orphan_hours"`
 }
 
 type SweeperConfig struct {
@@ -178,6 +180,11 @@ func OverrideWithEnv(cfg *Config) {
 	if v := os.Getenv("RETENTION_VIDEO_DRAFT_HOURS"); v != "" {
 		if hours, err := strconv.Atoi(v); err == nil {
 			cfg.Retention.VideoDraftHours = hours
+		}
+	}
+	if v := os.Getenv("RETENTION_MEDIA_ORPHAN_HOURS"); v != "" {
+		if hours, err := strconv.Atoi(v); err == nil {
+			cfg.Retention.MediaOrphanHours = hours
 		}
 	}
 	if v := os.Getenv("SWEEPER_INTERVAL_MINUTES"); v != "" {
