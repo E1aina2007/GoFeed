@@ -568,8 +568,7 @@ func TestWorkerProcessHelper(t *testing.T) {
 		if markerPath == "" {
 			t.Fatal("worker helper 缺少 confirm 标记路径")
 		}
-		relay := NewRelay(repo, blockAfterConfirmPublisher{EventPublisher: broker, markerPath: markerPath})
-		relay.spec = spec.Event
+		relay := newIntegrationRelay(t, repo, blockAfterConfirmPublisher{EventPublisher: broker, markerPath: markerPath}, spec.Event)
 		relay.Run(context.Background())
 	case workerProcessRecoveryMode:
 		storageRoot := os.Getenv(workerProcessStorageEnv)
@@ -583,7 +582,7 @@ func TestWorkerProcessHelper(t *testing.T) {
 			t.Fatal("worker helper 缺少媒体目录")
 		}
 		// 发布闭环模式由父进程按 API 终态结束子进程，这里只负责运行两个循环
-		runWorkerProcessPipeline(t.Context(), repo, broker, storageRoot, spec)
+		runWorkerProcessPipeline(t, repo, broker, storageRoot, spec)
 	default:
 		t.Fatalf("worker helper 模式未知: %s", mode)
 	}
@@ -591,9 +590,10 @@ func TestWorkerProcessHelper(t *testing.T) {
 
 // 测试目标：在独立进程中运行完整 relay 与 consumer 闭环
 // 预期效果：上下文取消时两个循环先退出，供父进程读到 API 终态后停止子进程
-func runWorkerProcessPipeline(ctx context.Context, repo *video.Repository, broker *mq.Runtime, storageRoot string, spec mq.ConsumerSpec) {
-	relay := NewRelay(repo, broker)
-	relay.spec = spec.Event
+func runWorkerProcessPipeline(t *testing.T, repo *video.Repository, broker *mq.Runtime, storageRoot string, spec mq.ConsumerSpec) {
+	t.Helper()
+	ctx := t.Context()
+	relay := newIntegrationRelay(t, repo, broker, spec.Event)
 	consumer := NewConsumer(repo, broker, storageRoot)
 	consumer.spec = spec
 
@@ -615,8 +615,7 @@ func runWorkerProcessPipeline(ctx context.Context, repo *video.Repository, broke
 func runWorkerProcessRecovery(t *testing.T, gdb *gorm.DB, repo *video.Repository, broker *mq.Runtime, storageRoot string, videoID uint, spec mq.ConsumerSpec) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	relay := NewRelay(repo, broker)
-	relay.spec = spec.Event
+	relay := newIntegrationRelay(t, repo, broker, spec.Event)
 	var workers sync.WaitGroup
 	workers.Add(1)
 	go func() {
@@ -753,9 +752,26 @@ func TestProcessingClosureIntegration(t *testing.T) {
 // 测试目标：在指定随机拓扑上执行一轮 relay 派发
 // 预期效果：用例使用真实 relay 代码路径但不触碰共享业务拓扑
 func dispatchIntegrationRound(repo *video.Repository, runtime *mq.Runtime, spec mq.ConsumerSpec) error {
-	relay := NewRelay(repo, runtime)
-	relay.spec = spec.Event
+	route := VideoProcessRoute()
+	route.Event = spec.Event
+	relay, err := NewRelayWithRoutes(repo, runtime, route)
+	if err != nil {
+		return err
+	}
 	return relay.dispatchRound(context.Background())
+}
+
+// 测试目标：通过路由装配入口构造隔离的视频处理派发器
+// 预期效果：保留视频处理规则，只将发布目标绑定到本轮测试拓扑
+func newIntegrationRelay(t *testing.T, repo *video.Repository, publisher EventPublisher, event mq.EventSpec) *Relay {
+	t.Helper()
+	route := VideoProcessRoute()
+	route.Event = event
+	relay, err := NewRelayWithRoutes(repo, publisher, route)
+	if err != nil {
+		t.Fatalf("构造隔离派发器失败: %v", err)
+	}
+	return relay
 }
 
 // 测试目标：验证无法处理的消息经死信拓扑进入死信队列

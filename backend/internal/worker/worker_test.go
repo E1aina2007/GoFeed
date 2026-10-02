@@ -208,8 +208,8 @@ func TestWorkerUsesMQSpecAsSingleSource(t *testing.T) {
 	consumer := NewConsumer(repo, &fakePublisher{}, t.TempDir())
 	spec := mq.VideoProcessSpec()
 
-	if relay.spec != mq.VideoProcessEventSpec() {
-		t.Fatalf("relay 事件规格应取自 VideoProcessEventSpec got=%+v", relay.spec)
+	if len(relay.routes) != 1 || relay.routes[video.VideoProcessEventType].Event != mq.VideoProcessEventSpec() {
+		t.Fatalf("relay 默认仅注册 VideoProcessEventSpec got=%+v", relay.routes)
 	}
 	if !reflect.DeepEqual(consumer.spec, spec) {
 		t.Fatalf("consumer 消费规格应等于 VideoProcessSpec got=%+v want=%+v", consumer.spec, spec)

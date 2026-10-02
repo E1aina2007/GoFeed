@@ -50,12 +50,13 @@ type EventPublisher interface {
 type Relay struct {
 	repo      *video.Repository
 	publisher EventPublisher
-	spec      mq.EventSpec
+	routes    map[string]RelayRoute
 }
 
 // NewRelay 构造派发器
 func NewRelay(repo *video.Repository, publisher EventPublisher) *Relay {
-	return &Relay{repo: repo, publisher: publisher, spec: mq.VideoProcessEventSpec()}
+	route := VideoProcessRoute()
+	return &Relay{repo: repo, publisher: publisher, routes: map[string]RelayRoute{route.Event.EventType: route}}
 }
 
 // Run 周期性执行派发直到上下文取消
@@ -86,39 +87,27 @@ func (r *Relay) dispatchRound(ctx context.Context) error {
 			log.Printf("event=%s event_id=%s video_id=%d attempt=%d",
 				mq.ObservationEventLeaseTakeover, dispatch.Event.EventID, dispatch.Event.VideoID, dispatch.Event.Attempt)
 		}
-		if dispatch.Event.EventType != r.spec.EventType {
+		route, ok := r.routes[dispatch.Event.EventType]
+		if !ok {
 			log.Printf("[relay] 跳过未知类型事件 event_id=%s video_id=%d event_type=%s",
 				dispatch.Event.EventID, dispatch.Event.VideoID, dispatch.Event.EventType)
 			r.release(ctx, dispatch, outboxInconsistentBackoff, errors.New("unsupported outbox event type"))
 			continue
 		}
-		if !dispatch.HasVideo {
-			log.Printf("[relay] 跳过缺少视频快照的事件 event_id=%s video_id=%d",
-				dispatch.Event.EventID, dispatch.Event.VideoID)
-			r.release(ctx, dispatch, outboxInconsistentBackoff, errors.New("video snapshot is missing"))
+		prepared, err := route.Prepare(dispatch)
+		if err != nil {
+			log.Printf("[relay] 跳过不一致事件 event_id=%s video_id=%d event_type=%s error=%q",
+				dispatch.Event.EventID, dispatch.Event.VideoID, dispatch.Event.EventType, err)
+			r.release(ctx, dispatch, outboxInconsistentBackoff, err)
 			continue
 		}
-		if dispatch.Video.Status != video.VideoStatusProcessing || dispatch.Video.PublishedAt == nil {
-			if dispatch.LeaseTakenOver && isTerminalProcessingResult(dispatch.Video.Status) {
-				r.markDispatched(ctx, dispatch)
-				continue
-			}
-			// 状态异常事件不再重发，但仍要释放租约，避免长期占用 publishing
-			log.Printf("[relay] 跳过状态异常的事件 event_id=%s video_id=%d status=%s",
-				dispatch.Event.EventID, dispatch.Video.ID, dispatch.Video.Status)
-			r.release(ctx, dispatch, outboxInconsistentBackoff, errors.New("video is not ready for processing"))
+		if prepared.AlreadyCompleted {
+			r.markDispatched(ctx, dispatch)
 			continue
 		}
-		msg := ProcessMessage{
-			SchemaVersion: mq.SchemaVersion,
-			EventID:       dispatch.Event.EventID,
-			VideoID:       dispatch.Video.ID,
-			PlayURL:       dispatch.Video.PlayURL,
-			CoverURL:      dispatch.Video.CoverURL,
-		}
-		if err := r.publisher.Publish(ctx, r.spec.Exchange, r.spec.RoutingKey, msg); err != nil {
+		if err := r.publisher.Publish(ctx, route.Event.Exchange, route.Event.RoutingKey, prepared.Payload); err != nil {
 			log.Printf("event=%s component=relay event_type=%s event_id=%s video_id=%d attempt=%d error=%q",
-				mq.ObservationEventPublishFailed, r.spec.EventType, dispatch.Event.EventID, dispatch.Event.VideoID, dispatch.Event.Attempt, err)
+				mq.ObservationEventPublishFailed, route.Event.EventType, dispatch.Event.EventID, dispatch.Event.VideoID, dispatch.Event.Attempt, err)
 			r.release(ctx, dispatch, outboxBackoff(dispatch.Event.Attempt), err)
 			continue
 		}
@@ -137,11 +126,6 @@ func (r *Relay) markDispatched(ctx context.Context, dispatch video.OutboxDispatc
 	if !marked {
 		log.Printf("[relay] 租约已被接管或事件已派发 event_id=%s", dispatch.Event.EventID)
 	}
-}
-
-// isTerminalProcessingResult 返回已经由消费端完成的终态
-func isTerminalProcessingResult(status string) bool {
-	return status == video.VideoStatusPublished || status == video.VideoStatusRejected
 }
 
 // release 把派发失败的事件写回 pending 并按指定时长退避；释放失败只记录日志
