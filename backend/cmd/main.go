@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"gofeed/internal/config"
 	"gofeed/internal/db"
+	infracachefeed "gofeed/internal/infra/cache/feed"
 	"gofeed/internal/middleware/cache"
 	"gofeed/internal/router"
 	"log"
@@ -41,7 +42,7 @@ func main() {
 		log.Println("PROD MODE")
 	}
 
-	// Redis 仅为限流提供非权威能力，首次连接失败后仍由运行时在请求期间恢复
+	// 限流 Redis 首次连接失败后仍由运行时在请求期间恢复
 	rateLimitCache := cache.NewRuntime(cfg.Redis)
 	redisCtx, redisCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	if err := rateLimitCache.EnsureConnected(redisCtx); err != nil {
@@ -58,7 +59,20 @@ func main() {
 	log.Println("Database connected successfully")
 
 	// 装配服务
-	r := router.New(DB, cfg.Dev, router.Options{RateLimitCache: rateLimitCache})
+	routerOptions := router.Options{RateLimitCache: rateLimitCache}
+	var feedCacheRuntime *cache.Runtime
+	if cfg.Feed.PageCacheEnabled {
+		feedCacheRuntime = cache.NewRuntime(cfg.Redis)
+		pageCache, err := infracachefeed.NewPageCache(feedCacheRuntime, infracachefeed.PageCacheOptions{})
+		if err != nil {
+			log.Printf("event=feed_page_cache result=configuration_failed")
+			_ = feedCacheRuntime.Close()
+			feedCacheRuntime = nil
+		} else {
+			routerOptions.FeedPageCache = pageCache
+		}
+	}
+	r := router.New(DB, cfg.Dev, routerOptions)
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 
 	server := &http.Server{
@@ -88,6 +102,11 @@ func main() {
 	}
 	if err := rateLimitCache.Close(); err != nil {
 		log.Printf("event=redis_cache result=close_failed")
+	}
+	if feedCacheRuntime != nil {
+		if err := feedCacheRuntime.Close(); err != nil {
+			log.Printf("event=feed_page_cache result=close_failed")
+		}
 	}
 	if err := db.Close(DB); err != nil {
 		log.Printf("Failed to close database: %v", err)

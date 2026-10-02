@@ -12,6 +12,7 @@ type Config struct {
 	Server    ServerConfig    `yaml:"server"`
 	DB        DatabaseConfig  `yaml:"database"`
 	Redis     RedisConfig     `yaml:"redis"`
+	Feed      FeedConfig      `yaml:"feed"`
 	RabbitMQ  RabbitMQConfig  `yaml:"rabbitmq"`
 	Retention RetentionConfig `yaml:"retention"`
 	Sweeper   SweeperConfig   `yaml:"sweeper"`
@@ -47,6 +48,10 @@ type RabbitMQConfig struct {
 	Username string `yaml:"username"`
 	// Password is supplied through RABBITMQ_DEFAULT_PASS.
 	Password string `yaml:"-"`
+}
+
+type FeedConfig struct {
+	PageCacheEnabled bool `yaml:"page_cache_enabled"`
 }
 
 type RetentionConfig struct {
@@ -145,6 +150,10 @@ func OverrideWithEnv(cfg *Config) {
 	cfg.Redis.Password = ""
 	if v := os.Getenv("REDIS_PASSWORD"); v != "" {
 		cfg.Redis.Password = v
+	}
+	if v := os.Getenv("FEED_PAGE_CACHE_ENABLED"); v != "" {
+		enabled, err := strconv.ParseBool(v)
+		cfg.Feed.PageCacheEnabled = err == nil && enabled
 	}
 
 	// 读取 RabbitMQ 配置

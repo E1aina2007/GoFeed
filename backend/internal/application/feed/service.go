@@ -9,11 +9,18 @@ import (
 const defaultFeedLimit = 20
 
 type Service struct {
-	repo domainfeed.Repository
+	repo          domainfeed.Repository
+	timelineCache *timelineCache
 }
 
-func New(repo domainfeed.Repository) *Service {
-	return &Service{repo: repo}
+type Option func(*Service)
+
+func New(repo domainfeed.Repository, options ...Option) *Service {
+	service := &Service{repo: repo}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 type FeedRequest struct {
@@ -52,7 +59,13 @@ func (s *Service) GetFeed(ctx context.Context, req FeedRequest) (FeedResult, err
 	if s.repo == nil {
 		return FeedResult{}, domainfeed.ErrUnavailable
 	}
-	page, err := s.repo.ListTimelinePage(ctx, cursor, req.Limit+1)
+	if s.timelineCache != nil {
+		if err := s.timelineCache.acquireRead(ctx); err != nil {
+			return FeedResult{}, err
+		}
+		defer s.timelineCache.releaseRead()
+	}
+	page, err := s.readTimelinePage(ctx, cursor, req.Limit)
 	if err != nil {
 		return FeedResult{}, err
 	}

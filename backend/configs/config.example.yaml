@@ -38,6 +38,9 @@ redis:
   port: 6379       # 可用 REDIS_PORT 覆盖
   db: 0            # 可用 REDIS_DB 覆盖；密码仅由 REDIS_PASSWORD 提供
 
+feed:
+  page_cache_enabled: false # 可用 FEED_PAGE_CACHE_ENABLED 覆盖；只作用于 /api/feed
+
 rabbitmq:
   host: localhost  # 可用 RABBITMQ_HOST 覆盖
   port: 5672       # 可用 RABBITMQ_PORT 覆盖

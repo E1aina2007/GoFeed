@@ -176,3 +176,120 @@ func TestOverrideWithEnvClearsSecretsWithoutEnv(t *testing.T) {
 		t.Fatal("未设置密码环境变量时应清空全部凭据")
 	}
 }
+
+// 测试目标：验证 FeedConfig.PageCacheEnabled 可从 YAML 正确加载
+// 预期效果：page_cache_enabled 的 true 与 false 都写入 Config.Feed，缺省时为 false
+func TestLoadFeedPageCacheEnabledFromYAML(t *testing.T) {
+	t.Setenv("FEED_PAGE_CACHE_ENABLED", "")
+
+	cases := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{name: "开启页缓存", yaml: "feed:\n  page_cache_enabled: true\n", want: true},
+		{name: "关闭页缓存", yaml: "feed:\n  page_cache_enabled: false\n", want: false},
+		{name: "缺省关闭页缓存", yaml: "dev: true\n", want: false},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			filename := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(filename, []byte(testCase.yaml), 0o600); err != nil {
+				t.Fatalf("写入测试配置失败: %v", err)
+			}
+			cfg, err := Load(filename)
+			if err != nil {
+				t.Fatalf("读取测试配置失败: %v", err)
+			}
+			if cfg.Feed.PageCacheEnabled != testCase.want {
+				t.Fatalf("页缓存开关错误 got=%v want=%v", cfg.Feed.PageCacheEnabled, testCase.want)
+			}
+		})
+	}
+}
+
+// 测试目标：验证 FEED_PAGE_CACHE_ENABLED 环境变量覆盖已有页缓存开关
+// 预期效果：true 与 1 开启页缓存，false 与 0 关闭页缓存
+func TestOverrideWithEnvFeedPageCacheEnabled(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "true 开启", value: "true", want: true},
+		{name: "1 开启", value: "1", want: true},
+		{name: "false 关闭", value: "false", want: false},
+		{name: "0 关闭", value: "0", want: false},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Setenv("FEED_PAGE_CACHE_ENABLED", testCase.value)
+
+			cfg := Config{Feed: FeedConfig{PageCacheEnabled: !testCase.want}}
+			OverrideWithEnv(&cfg)
+			if cfg.Feed.PageCacheEnabled != testCase.want {
+				t.Fatalf("环境变量覆盖错误 got=%v want=%v", cfg.Feed.PageCacheEnabled, testCase.want)
+			}
+		})
+	}
+}
+
+// 测试目标：验证环境变量优先于 YAML 中的页缓存开关
+// 预期效果：YAML 关闭但环境变量为 1 时最终开启页缓存
+func TestLoadFeedPageCacheEnvOverridesYAML(t *testing.T) {
+	t.Setenv("FEED_PAGE_CACHE_ENABLED", "1")
+
+	filename := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(filename, []byte("feed:\n  page_cache_enabled: false\n"), 0o600); err != nil {
+		t.Fatalf("写入测试配置失败: %v", err)
+	}
+	cfg, err := Load(filename)
+	if err != nil {
+		t.Fatalf("读取测试配置失败: %v", err)
+	}
+	if !cfg.Feed.PageCacheEnabled {
+		t.Fatal("环境变量未覆盖 YAML 中的页缓存开关")
+	}
+}
+
+// 测试目标：验证非法非空布尔值会关闭页缓存而不是被忽略
+// 预期效果：yes、2、on 与空格等无法解析的值都把 PageCacheEnabled 置为 false
+func TestOverrideWithEnvFeedPageCacheInvalidValue(t *testing.T) {
+	for _, value := range []string{"yes", "2", "on", "truthy", " "} {
+		t.Run("FEED_PAGE_CACHE_ENABLED="+value, func(t *testing.T) {
+			t.Setenv("FEED_PAGE_CACHE_ENABLED", value)
+
+			cfg := Config{Feed: FeedConfig{PageCacheEnabled: true}}
+			OverrideWithEnv(&cfg)
+			if cfg.Feed.PageCacheEnabled {
+				t.Fatalf("非法布尔值应关闭页缓存 value=%q", value)
+			}
+		})
+	}
+}
+
+// 测试目标：验证环境变量为空时保持 YAML 与结构体中的页缓存开关
+// 预期效果：FEED_PAGE_CACHE_ENABLED 为空不会把 true 改写成 false
+func TestOverrideWithEnvFeedPageCacheEmptyEnvKeepsValue(t *testing.T) {
+	t.Setenv("FEED_PAGE_CACHE_ENABLED", "")
+
+	filename := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(filename, []byte("feed:\n  page_cache_enabled: true\n"), 0o600); err != nil {
+		t.Fatalf("写入测试配置失败: %v", err)
+	}
+	cfg, err := Load(filename)
+	if err != nil {
+		t.Fatalf("读取测试配置失败: %v", err)
+	}
+	if !cfg.Feed.PageCacheEnabled {
+		t.Fatal("环境变量为空时不应改写 YAML 的页缓存开关")
+	}
+
+	direct := Config{Feed: FeedConfig{PageCacheEnabled: true}}
+	OverrideWithEnv(&direct)
+	if !direct.Feed.PageCacheEnabled {
+		t.Fatal("环境变量为空时不应改写调用方传入的页缓存开关")
+	}
+}
