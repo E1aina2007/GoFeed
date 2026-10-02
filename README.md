@@ -2,7 +2,7 @@
 
 接口的当前路径、请求和响应以 [`API.md`](./API.md) 及 `backend/internal/router/router.go` 为准；开发、迁移、配置和提交约束见 [`AGENTS.md`](./AGENTS.md)。
 
-Feed 的分阶段设计与进度（F0–F6：Timeline 兼容边界、缓存、派生事件、Following、Hot、规则推荐和重建）见 [`FEED_CORE_EVOLUTION_PLAN.md`](./FEED_CORE_EVOLUTION_PLAN.md)。F0 后端已分模块提交 `GET /api/feed` 的匿名 Timeline，尚未完成运行验收；旧的 `GET /api/video` 保持兼容，当前前端仍使用旧入口。Feed 缓存和其他场景尚未实现。
+Feed 的分阶段设计与进度（F0–F6：Timeline 兼容边界、缓存、派生事件、Following、Hot、规则推荐和重建）见 [`FEED_CORE_EVOLUTION_PLAN.md`](./FEED_CORE_EVOLUTION_PLAN.md)。F0 后端已分模块提交 `GET /api/feed` 的匿名 Timeline，尚未完成运行验收；旧的 `GET /api/video` 保持兼容，当前前端仍使用旧入口。F1-B 页缓存适配器已按用户指令提交，尚未接入请求链路；其他场景尚未实现。
 
 ## 快速开始（Docker）
 
@@ -234,9 +234,10 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 - F0 后端已分模块提交：领域与应用逻辑 `8394035`、既有仓储适配 `224d8ff`、HTTP 入口与 API 契约 `7541269`。新增 `GET /api/feed?scene=timeline`，按 GCFeed 的 `domain/feed`、`application/feed`、`infra/persistence/feed`、`interfaces/http/feed` 目录分层。Feed 用例已接管分页和批量组装，外层适配器复用原仓储及公开规则，HTTP DTO 单独转换；不再调用旧视频 Service。省略场景默认 Timeline，新旧游标不可混用，未启用场景返回 `501`。契约见 [`API.md`](./API.md)。
 - F1-A 已按用户指令提交为 `a7e2bd4`：增加 `video.Repository.GetPublishedByIDs` 与独立 Feed `CardReader`，最多读取 51 个去重后的有效视频 ID，沿用公开规则并共享字段转换；当前请求用例尚未调用该能力。编译通过，未进行测试或真实 MySQL 验收；具体边界见 [F1 小步模块与 F1-A 读取契约](./FEED_CORE_EVOLUTION_PLAN.md#f1-小步模块与-f1-a-读取契约)。
+- F1-B 已于 2026-10-02 按用户指令独立提交：`application/feed` 定义轻量页缓存端口与校验，`infra/cache/feed` 提供可注入 Get/Set 的适配器，缓存 JSON 编解码位于 `page_codeco.go`。只保存最多 `limit+1` 条视频 ID、作者 ID 和发布时间，明确未命中、有效空页和错误；默认 TTL 30 秒、操作超时 100 毫秒、载荷上限 16 KiB。代码仅在必要方法上保留简短作用说明。编译通过，未装配 Redis Runtime，也未接入服务或路由；具体边界见 [F1-B 页缓存契约与 review 边界](./FEED_CORE_EVOLUTION_PLAN.md#f1-b-页缓存契约与-review-边界)。
 - 本轮只完成后端与文档，前端代码和 `*_test.go` 均未改动，未运行测试或联调。实现状态不代表真实 MySQL 或联合验收通过；暂缓项已在 [F0 完成项与本轮暂缓项](./FEED_CORE_EVOLUTION_PLAN.md#f0-完成项与本轮暂缓项) 列明，补齐后再按实际结果更新。
 - **待补：前端改动**（Feed 请求切换新入口及对应交互接入）、**后端与前端单元测试**（新契约、分页、组装及失败处理）、真实 MySQL/页面联合验收；前端当前仍请求 `/api/video`。
 - 会话校验缓存继续延后，只有可量化收益时才立项。共享存储、时区一致性、`observe.pprof` 与 `gorm.io/gen` 保持独立设计。
-- 后续补齐 F0 与 F1-A 的运行验收及所需前端接入；下一项后端模块为 [F1-B 页缓存读写适配](./FEED_CORE_EVOLUTION_PLAN.md#f1-b-下一模块边界)，完成后等待 review，再推进 F1-C 接入新 Feed 用例。Feed Redis 缓存、Following、Hot、推荐和 Reconciler 尚不存在，F2–F6 仍为规划。
+- 后续补齐 F0、F1-A 与 F1-B 的运行验收及所需前端接入；下一项后端模块为 F1-C 接入新 Feed 用例，按后续指令实施，完成后先等待 review。当前 Feed 请求仍直接读取 MySQL；Following、Hot、推荐和 Reconciler 尚不存在，F2–F6 仍为规划。
 
-每个后续模块均按“设计契约 → 实现 → 验证 → 独立提交 → review”推进；开始前检查工作树、当前路由、迁移和 [`AGENTS.md`](./AGENTS.md)。
+每个后续模块均按“设计契约 → 实现 → 授权范围内验证 → review → 明确指令后独立提交”推进；开始前检查工作树、当前路由、迁移和 [`AGENTS.md`](./AGENTS.md)。
