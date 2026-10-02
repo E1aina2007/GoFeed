@@ -1,8 +1,8 @@
 # GoFeed 开发计划
 
-> 更新日期：2026-10-02。源码基线：`509c123`。本文统一后续任务、设计边界与待补验收；已完成能力简述见 [README](../README.md)，已实现接口见 [API](../API.md)，协作规则见 [AGENTS](../AGENTS.md)。
+> 更新日期：2026-10-02。F1-C 已提交为 `f772349`；本轮补测与修复按模块分别提交，回归范围见第 5 节。本文统一后续任务、设计边界与待补验收；已实现能力简述见 [README](../README.md)，已实现接口见 [API](../API.md)，协作规则见 [AGENTS](../AGENTS.md)。
 
-本次合并了原 Feed 演进方案、跨项目参考路线及被忽略的分步方案，校正其中过时的状态。历史文档中的测试记录不作为当前环境的验收结论。本轮只整理文档，不修改前后端代码，不编写或运行测试、联调。
+本文已合并原 Feed 演进方案、跨项目参考路线及分步方案。F1-C 默认关闭的缓存接入已按用户指令提交；F0–F1-C 补测、旧业务兼容、MySQL/迁移、发布链路与浏览器回归按模块独立验证。第 5 节区分首轮补测记录与审查修复后的实际验证，历史测试记录不作为当前环境的验收结论。
 
 ## 1. 当前基线与优先顺序
 
@@ -10,10 +10,10 @@ MySQL 是唯一业务事实源；Redis 用于可丢失的加速和限流，Rabbi
 
 | 模块 | 当前状态 | 后续动作 |
 | --- | --- | --- |
-| F0：匿名 Timeline 四层边界 | `8394035`、`224d8ff`、`7541269` 已提交 | 前端接入、单元测试及真实运行验收待补 |
-| F1-A：批量公开视频卡片 | `a7e2bd4` 已提交，当前请求未调用 | 缓存命中时读取当前公开状态 |
-| F1-B：轻量页缓存端口与适配 | `509c123` 已提交，未装配 Runtime 或请求用例 | 保留现有读写契约，进入 F1-C |
-| F1-C：Timeline 缓存接入 | 未开始，下一项后端模块 | 默认关闭，只接入 `/api/feed` |
+| F0：匿名 Timeline 四层边界 | `8394035`、`224d8ff`、`7541269` 已提交 | 单元与集成验收已完成（第 5 节）；前端接入仍待补 |
+| F1-A：批量公开视频卡片 | `a7e2bd4` 已提交，F1-C 开启后的缓存命中路径调用 | 真实数据库批量读取验收已完成（第 5 节） |
+| F1-B：轻量页缓存端口与适配 | `509c123` 已提交，F1-C 已装配 | 适配器单测与真实 Redis 回归通过（第 5 节） |
+| F1-C：Timeline 缓存接入 | `f772349` 已提交，默认关闭 | 自动化开关、命中校验、回源与兼容回归通过；收益与容量压测待补 |
 | F2：Feed 事件与预热 | 未开始 | 先支持事件类型路由，再写新的 Outbox 事件 |
 | F3：Following | 未开始 | 先 MySQL 正确查询，再推拉索引 |
 | F4：Hot | 未开始 | 互动事件、分钟桶和 MySQL 快照 |
@@ -22,34 +22,16 @@ MySQL 是唯一业务事实源；Redis 用于可丢失的加速和限流，Rabbi
 
 Feed 是按 GCFeed 目录逐步迁移的业务边界：`domain/feed` 定义读模型与读取接口，`application/feed` 编排分页及缓存端口，`infra/persistence/feed` 适配既有仓储，`infra/cache/feed` 适配 Redis，`interfaces/http/feed` 负责 HTTP。内层只依赖标准库和 Feed domain；不搬迁 `video`、`social`、`user`、`auth`。
 
-当前 `/api/video` 与 `/api/feed` 均直接读取 MySQL，前端仍使用旧入口。新接口只启用 Timeline；未知场景为 400，已知但未启用的 Following、Hot、Recommend 为 501。游标独立绑定场景、结构版本、排序版本与 `(published_at, video_id)`，不与旧视频游标混用。现有接口必须保持可用，每次只迁移一个读取场景或派生链路。
+当前 `/api/video` 直接读取 MySQL，前端仍使用旧入口；`/api/feed` 默认同样直接读取 MySQL，开启缓存后仅后续页使用轻量页缓存并校验当前公开卡片。新接口只启用 Timeline；未知场景为 400，已知但未启用的 Following、Hot、Recommend 为 501。游标独立绑定场景、结构版本、排序版本与 `(published_at, video_id)`，不与旧视频游标混用。现有接口必须保持可用，每次只迁移一个读取场景或派生链路。
 
-## 2. F1-C：Timeline 缓存接入
+## 2. Feed 缓存后续工作
 
-### 已冻结的读取与缓存契约
+F1-C 已提交的读取行为见 README 与 API；默认关闭，不改变旧入口。基础 `feed_page_cache` 事件日志已接入，指标与告警仍未接通。并发容量与取消释放有应用层单元覆盖，开关、首屏绕过、命中校验、整页回源与兼容性有真实 Redis/MySQL 装配回归；生产默认 TTL 的端到端回源、多实例同 Key 竞争与容量压测仍待补。前端首页接入属于既有演进路线中的后续独立交付模块，先验证缓存关闭时的新入口，再验证开启后的第二页；保留旧接口与游标隔离，支持回滚，无需等待 F2–F5。
 
-- F1-A 的 `CardReader.BatchGetCards` 忽略零 ID、去重后最多接受 51 个有效 ID，超限整体报错；空批次不执行 SQL。一次参数化批量查询复用 `PublicVideoQuery` 和 `IsPublicVideo`；返回以视频 ID 为键的当前公开卡片，不依赖 SQL 顺序。数据库故障保留错误，缺失或不可见视频不返回。
-- 原 MySQL 路径一次视频查询同时取得页条目与附带卡片，避免重复读取。`legacy_reader` 复用既有仓储，不委托旧 Service；Feed 应用层保留 `limit+1`、截断、作者/统计批量组装和下一页游标。
-- F1-B 的 `PageCacheQuery` 仅接受 Timeline、响应页大小 1–50 和合法结构化游标。`CachedPage` 只保存视频 ID、作者 ID、发布时间，保留最多 `limit+1` 条探测记录。缓存 JSON 编解码位于 `infra/cache/feed/page_codeco.go`，不使用 HTTP DTO。
-- Key：`gofeed:feed:page:v1:timeline:s1:l{limit}:{position}`；位置是 `start` 或 `{UTC RFC3339Nano}:{video_id}`，不使用客户端原始游标字符串。结构版本和排序版本隔离旧数据，同一时间点的时区表达不会生成不同 Key。
-- `GetPage` 返回页、命中标志和错误：`redis.Nil` 是未命中，合法 `items: []` 是命中；连接/取消/超时归 `ErrPageCacheUnavailable` 并保留原因，非法输入归 `ErrInvalidPageCacheQuery`，非法载荷归 `ErrInvalidCachedPage`。
-- 读写校验数量、非零且唯一的视频 ID、有效时间、严格倒序和请求游标范围；解码拒绝未知字段、额外 JSON 值、错误版本及缺失/null 的 items 或 author_id。作者 ID 可为零，沿用既有占位作者语义。
-- 默认 TTL 30 秒、单次 Get/Set 超时 100 毫秒、载荷上限 16 KiB；可注入覆盖值，硬上限为 5 分钟、1 秒、64 KiB。零配置采用默认值，负值或超限拒绝构造；空页使用相同 TTL。
-- 字节上限限制编码结果和读取后的解码，不能阻止底层 Get 先接收大值。注入依赖必须遵守 context；既有 Redis Client 已开启 `ContextTimeoutEnabled` 并禁用重试。构造适配器不连接、不请求。
-
-### 接入顺序与兼容性
-
-1. 校验请求和游标；首屏继续走 MySQL，只尝试带游标的后续页缓存。
-2. 命中后用 F1-A 批量读取整份页条目的当前公开卡片，包括探测记录。
-3. 卡片缺失、作者 ID 或发布时间不一致时，按原请求游标读取 MySQL 整页，不能丢掉失效项后继续使用缓存分页结果。
-4. 应用层统一探测、截断、批量读取最终页作者与统计、生成下一页游标；探测行不进入作者/统计批次。
-5. 回填使用完整且已校验的轻量页，保留额外探测记录。首版采用同步、短超时回填，不创建无界后台任务；缓存写失败不改变 MySQL 成功结果。
-
-组合根注入独立 Feed Redis Runtime，与登录/注册限流分开维护故障、冷却与单探针恢复状态。配置默认关闭，关闭时保持现有查询路径；`/ready` 仍只依赖 MySQL。缓存命中、未命中、失效、读写失败和 MySQL 回源要有基础观测，内部错误不写入 HTTP 响应。
-
-首版通过 MySQL 逐页校验公开状态，不依赖 TTL 保证删除或状态变化后的可见性；作者资料和互动统计仍实时批量读取。并发旧请求回填轻量页仍需再次校验，后续卡片/统计缓存必须各自定义失效与旧回填防护。缓存操作及回源并发均须有界。
-
-当前非空页的静态查询结构为视频 1 次、作者 1 次、点赞/评论聚合各 1 次；ID 页缓存通常不会减少 SQL 数量。上线收益需另行证明，不把命中率或编译结果当作性能证据。
+- 当前非空页的静态查询结构为视频 1 次、作者 1 次、点赞/评论聚合各 1 次；ID 页缓存通常不会减少 SQL 数量。需比较开关前后的查询成本、p95、回源与缓存操作耗时，证明收益后再决定开启范围，不把命中率或编译结果当作性能证据。
+- 卡片、作者资料与统计缓存尚未实现。F2 预热前先定义对应端口、版本、Key/TTL、批量读取和写入；删除/状态变化、资料更新和互动变更需要各自的失效及旧请求回填防护。不能仅复制 GCFeed 的长 TTL 后宣称可见性安全。
+- 当前并发上限为每实例 32 个启用缓存的 Feed 请求、16 次缓存操作；请求容量耗尽返回安全 503，缓存容量耗尽跳过缓存。应用层并发/取消/释放单测已通过，真实容量压测仍待补；上限配置化和同 Key 请求合并按容量证据另行评估。
+- 现有载荷上限只限制编码结果和 Get 后解码，不能阻止驱动先接收大值；后续若出现实际内存压力，再评估 Redis 端有界读取。
 
 ## 3. F2–F6：Feed 派生能力
 
@@ -153,18 +135,69 @@ flowchart LR
 
 ## 5. 待补验证与交付门槛
 
-源码实现、提交、编译、自动化测试和真实依赖验收分别记录。用户当前排除前端代码、`*_test.go` 和所有测试/联调，以下均为后续待办，不在文档整理中执行：
+源码实现、提交、编译、自动化测试和真实依赖验收分别记录。2026-10-02 完成一次测试补齐与兼容验收（新增/修改测试文件，执行单元测试、真实 MySQL/Redis/RabbitMQ 集成测试与浏览器回归），下表为实际执行结果；所有 `PASS` 均来自本机真实运行输出，未执行或不可达的项目留在 5.3 作为显式缺口。
 
-- [ ] F0：场景/数量/游标、分页探测与截断、作者/统计批量组装、错误和 HTTP DTO 契约。
-- [ ] F1-A：空/零/重复 ID、51/52 边界、乱序返回、部分不可见或软删除、时间/媒体字段与数据库错误。
-- [ ] F1-B：未命中/有效空页、JSON 往返、Key 规范化、版本/重复/排序/位置、字节上限、超时/取消、Get/Set 错误和非法配置；真实 Redis 过期及故障语义。
-- [ ] F1-C：默认关闭兼容、命中再校验、失效整页回源、保留探测记录、缓存写失败不改变成功结果、故障状态隔离与恢复。
-- [ ] 前端：从 `/api/video` 切换新 Feed 入口，保留取消、重试、去重和播放可见性管理；同步前端单元测试与真实联合验收。
-- [ ] API 错误复用：补公共映射/cause 保留、user/video/social 状态与安全文案矩阵、未知错误脱敏、201/202/204 成功状态不变；原完成方案中的测试缺口继续保留。
-- [ ] 原发布链路验收收口：目标数据库升级、索引/回填和 dirty 状态；真实 broker 的 confirm 丢失、标记失败、重复投递、进程重启、重试/DLQ 与故障恢复矩阵；真实后端浏览器联调。历史文档曾记录部分隔离发布/拒绝/清扫和浏览器回归，本轮不重跑，不能直接视为当前验收通过。
-- [ ] 运维：processing/pending 不一致、积压最老年龄、DLQ、水位、回源延迟、容量与告警阈值；stdout 观测与告警平台接通分别确认。
-- [ ] Outbox 归档/清理与异常事件处置策略：定义保留期、可重放范围和消费终态依据，不能仅凭 dispatched 将尚未处理完的事件当作可清理事实。
+### 5.1 首轮补测记录（审查修复前）
 
-未来真实故障验证只使用隔离数据库、临时媒体目录和随机专用 RabbitMQ 拓扑，不破坏业务数据或共享队列。依赖不可用明确记录跳过，TCP 可达不代表闭环成功。
+以下保留另一个 agent 在 2026-10-02 的执行记录，其中前端只补测试。审查修复后的模块验证见 5.4；本轮未复跑业务库只读报告或全部浏览器内核，不将首轮结果写成当前复跑结论。
 
-每个模块先核对 Git、路由、迁移与可复用代码，再冻结事实表/事务、Key/TTL/失效、队列/schema/幂等、API/游标/用户范围和恢复/观测边界。完成授权范围内验证后暂停 review，明确指令后独立提交，不提前实施下一模块。完成任务从本计划移除，将必要结果简述入 README；已有接口契约继续归 API.md。
+| 范围 | 新增/修改测试 | 执行命令 | 结果 |
+| --- | --- | --- | --- |
+| F0 HTTP/DTO | `interfaces/http/feed/handler_test.go`、`dto_test.go` | `go test -count=1 -v ./internal/interfaces/http/feed/...` | PASS 14 顶层 + 39 子测试 |
+| F1-C 开关配置 | `config/config_test.go`（追加 5 Test） | `go test -count=1 -v ./internal/config/...` | PASS 10 顶层 + 12 子测试 |
+| F1-B 适配器 | `infra/cache/feed/page_cache_test.go`、`page_codeco_test.go` | `go test -count=1 -v ./internal/infra/cache/feed/...` | PASS 28 顶层 + 48 子测试，SKIP 0 |
+| F1-B 真实 Redis | `infra/cache/feed/redis_integration_test.go` | 同上 | 真实 Redis 4 例全 PASS，未 SKIP |
+| F0/F1-A/F1-C 装配 | `router/feed_http_integration_test.go`、`router/feed_legacy_compat_test.go` | `go test -count=1 -v -run 'Feed' ./internal/router/...` | PASS 22（20 新增 + 2 既有），真实 MySQL + Redis |
+| 迁移与模型对齐 | `testutil/migration_alignment_test.go`、`migration_integration_test.go` | `go test -count=1 -v ./internal/testutil/...` | PASS 22 / SKIP 1（真实 MySQL 8.0.45）；业务库只读核对另跑 `GOFEED_BUSINESS_DB_REPORT=1` → PASS |
+| API 错误与旧业务 | `error/api_error_contract_test.go`、`user/session_http_integration_test.go`、`video/video_http_integration_test.go`、`social/social_http_integration_test.go` | `go test -count=1 -v ./internal/error/... ./internal/user/... ./internal/video/... ./internal/social/...` | PASS 171 / FAIL 0 / SKIP 0，全部走真实 MySQL |
+| 发布链路可靠性 | `worker/consumer_loop_test.go`、`worker/retry_confirm_integration_test.go`、`mq/main_test.go` | `go test -count=1 -v -timeout 20m ./internal/worker/... ./internal/mq/...` | PASS 76 / FAIL 0 / SKIP 0，真实 RabbitMQ 参与 |
+| 前端单元 | `usePublishedFeedPagination.spec.ts`、`FeedView.integration.spec.ts` | `pnpm.cmd run test:unit -- --run` | PASS 25 文件 / 145 用例（基线 23/131） |
+| 前端浏览器 | `e2e/feed-flow.spec.ts`、`e2e/fixtures/playable.webm` | `pnpm.cmd run test:e2e` | PASS 70 / FAIL 0 / SKIP 6（基线 31 passed / 9 failed，均为 webkit 环境抖动） |
+| 全量竞态兼容回归 | 本轮全部新增/修改测试 | `go test -race -count=1 -timeout 25m ./...` | PASS 22 个测试包全部 `ok`，FAIL 0，`WARNING: DATA RACE` 0（真实 MySQL/Redis/RabbitMQ 参与） |
+
+- 覆盖清单：场景/数量/查询参数校验与 501 不查库、游标往返与跨接口隔离、同发布时间按 `video_id` 倒序与 limit+1 探测、空页 `items: []` 与末页省略 `next_cursor`、探测记录不进作者/统计批次；批量卡片空/零/重复/51/52 边界、乱序按 ID 映射、软删/非 published/媒体不完整/时间缺失过滤、`author_id=0` 占位；页缓存 Key 规范化与版本隔离、载荷形状校验、字节上限、TTL/超时/载荷默认与非法配置、`redis.Nil` 与 Get/Set 错误语义；开关默认关闭与环境变量覆盖、首屏绕过、命中整页校验（含探测记录）与失效整页回源、缓存写失败不改变成功响应、Redis 读取失败不在同一请求继续回填、非法载荷被正确结果覆盖、作者与统计只查最终响应页、并发容量上限与 503/跳过缓存、Feed Runtime 与限流 Runtime 故障隔离、Redis 初始不可用不阻止启动且恢复后可读写、`/ready` 仍只依赖 MySQL、关闭生命周期释放资源。
+- 兼容性：缓存开关关闭/开启时旧 `/api/video` 的参数、响应体、游标与公开过滤逐字节一致；新 Timeline 与原公开查询在内容、排序、展示字段（含媒体原始文件名）和可见性语义（删除/媒体不完整/同发布时间/注销作者占位）上一致；互动统计在缓存命中路径上仍实时读取。查询预算以 `db.RegisterQueryCounter` 的**真实 SQL 语句数**断言（公开视频列表 4、详情 4 等）；**ID 页缓存命中仍需查 MySQL，未断言 SQL 减少，也不主张性能提升**。
+- 数据库与迁移：源码迁移现场核对为 18 文件 / 9 版本，最高 `000009`，up/down 成对连续；业务库 `feedsystem`（MySQL 8.0.45）`schema_migrations` 为 `version=9 dirty=false`，列差异 0、索引差异 0（含降序方向）、排序规则差异 0。业务库全程只读，未执行任何迁移或回滚。
+- 发布链路：业务状态与 Outbox 同一事务、publisher confirm、确认丢失与标记失败后的重复派发、publishing 租约接管与退避、重复投递 CAS 幂等、进程重启恢复、RabbitMQ 重连与拓扑重建、`1s/5s/30s` 重试且在确认前不 ACK 原消息、有限重试与 DLQ、发布成功/拒绝/到期清扫闭环均有通过用例；新增用例用真实 broker 观测到「原消息在确认前仍留在主队列」和 broker 重投后的幂等。
+- 前端：首屏/分页、重试、失效请求取消与迟到结果丢弃、并发分页与视频 ID 去重、离开路由与页面隐藏时暂停播放、错误态与空态区分、桌面与移动视口均有通过用例。**新用例全部 mock 公共 Feed API，只验证页面行为，不等于真实后端联调。**
+
+### 5.2 本轮发现并处置的缺陷
+
+- **游标时间渲染不稳定（已最小修复）**：命中页缓存时 `next_cursor.published_at` 输出 `Z`，未命中时输出本地偏移（如 `+08:00`），同一分页位置在开关前后文本不同。最小修复为 `application/feed/cursor.go` 的 `encodeTimelineCursor` 统一按 UTC 渲染；探针实测两种时间表示对 MySQL 查询等价（同一位置返回相同两行），`decodeTimelineCursor` 与页缓存 Key 均不受影响。修复后命中与未命中的响应体逐字节一致。
+- **`internal/mq` 缺少 `TestMain`（已最小修复）**：该包不加载被忽略的 `backend/.env`，导致仅有的两个真实 broker 用例在标准命令下静默 SKIP。新增 `internal/mq/main_test.go` 加载 `backend/.env` 后 SKIP 归零；不覆盖已注入的环境变量，不引入新依赖，也不给纯 broker 包强加 MySQL 依赖。
+- **前端分页错误态被滚动自动重试（已修复）**：`FeedView.vue` 的 `handleScroll` 增加错误态门控。浏览器回归进一步发现强制滚动吸附会把错误按钮留在视口外，因此为错误状态增加 `scroll-snap-align: end`。分页失败后滚动保留已加载卡片和错误态，重试按钮进入视口，点击才重新请求同一游标；单元和桌面/移动浏览器用例验证该行为。首页 API 入口未切换。
+- **缓存单测绑定 MySQL（已修复）**：Redis 缓存包的 `TestMain` 只加载 `.env` 后运行测试，不再调用建库的 `testutil.Main`。MySQL 端口不可用时纯缓存单测通过。
+- **Redis TTL 计时起点滞后（已修复）**：从写入前记录时间，避免把 SET 和首次 GET 的耗时排除；测试 TTL 为 1 秒，增加调度余量，真实 Redis 连续十次通过。
+- **共享 Redis 全库扫描（已修复）**：移除 Lua 内循环 SCAN，改用已记录精确键的 EXISTS 检查与 DEL 清理；直接注入的坏值也纳入记录。新增真实 Redis 用例验证重复键只计一次、注入键被清理、未记录的对照键保留。
+- **测试侧日志缓冲数据竞争（已最小修复，仅测试代码）**：首次全量 `go test -race` 在 `internal/worker` 报出 6 个用例 `WARNING: DATA RACE`。竞争点是本轮新增测试自身的日志捕获：被测后台协程里的 `log.Printf` 经 `log.(*Logger).output()` 写入 `strings.Builder`，而用例协程的等待闭包同时调用 `String()`；`strings.Builder` 非并发安全，属测试缺陷而非生产缺陷。最小修复为 `internal/worker/observability_test.go` 引入带 `sync.Mutex` 的 `syncLogBuffer` 并让 `captureWorkerLogs` 返回它，`Write`/`String` 各自加锁；调用点签名兼容，无需改动调用方，竞态断言未放宽、未删除、未 Skip。修复后 `internal/worker`、`internal/router` 与全量 `-race` 均干净通过。
+
+### 5.3 仍未完成（保留待办）
+
+- [ ] **首页 Timeline 接入 `/api/feed`**：现有 Feed 演进计划中的后续前端模块，无需另立产品项目。`listPublishedVideos` 仍请求旧 `/api/video`；新增首页专用读取适配，保留作者列表等旧调用，隔离新旧游标并覆盖切换、回滚与真实后端联调。
+- [ ] F1-C 剩余缺口：页缓存 TTL（默认 30s）自然过期回源、多实例写同一键竞争、`maxCachedFeedReads`/`maxCacheOperations` 容量饱和路径（`read_busy`/`cache_busy`）与槽泄漏的并发压测。
+- [ ] 真实 Redis 故障注入（断连、服务端超时）、Redis 主动过期扫描；`NewPageCache` 非法参数返回裸错误未包装哨兵。
+- [ ] 迁移 down 路径未对真实库执行（仅静态互逆校验）；`dirty=1` 中断语义未覆盖；EXPLAIN 索引选择未断言。
+- [ ] 首轮只读报告记录了陈旧临时库及 MQ 残留资源，本次未复查或清理。后续需依据明确的测试归属记录与资源清单处理；仅凭年龄或本机 PID 不存在不足以确认共享实例上的资源可以删除。
+- [ ] 仓库换行符：`core.autocrlf=true` 且无 `.gitattributes`，20 个未修改的既有 Go 文件被 `gofmt -l` 命中（其中 17 个含 CRLF）；建议新增 `*.go text eol=lf`（仓库级改动，需决策）。
+- [ ] 413 大文件上传端到端、429 限流真实触发链路、refresh 并发轮换竞态、broker 主动 nack 路径未覆盖（原因见交付说明）。
+- [ ] 运维缺口（未因测试而新增功能）：指标/告警平台未接通（仅有 stdout 的 `feed_page_cache` 与 sweeper 事件日志）、恢复水位、Outbox 归档清理与异常事件处置策略未实现；processing/pending 不一致、积压最老年龄、DLQ 深度仍无自动告警。不能把 stdout 日志当作告警已接通，也不能凭 `dispatched` 判断消费完成。
+
+### 5.4 审查修复后的模块验证（2026-10-02）
+
+按用户明确指令分模块提交。每个代码模块从 Git 暂存区导出到被忽略的 `.run/module-review-20261002`，只包含此前提交与本模块文件；在该副本验证通过后提交，避免依赖后续未提交的源码或测试。测试沿用隔离 MySQL 临时库和精确记录的 Redis/MQ 测试资源，未修改业务库或私有配置。下面的后端命令均从 `backend` 运行。
+
+| 模块 | 提交 | 独立回归命令 | 本次结果 |
+| --- | --- | --- | --- |
+| Feed 游标与读取契约 | `9a9b2f5` | `go test -race -count=1 ./internal/application/feed ./internal/infra/persistence/feed ./internal/interfaces/http/feed ./internal/video` | 4 包通过；`go build ./...` 通过，真实 MySQL 参与 |
+| 页缓存契约与适配 | `0ae78e1` | `go test -race -count=1 -v ./internal/application/feed ./internal/infra/cache/feed` | 2 包通过，4 个真实 Redis 用例通过；MySQL 不可用时纯缓存单测通过，TTL 重复 10 次通过 |
+| F1-C 配置与请求装配 | `f772349` | `go test -race -count=1 ./internal/application/feed ./internal/config ./internal/router` | 3 包通过；构建通过，真实 MySQL/Redis 参与，包括精确键清理与旧接口兼容 |
+| MySQL 迁移与模型对齐 | `d73056e` | `go test -race -count=1 -v ./internal/testutil` | 包通过；业务库只读报告未开启，明确跳过；迁移仅在隔离测试库执行 |
+| 鉴权、视频与社交接口 | `1a80c2e` | `go test -race -count=1 ./internal/error ./internal/user ./internal/video ./internal/social` | 4 包通过，真实 MySQL 参与 |
+| MQ 确认、重试与消费 | `6e0f28c` | `go test -race -count=1 ./internal/mq ./internal/worker` | 2 包通过，真实 RabbitMQ/MySQL 参与 |
+| Feed 分页错误态与页面回归 | `6104efc` | 从 `frontend` 运行 `pnpm.cmd run lint`、`node node_modules/vitest/vitest.mjs run`、`pnpm.cmd run build`，以及 `pnpm.cmd exec playwright test --project=chromium --project="Mobile Chrome" --workers=1 --reporter=line` | lint/构建通过，25 文件 145 单元用例通过；桌面/移动浏览器 36 通过、2 个真实后端用例跳过 |
+
+组合后的后端检查：`go vet ./...` 通过；`go test -race -count=1 -json -timeout 15m ./...` 的 22 个测试包通过，无失败、无数据竞争。5 个测试明确跳过：未设置 `GOFEED_REDIS_INTEGRATION=1` 的 2 个既有限流/Redis 用例、未设置 `GOFEED_REDIS_PROCESS_INTEGRATION=1` 的 2 个专用 Redis 重启用例，以及未开启 `GOFEED_BUSINESS_DB_REPORT=1` 的业务库只读报告；本次未启停共享 Redis 或修改业务库。
+
+前端复跑设置 `PW_HEADLESS=1`，使用项目本地 Vitest 入口；所测公共 Feed 请求为 mock，未开启 `GOFEED_E2E_REAL_API=1`。首次浏览器验证发现重试按钮被滚动吸附留在视口外，补齐错误状态吸附点后，该用例在两个视口单独通过，随后完整桌面/移动回归通过。当前运行日志位于被忽略的 `.run/module-review-*.log` 与 `.run/module-review-backend-final.jsonl`。
+
+每个模块先核对 Git、路由、迁移与可复用代码，再冻结事实表/事务、Key/TTL/失效、队列/schema/幂等、API/游标/用户范围和恢复/观测边界。按当前授权完成验证与独立提交；用户要求逐模块 review 时，完成一个模块后停止等待。完成任务从本计划移除，将必要结果简述入 README；已有接口契约继续归 API.md。

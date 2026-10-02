@@ -543,7 +543,7 @@ Redis 不可用时限流会 fail-open，注册或登录继续按原有业务契�
 
 `GET /api/feed`
 
-F0 仅启用匿名 `timeline`，按 `(published_at DESC, id DESC)` 排序。Feed 应用层负责分页与批量组装，基础设施适配器复用现有 MySQL 仓储、作者读取和互动聚合。只返回已发布、未软删除且具备完整媒体字段及发布时间的视频；HTTP DTO 保持现有展示字段。携带 `Authorization` 不改变 Timeline 结果，不返回用户专属点赞或关注状态。
+当前仅启用匿名 `timeline`，按 `(published_at DESC, id DESC)` 排序。Feed 应用层负责分页与批量组装，基础设施适配器复用现有 MySQL 仓储、作者读取和互动聚合。只返回已发布、未软删除且具备完整媒体字段及发布时间的视频；HTTP DTO 保持现有展示字段。携带 `Authorization` 不改变 Timeline 结果，不返回用户专属点赞或关注状态。
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -572,7 +572,7 @@ Feed 游标版本为 `1`，独立绑定 `timeline` 场景、排序版本 `1`（�
 | `version` | 游标载荷结构版本，当前为 `1` |
 | `scene` | 游标所属 Feed 场景，当前为 `timeline` |
 | `sort_version` | 排序规则版本，当前为 `1`，对应 `(published_at DESC, id DESC)` |
-| `published_at` | 上一页最后一条视频的发布时间 |
+| `published_at` | 上一页最后一条视频的发布时间，统一按 UTC 渲染（例如 `2026-08-01T07:59:50Z`）；客户端应原样回传，不要自行改写时区 |
 | `video_id` | 上一页最后一条视频的 ID，与发布时间共同确定下一页读取位置 |
 
 新 Feed 游标统一使用上述完整字段名，不接受此前开发过程中的单字母字段名；既有 `/api/video` 游标格式不变。
@@ -584,12 +584,14 @@ Feed 游标版本为 `1`，独立绑定 `timeline` 场景、排序版本 `1`（�
 | `400` | 游标不合法 | `{"error":"invalid feed cursor"}` |
 | `400` | 查询参数结构不合法 | `{"error":"invalid feed query"}` |
 | `501` | 合法参数请求尚未启用的 `following`、`hot` 或 `recommend` | `{"error":"feed scene is not enabled"}`，并设置 `Cache-Control: no-store` |
-| `503` | 视频、作者或互动统计读取不可用 | `{"error":"feed temporarily unavailable"}` |
+| `503` | 视频、作者或互动统计读取不可用，或开启缓存后 Feed 请求容量耗尽 | `{"error":"feed temporarily unavailable"}` |
 | `500` | 未预期的内部错误 | `{"error":"feed operation failed"}` |
 
 处理顺序为查询字符串和数量校验、场景选择、Timeline 游标校验及读取。未启用场景返回 `501`，不会读取数据库或静默返回 Timeline。内部读取错误不回显给客户端。
 
-当前前端仍使用 `/api/video`，切换新入口及相应单元测试列为待办。本轮未编写或运行测试、未联调，接口描述来自源码。F0 不新增数据库迁移、Feed Redis 缓存或 Feed MQ 事件，旧接口参数、响应和游标保持兼容。
+Feed 页缓存默认关闭。开启后仅缓存带游标的后续页，保存轻量排序条目并保留探测记录；命中仍读取 MySQL 校验当前公开视频卡片。卡片缺失或排序字段变化时按原游标整页回源，Redis 未命中、载荷非法或故障也回源。缓存写失败不改变成功响应，作者与互动统计仍实时读取。开启时最多并发处理 32 个 Feed 请求；缓存操作最多并发 16 次，容量耗尽时跳过缓存回源。开关不改变查询参数、响应字段或游标格式，也不影响 `/ready`。
+
+当前前端仍使用 `/api/video`，首页 Timeline 接入 `/api/feed` 属于既有演进计划中的后续前端模块，本轮未切换入口。接口描述来自源码，并已由真实 MySQL、Redis 与 httptest 装配的集成测试验收（含缓存开关前后旧接口响应逐字节一致、命中与未命中响应逐字节一致），逐项结论见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 5 节。本次缓存接入不新增数据库迁移或 Feed MQ 事件，旧接口参数、响应和游标保持兼容。
 
 ## 视频接口
 
