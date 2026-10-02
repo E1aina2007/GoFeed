@@ -58,18 +58,38 @@ func (f *fakeQueueDepthReader) queriedQueues() []string {
 	return append([]string(nil), f.queues...)
 }
 
+// syncLogBuffer 串行化日志捕获的写入与读取
+// 测试目标：让后台消费循环写日志与用例断言读日志并发安全
+// 预期效果：-race 下不出现 strings.Builder 的数据竞争
+type syncLogBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // 测试目标：捕获标准日志输出并在用例结束后恢复
-// 预期效果：观测日志断言不污染其他用例输出
-func captureWorkerLogs(t *testing.T) *strings.Builder {
+// 预期效果：观测日志断言不污染其他用例输出，后台协程并发写日志也安全
+func captureWorkerLogs(t *testing.T) *syncLogBuffer {
 	t.Helper()
-	var output strings.Builder
-	log.SetOutput(&output)
+	output := &syncLogBuffer{}
+	log.SetOutput(output)
 	log.SetFlags(0)
 	t.Cleanup(func() {
 		log.SetOutput(os.Stderr)
 		log.SetFlags(log.LstdFlags)
 	})
-	return &output
+	return output
 }
 
 // 测试目标：验证 Snapshot 合并 outbox 快照与死信队列深度
