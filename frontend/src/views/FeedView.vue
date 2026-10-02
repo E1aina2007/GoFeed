@@ -161,7 +161,7 @@ async function loadMore() {
 function handleScroll(event: Event) {
   const container = event.currentTarget as HTMLElement
   const remaining = container.scrollHeight - container.scrollTop - container.clientHeight
-  if (remaining < container.clientHeight * 0.75) {
+  if (remaining < container.clientHeight * 0.75 && !errorMessage.value) {
     void loadMore()
   }
 }
@@ -463,6 +463,7 @@ onBeforeUnmount(() => {
 
 .stream-status--error {
   color: #f2b8aa;
+  scroll-snap-align: end;
 }
 
 .stream-status button,
