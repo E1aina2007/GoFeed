@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	dbpkg "gofeed/internal/db"
 	"gofeed/internal/testutil"
 
 	"gorm.io/gorm"
@@ -916,5 +917,255 @@ func TestRepositoryCountPublishedByAuthor(t *testing.T) {
 	zeroCount, err := repo.GetPublishedVideoCountByAuthor(ctx, 0)
 	if err != nil || zeroCount != 0 {
 		t.Fatalf("authorID=0 应返回零值, count=%d err=%v", zeroCount, err)
+	}
+}
+
+// 测试目标：验证批量读取公开视频在无有效标识时不访问数据库
+// 预期效果：空切片、全零标识都返回非 nil 空切片且查询次数为零
+func TestRepositoryGetPublishedByIDsEmptyBatchSkipsQuery(t *testing.T) {
+	gdb := testutil.DB(t)
+	repo := NewRepository(gdb)
+	if err := dbpkg.RegisterQueryCounter(gdb); err != nil {
+		t.Fatalf("注册查询计数回调失败: %v", err)
+	}
+	seedVideo(t, repo, 1, "published", VideoStatusPublished, baseTime)
+
+	for _, ids := range [][]uint{nil, {}, {0, 0, 0}} {
+		ctx := dbpkg.WithQueryCounter(context.Background())
+		videos, err := repo.GetPublishedByIDs(ctx, ids)
+		if err != nil {
+			t.Fatalf("空批次不应报错 ids=%v err=%v", ids, err)
+		}
+		if videos == nil || len(videos) != 0 {
+			t.Fatalf("空批次应返回非 nil 空切片 ids=%v got=%+v", ids, videos)
+		}
+		if count := dbpkg.QueryCount(ctx); count != 0 {
+			t.Fatalf("空批次不应查询数据库 ids=%v count=%d", ids, count)
+		}
+	}
+}
+
+// 测试目标：验证批量读取公开视频忽略零标识并对重复标识去重
+// 预期效果：重复与零标识不产生额外结果，有效唯一标识只触发一次查询
+func TestRepositoryGetPublishedByIDsDedupesAndIgnoresZero(t *testing.T) {
+	gdb := testutil.DB(t)
+	repo := NewRepository(gdb)
+	if err := dbpkg.RegisterQueryCounter(gdb); err != nil {
+		t.Fatalf("注册查询计数回调失败: %v", err)
+	}
+	first := seedVideo(t, repo, 1, "first", VideoStatusPublished, baseTime)
+	second := seedVideo(t, repo, 1, "second", VideoStatusPublished, baseTime.Add(time.Minute))
+	third := seedVideo(t, repo, 1, "third", VideoStatusPublished, baseTime.Add(2*time.Minute))
+
+	ctx := dbpkg.WithQueryCounter(context.Background())
+	got, err := repo.GetPublishedByIDs(ctx, []uint{0, second.ID, 0, first.ID, third.ID, second.ID, 0})
+	if err != nil {
+		t.Fatalf("批量读取公开视频失败: %v", err)
+	}
+	if count := dbpkg.QueryCount(ctx); count != 1 {
+		t.Fatalf("批量读取应只执行一次查询 count=%d", count)
+	}
+	byID := make(map[uint]Video, len(got))
+	for _, row := range got {
+		byID[row.ID] = row
+	}
+	if len(got) != 3 || len(byID) != 3 {
+		t.Fatalf("应只返回三个唯一视频 got=%d unique=%d", len(got), len(byID))
+	}
+	for _, want := range []*Video{first, second, third} {
+		if _, ok := byID[want.ID]; !ok {
+			t.Fatalf("标识 %d 的结果缺失 got=%+v", want.ID, got)
+		}
+	}
+}
+
+// 测试目标：验证批量读取公开视频的有效标识数量上限
+// 预期效果：五十一项含重复与零标识时成功且只查询一次，超出一个有效标识即整体失败且不访问数据库
+func TestRepositoryGetPublishedByIDsBatchLimitBoundary(t *testing.T) {
+	gdb := testutil.DB(t)
+	repo := NewRepository(gdb)
+	if err := dbpkg.RegisterQueryCounter(gdb); err != nil {
+		t.Fatalf("注册查询计数回调失败: %v", err)
+	}
+
+	ids := []uint{0}
+	for i := 0; i < MaxPublishedVideoBatchSize; i++ {
+		row := seedVideo(t, repo, 1, fmt.Sprintf("batch-%d", i), VideoStatusPublished, baseTime.Add(time.Duration(i)*time.Second))
+		ids = append(ids, row.ID)
+	}
+	ids = append(ids, ids[1], 0)
+
+	ctx := dbpkg.WithQueryCounter(context.Background())
+	got, err := repo.GetPublishedByIDs(ctx, ids)
+	if err != nil {
+		t.Fatalf("上限内的批量读取失败: %v", err)
+	}
+	if len(got) != MaxPublishedVideoBatchSize {
+		t.Fatalf("上限内应返回全部视频 got=%d want=%d", len(got), MaxPublishedVideoBatchSize)
+	}
+	if count := dbpkg.QueryCount(ctx); count != 1 {
+		t.Fatalf("上限内应只执行一次参数化查询 count=%d", count)
+	}
+
+	extra := seedVideo(t, repo, 1, "batch-extra", VideoStatusPublished, baseTime.Add(time.Hour))
+	over := append(append([]uint{}, ids...), extra.ID)
+
+	overCtx := dbpkg.WithQueryCounter(context.Background())
+	got, err = repo.GetPublishedByIDs(overCtx, over)
+	if !errors.Is(err, ErrInvalidPublishedVideoBatch) {
+		t.Fatalf("超限应返回 ErrInvalidPublishedVideoBatch, err=%v", err)
+	}
+	if got != nil {
+		t.Fatalf("超限不应返回数据 got=%+v", got)
+	}
+	if count := dbpkg.QueryCount(overCtx); count != 0 {
+		t.Fatalf("超限不应查询数据库 count=%d", count)
+	}
+}
+
+// 测试目标：验证批量读取公开视频的可见性过滤
+// 预期效果：非发布状态、软删除、发布时间为空、媒体字段不完整和不存在的标识都不返回
+func TestRepositoryGetPublishedByIDsFiltersInvisible(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	public := seedVideo(t, repo, 1, "public", VideoStatusPublished, baseTime)
+	otherAuthor := seedVideo(t, repo, 7, "other-author", VideoStatusPublished, baseTime.Add(time.Minute))
+
+	ids := []uint{public.ID, otherAuthor.ID}
+	draft := seedVideo(t, repo, 1, "draft", VideoStatusDraft, baseTime)
+	processing := seedVideo(t, repo, 1, "processing", VideoStatusProcessing, baseTime)
+	rejected := seedVideo(t, repo, 1, "rejected", VideoStatusRejected, baseTime)
+	purging := seedVideo(t, repo, 1, "purging", VideoStatusPurging, baseTime)
+	deleted := seedVideo(t, repo, 1, "deleted", VideoStatusPublished, baseTime)
+	invisible := []*Video{draft, processing, rejected, purging, deleted}
+
+	nullPublishedAt := newVideoFixture(1, "null-published-at", VideoStatusPublished, baseTime)
+	nullPublishedAt.PublishedAt = nil
+	if err := repo.Create(ctx, nullPublishedAt); err != nil {
+		t.Fatalf("写入发布时间为空的视频失败: %v", err)
+	}
+	invisible = append(invisible, nullPublishedAt)
+
+	blankFields := []struct {
+		name   string
+		mutate func(*Video)
+	}{
+		{name: "缺少播放地址", mutate: func(row *Video) { row.PlayURL = "" }},
+		{name: "缺少播放文件名", mutate: func(row *Video) { row.PlayFileName = "" }},
+		{name: "缺少播放原始名", mutate: func(row *Video) { row.PlayOriginalName = "" }},
+		{name: "缺少封面地址", mutate: func(row *Video) { row.CoverURL = "" }},
+		{name: "缺少封面文件名", mutate: func(row *Video) { row.CoverFileName = "" }},
+		{name: "缺少封面原始名", mutate: func(row *Video) { row.CoverOriginalName = "" }},
+	}
+	for _, item := range blankFields {
+		row := newVideoFixture(1, item.name, VideoStatusPublished, baseTime)
+		item.mutate(row)
+		if err := repo.Create(ctx, row); err != nil {
+			t.Fatalf("写入%s的视频失败: %v", item.name, err)
+		}
+		invisible = append(invisible, row)
+	}
+	if err := repo.DeletePublishedVideo(ctx, deleted.ID, deleted.AuthorID); err != nil {
+		t.Fatalf("软删除视频失败: %v", err)
+	}
+
+	for _, row := range invisible {
+		ids = append(ids, row.ID)
+	}
+	ids = append(ids, 999999)
+
+	got, err := repo.GetPublishedByIDs(ctx, ids)
+	if err != nil {
+		t.Fatalf("批量读取公开视频失败: %v", err)
+	}
+	byID := make(map[uint]Video, len(got))
+	for _, row := range got {
+		byID[row.ID] = row
+	}
+	if len(byID) != 2 {
+		t.Fatalf("结果应只包含两条公开视频 got=%d", len(byID))
+	}
+	for _, row := range invisible {
+		if _, ok := byID[row.ID]; ok {
+			t.Fatalf("不可见视频不应出现在结果中 id=%d title=%s", row.ID, row.Title)
+		}
+	}
+	if _, ok := byID[999999]; ok {
+		t.Fatalf("不存在的标识不应出现在结果中")
+	}
+	card, ok := byID[public.ID]
+	if !ok {
+		t.Fatalf("公开视频缺失 got=%+v", got)
+	}
+	if card.Title != public.Title || card.PlayURL != public.PlayURL || card.CoverURL != public.CoverURL {
+		t.Fatalf("公开视频字段映射错误 got=%+v", card)
+	}
+	if card.PlayFileName != public.PlayFileName || card.PlayOriginalName != public.PlayOriginalName {
+		t.Fatalf("公开视频播放媒体字段映射错误 got=%+v", card)
+	}
+	if card.CoverFileName != public.CoverFileName || card.CoverOriginalName != public.CoverOriginalName {
+		t.Fatalf("公开视频封面媒体字段映射错误 got=%+v", card)
+	}
+	if card.PublishedAt == nil || !card.PublishedAt.Equal(*public.PublishedAt) {
+		t.Fatalf("公开视频发布时间错误 got=%v want=%v", card.PublishedAt, *public.PublishedAt)
+	}
+	if otherAuthorRow, ok := byID[otherAuthor.ID]; !ok || otherAuthorRow.AuthorID != 7 {
+		t.Fatalf("批量读取不应按作者过滤 other=%+v", otherAuthorRow)
+	}
+}
+
+// 测试目标：验证批量读取公开视频按标识建映射而非依赖返回顺序
+// 预期效果：乱序标识全部命中且未被请求的视频不出现
+func TestRepositoryGetPublishedByIDsMapsByID(t *testing.T) {
+	repo := NewRepository(testutil.DB(t))
+	ctx := context.Background()
+
+	wanted := make([]*Video, 0, 6)
+	for i := 0; i < 6; i++ {
+		row := seedVideo(t, repo, 1, fmt.Sprintf("map-%d", i), VideoStatusPublished, baseTime.Add(time.Duration(i)*time.Minute))
+		wanted = append(wanted, row)
+	}
+	unrequested := seedVideo(t, repo, 1, "unrequested", VideoStatusPublished, baseTime.Add(time.Hour))
+
+	ids := []uint{wanted[4].ID, wanted[0].ID, wanted[5].ID, wanted[2].ID, wanted[1].ID, wanted[3].ID}
+	got, err := repo.GetPublishedByIDs(ctx, ids)
+	if err != nil {
+		t.Fatalf("批量读取公开视频失败: %v", err)
+	}
+	if len(got) != len(ids) {
+		t.Fatalf("结果数量错误 got=%d want=%d", len(got), len(ids))
+	}
+	byID := make(map[uint]Video, len(got))
+	for _, row := range got {
+		byID[row.ID] = row
+	}
+	if len(byID) != len(ids) {
+		t.Fatalf("结果存在重复标识 got=%d want=%d", len(byID), len(ids))
+	}
+	if _, ok := byID[unrequested.ID]; ok {
+		t.Fatalf("未被请求的视频不应出现 id=%d", unrequested.ID)
+	}
+	for _, want := range wanted {
+		row, ok := byID[want.ID]
+		if !ok {
+			t.Fatalf("标识 %d 的结果缺失 got=%+v", want.ID, got)
+		}
+		if row.Title != want.Title || row.AuthorID != want.AuthorID || row.Description != want.Description {
+			t.Fatalf("标识 %d 的字段不匹配 got=%+v", want.ID, row)
+		}
+		if row.PlayURL != want.PlayURL || row.PlayFileName != want.PlayFileName || row.PlayOriginalName != want.PlayOriginalName {
+			t.Fatalf("标识 %d 的播放媒体字段不匹配 got=%+v", want.ID, row)
+		}
+		if row.CoverURL != want.CoverURL || row.CoverFileName != want.CoverFileName || row.CoverOriginalName != want.CoverOriginalName {
+			t.Fatalf("标识 %d 的封面媒体字段不匹配 got=%+v", want.ID, row)
+		}
+		if row.Status != want.Status {
+			t.Fatalf("标识 %d 的状态不匹配 got=%s", want.ID, row.Status)
+		}
+		if row.PublishedAt == nil || !row.PublishedAt.Equal(*want.PublishedAt) {
+			t.Fatalf("标识 %d 的发布时间不匹配 got=%v", want.ID, row.PublishedAt)
+		}
 	}
 }

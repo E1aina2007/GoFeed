@@ -53,11 +53,12 @@ func decodeTimelineCursor(encoded string) (*domainfeed.TimelineCursor, error) {
 }
 
 func encodeTimelineCursor(position *domainfeed.TimelineCursor) (string, error) {
+	// 统一按 UTC 渲染，避免命中缓存与未命中时同一位置输出不同的时间文本
 	payload, err := json.Marshal(timelineCursor{
 		Version:     currentCursorVersion,
 		Scene:       string(domainfeed.SceneTimeline),
 		SortVersion: timelineSortVersion,
-		PublishedAt: position.PublishedAt,
+		PublishedAt: position.PublishedAt.UTC(),
 		VideoID:     position.VideoID,
 	})
 	if err != nil {
