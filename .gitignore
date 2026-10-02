@@ -23,9 +23,6 @@ Thumbs.db
 .run/
 tmp/
 
-# —— docs ——
-docs/
-
 # —— AI ——
 .claude/
 

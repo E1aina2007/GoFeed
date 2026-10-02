@@ -2,7 +2,7 @@
 
 接口的当前路径、请求和响应以 [`API.md`](./API.md) 及 `backend/internal/router/router.go` 为准；开发、迁移、配置和提交约束见 [`AGENTS.md`](./AGENTS.md)。
 
-Feed 的分阶段设计与进度（F0–F6：Timeline 兼容边界、缓存、派生事件、Following、Hot、规则推荐和重建）见 [`FEED_CORE_EVOLUTION_PLAN.md`](./FEED_CORE_EVOLUTION_PLAN.md)。F0 后端已分模块提交 `GET /api/feed` 的匿名 Timeline，尚未完成运行验收；旧的 `GET /api/video` 保持兼容，当前前端仍使用旧入口。F1-B 页缓存适配器已按用户指令提交，尚未接入请求链路；其他场景尚未实现。
+后续任务、Feed F0–F6 演进和待补验收统一维护在 [`docs/DEVELOPMENT_PLAN.md`](./docs/DEVELOPMENT_PLAN.md)。已完成事项只在本文简述，不再保留独立完成方案。
 
 ## 快速开始（Docker）
 
@@ -102,40 +102,6 @@ pnpm dev
 
 前端开发服务器会代理 `/api` 和 `/static` 到本机后端 `http://localhost:8080`。日常修改 Go 或 Vue 源码不涉及 Docker 镜像；仅新增数据库迁移时运行一次 `migrate ... up`。
 
-### Windows 一键启动四个开发进程
-
-基础设施已启动、`backend/.env` 已配置且前端依赖已安装后，从仓库根目录执行：
-
-```powershell
-.\scripts\dev.ps1
-```
-
-脚本会分别打开 API、前端、worker 和 sweeper 四个 PowerShell 终端，日志保留在各自窗口中。它不会自动安装依赖、执行迁移或启动 MySQL、Redis、RabbitMQ；这些基础设施仍按上文独立管理。每个窗口可用 `Ctrl+C` 停止对应任务。
-
-## 前端开发（pnpm）
-
-前置：npm，并安装 pnpm：
-
-```bash
-npm install -g pnpm
-```
-
-进入 `frontend` 目录：
-
-```bash
-cd frontend
-pnpm install        # 首次安装依赖（生成/更新 pnpm-lock.yaml）
-pnpm dev            # 启动开发服务器
-pnpm lint           # 只检查，不修改文件
-pnpm lint:fix       # 明确需要自动修复时再执行
-pnpm test:unit      # 单元测试
-pnpm test:e2e -- --project=chromium --project="Mobile Chrome" # 浏览器回归
-pnpm build          # 类型检查 + 构建
-pnpm preview        # 本地预览构建产物
-```
-
-安装依赖：`pnpm add <包名>`；开发依赖：`pnpm add -D <包名>`。
-
 ## CI 验证
 
 每次 push、Pull Request 和手动触发都会执行以下门禁：
@@ -224,20 +190,22 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 ## 已完成能力概述
 
-- 已具备匿名短视频流、账户与会话、视频草稿上传/发布、公开详情、个人主页、我的视频、头像和互动（点赞、评论、关注）。当前 API 契约见 [`API.md`](./API.md)。
-- 已具备可靠异步发布：MySQL 事务写入 Outbox，Worker 经 RabbitMQ 完成媒体处理；relay 以确认、租约和退避恢复，consumer 使用 CAS 幂等及 `1s/5s/30s` 重试/DLQ。
-- 已具备媒体与数据清扫、公开视频完整性过滤、游标分页、请求观测与 MySQL 就绪检查；Redis 仅用于登录/注册限流，故障时 fail-open，`/ready` 仍只依赖 MySQL。
-- 用户列表兼容分页（后端及前端）已提交为 `455849e`，旧的无参数读取保持兼容；过期本地媒体孤儿回收已提交为 `d0902a3`，由 sweeper 按配置宽限期执行。
-- 前端已提供 Feed、登录/注册、发布、详情、用户/个人主页、我的视频和账户设置；网络暂态失败可恢复，登录/注册限流会展示服务端 `Retry-After`。
+以下为源码实现与提交状态，运行验收的待补范围另列在开发计划中。
 
-## 当前工作与后续
+- 账户与会话、匿名视频流、草稿上传/异步发布、公开详情、个人主页、我的视频、头像、点赞/评论/关注及对应前端页面；接口契约见 [API.md](./API.md)。
+- 视频与 social 列表使用带版本和范围的游标；用户列表兼容分页已提交为 `455849e`，保留旧的无参数读取。
+- `internal/error` 统一 user/video/social 的 HTTP 错误分类和安全响应，保持既有状态码与 `{"error":"..."}` 形状；后台任务保留自身错误语义。
+- MySQL 事务 + Outbox 可靠发布，RabbitMQ 运行时连接恢复与拓扑重建、publisher confirm、派发租约/退避、消费 CAS 幂等和 `1s/5s/30s` 重试/DLQ；现有事件仍仅为 `video.process`。
+- 数据和媒体清扫、草稿租约、公开视频完整性过滤、请求日志与 MySQL 就绪检查；本地媒体孤儿回收已提交为 `d0902a3`，按宽限期与引用检查清理。
+- 登录/注册 Redis 固定窗口限流、故障 fail-open 和冷却/单探针恢复；页面按服务端 `Retry-After` 等待。Redis 不进入 `/ready`。
+- F0 新增匿名 Timeline `/api/feed` 的四层读取边界；F1-A 批量公开卡片 `a7e2bd4`、F1-B 轻量页缓存端口与适配 `509c123` 已提交，缓存仍未接入请求。
 
-- F0 后端已分模块提交：领域与应用逻辑 `8394035`、既有仓储适配 `224d8ff`、HTTP 入口与 API 契约 `7541269`。新增 `GET /api/feed?scene=timeline`，按 GCFeed 的 `domain/feed`、`application/feed`、`infra/persistence/feed`、`interfaces/http/feed` 目录分层。Feed 用例已接管分页和批量组装，外层适配器复用原仓储及公开规则，HTTP DTO 单独转换；不再调用旧视频 Service。省略场景默认 Timeline，新旧游标不可混用，未启用场景返回 `501`。契约见 [`API.md`](./API.md)。
-- F1-A 已按用户指令提交为 `a7e2bd4`：增加 `video.Repository.GetPublishedByIDs` 与独立 Feed `CardReader`，最多读取 51 个去重后的有效视频 ID，沿用公开规则并共享字段转换；当前请求用例尚未调用该能力。编译通过，未进行测试或真实 MySQL 验收；具体边界见 [F1 小步模块与 F1-A 读取契约](./FEED_CORE_EVOLUTION_PLAN.md#f1-小步模块与-f1-a-读取契约)。
-- F1-B 已于 2026-10-02 按用户指令独立提交：`application/feed` 定义轻量页缓存端口与校验，`infra/cache/feed` 提供可注入 Get/Set 的适配器，缓存 JSON 编解码位于 `page_codeco.go`。只保存最多 `limit+1` 条视频 ID、作者 ID 和发布时间，明确未命中、有效空页和错误；默认 TTL 30 秒、操作超时 100 毫秒、载荷上限 16 KiB。代码仅在必要方法上保留简短作用说明。编译通过，未装配 Redis Runtime，也未接入服务或路由；具体边界见 [F1-B 页缓存契约与 review 边界](./FEED_CORE_EVOLUTION_PLAN.md#f1-b-页缓存契约与-review-边界)。
-- 本轮只完成后端与文档，前端代码和 `*_test.go` 均未改动，未运行测试或联调。实现状态不代表真实 MySQL 或联合验收通过；暂缓项已在 [F0 完成项与本轮暂缓项](./FEED_CORE_EVOLUTION_PLAN.md#f0-完成项与本轮暂缓项) 列明，补齐后再按实际结果更新。
-- **待补：前端改动**（Feed 请求切换新入口及对应交互接入）、**后端与前端单元测试**（新契约、分页、组装及失败处理）、真实 MySQL/页面联合验收；前端当前仍请求 `/api/video`。
-- 会话校验缓存继续延后，只有可量化收益时才立项。共享存储、时区一致性、`observe.pprof` 与 `gorm.io/gen` 保持独立设计。
-- 后续补齐 F0、F1-A 与 F1-B 的运行验收及所需前端接入；下一项后端模块为 F1-C 接入新 Feed 用例，按后续指令实施，完成后先等待 review。当前 Feed 请求仍直接读取 MySQL；Following、Hot、推荐和 Reconciler 尚不存在，F2–F6 仍为规划。
+## 后续开发
 
-每个后续模块均按“设计契约 → 实现 → 授权范围内验证 → review → 明确指令后独立提交”推进；开始前检查工作树、当前路由、迁移和 [`AGENTS.md`](./AGENTS.md)。
+下一模块是 F1-C，在默认关闭的配置下接入新 Feed 缓存；旧 `/api/video` 保持可用，当前前端仍使用旧入口。前端接入、单元测试与真实 MySQL/Redis/页面验收均待补，代码提交或编译不代表验收通过。
+
+Following、Hot、推荐及其他待开发/评估能力统一见 [开发计划](./docs/DEVELOPMENT_PLAN.md)。每次只实施一个可独立 review 的模块，完成后先等待 review，明确指令后提交。
+
+## 文档维护
+
+根目录只保留 README.md、API.md 和 AGENTS.md；后续任务与必要设计归 `docs/DEVELOPMENT_PLAN.md`，该文件纳入 Git 跟踪。任务完成后更新本文的简要能力说明，移除完成方案；API.md 只描述已注册接口，待补测试和验收不能随完成方案一起丢失。
