@@ -2,11 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/lib/api'
 
-import { listPublishedVideos, type VideoItem, type VideoListResponse } from '../api'
+import { listTimelineFeed, type VideoItem, type VideoListResponse } from '../api'
 import { usePublishedFeed } from '../usePublishedFeed'
 
 vi.mock('../api', () => ({
-  listPublishedVideos: vi.fn<typeof listPublishedVideos>(),
+  listTimelineFeed: vi.fn<typeof listTimelineFeed>(),
 }))
 
 function video(id: number, title = `视频 ${id}`): VideoItem {
@@ -50,7 +50,7 @@ describe('usePublishedFeed', () => {
   it('cancels a superseded first page and ignores its delayed response', async () => {
     const firstResponse = deferred<VideoListResponse>()
     const secondResponse = deferred<VideoListResponse>()
-    const listMock = vi.mocked(listPublishedVideos)
+    const listMock = vi.mocked(listTimelineFeed)
     listMock.mockReturnValueOnce(firstResponse.promise).mockReturnValueOnce(secondResponse.promise)
     const feed = usePublishedFeed()
 
@@ -74,7 +74,7 @@ describe('usePublishedFeed', () => {
 
   it('allows one request per cursor and merges overlapping pages by video ID', async () => {
     const nextPage = deferred<VideoListResponse>()
-    const listMock = vi.mocked(listPublishedVideos)
+    const listMock = vi.mocked(listTimelineFeed)
     listMock
       .mockResolvedValueOnce(response([video(7, '首屏标题')], 'next-page'))
       .mockReturnValueOnce(nextPage.promise)
@@ -98,7 +98,7 @@ describe('usePublishedFeed', () => {
 
   it('retries transient first-page failures and recovers without exposing an error', async () => {
     vi.useFakeTimers()
-    const listMock = vi.mocked(listPublishedVideos)
+    const listMock = vi.mocked(listTimelineFeed)
     listMock
       .mockRejectedValueOnce(new ApiError(503, 'engagement stats temporarily unavailable'))
       .mockResolvedValueOnce(response([video(3)], 'next-page'))
@@ -118,7 +118,7 @@ describe('usePublishedFeed', () => {
 
   it('stops retrying after the bounded recovery attempts are exhausted', async () => {
     vi.useFakeTimers()
-    const listMock = vi.mocked(listPublishedVideos)
+    const listMock = vi.mocked(listTimelineFeed)
     listMock.mockRejectedValue(new ApiError(503, 'engagement stats temporarily unavailable'))
     const feed = usePublishedFeed()
 
@@ -135,7 +135,7 @@ describe('usePublishedFeed', () => {
 
   it('retries a transient pagination failure with the original cursor', async () => {
     vi.useFakeTimers()
-    const listMock = vi.mocked(listPublishedVideos)
+    const listMock = vi.mocked(listTimelineFeed)
     listMock
       .mockResolvedValueOnce(response([video(7, '首屏标题')], 'next-page'))
       .mockRejectedValueOnce(new ApiError(503, 'engagement stats temporarily unavailable'))
@@ -157,7 +157,7 @@ describe('usePublishedFeed', () => {
 
   it('cancels a scheduled retry when the feed is disposed', async () => {
     vi.useFakeTimers()
-    const listMock = vi.mocked(listPublishedVideos)
+    const listMock = vi.mocked(listTimelineFeed)
     listMock.mockRejectedValueOnce(new ApiError(503, 'engagement stats temporarily unavailable'))
     const feed = usePublishedFeed()
 
@@ -173,7 +173,7 @@ describe('usePublishedFeed', () => {
 
   it('keeps cancellation silent and preserves non-retryable errors for retry UI', async () => {
     const pendingResponse = deferred<VideoListResponse>()
-    const listMock = vi.mocked(listPublishedVideos)
+    const listMock = vi.mocked(listTimelineFeed)
     listMock.mockReturnValueOnce(pendingResponse.promise)
     const feed = usePublishedFeed()
 

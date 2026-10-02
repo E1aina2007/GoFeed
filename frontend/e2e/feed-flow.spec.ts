@@ -50,7 +50,7 @@ function feedBody(items: unknown[], nextCursor?: string) {
 function trackFeedRequests(page: Page) {
   const requests: string[] = []
   page.on('request', (request) => {
-    if (new URL(request.url()).pathname === '/api/video') {
+    if (new URL(request.url()).pathname === '/api/feed') {
       requests.push(request.url())
     }
   })
@@ -76,14 +76,22 @@ async function scrollFeedToBottom(page: Page) {
 const playableVideo = resolve('e2e/fixtures/playable.webm')
 
 test('loads the second page on scroll and ignores a duplicated video', async ({ page }) => {
+  const requests = trackFeedRequests(page)
+  const cursorToken = 'feed-page-2+/= &?中文'
   await page.route(
-    (url) => url.pathname === '/api/video',
+    (url) => url.pathname === '/api/feed',
     async (route) => {
-      const cursor = new URL(route.request().url()).searchParams.get('cursor')
-      const body = cursor === 'page-2'
+      const url = new URL(route.request().url())
+      expect(url.searchParams.get('scene')).toBe('timeline')
+      expect(url.searchParams.get('limit')).toBe('12')
+      expect([...url.searchParams.keys()].sort()).toEqual(
+        url.searchParams.has('cursor') ? ['cursor', 'limit', 'scene'] : ['limit', 'scene'],
+      )
+      const cursor = url.searchParams.get('cursor')
+      const body = cursor === cursorToken
         // 第二页故意带回首页已有视频，用于验证按 ID 去重
         ? feedBody([{ ...firstVideo, title: '更新后的首屏视频' }, secondVideo])
-        : feedBody([firstVideo], 'page-2')
+        : feedBody([firstVideo], cursorToken)
       await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
     },
   )
@@ -96,6 +104,8 @@ test('loads the second page on scroll and ignores a duplicated video', async ({ 
   await scrollFeedToBottom(page)
 
   await expect(cards).toHaveCount(2)
+  expect(new URL(requests[0]!).search).toBe('?scene=timeline&limit=12')
+  expect(new URL(requests[1]!).searchParams.get('cursor')).toBe(cursorToken)
   await expect(feed.getByRole('link', { name: '更新后的首屏视频' })).toBeVisible()
   await expect(feed.getByRole('link', { name: '第二页视频' })).toBeVisible()
   // 第二页与首屏有重复视频：同一游标只能请求一次，重复项必须被替换而不是新增卡片
@@ -105,7 +115,7 @@ test('loads the second page on scroll and ignores a duplicated video', async ({ 
         () =>
           performance
             .getEntriesByType('resource')
-            .filter((entry) => entry.name.includes('cursor=page-2')).length,
+            .filter((entry) => new URL(entry.name).searchParams.has('cursor')).length,
       ),
     )
     .toBe(1)
@@ -118,7 +128,7 @@ test('loads the second page on scroll and ignores a duplicated video', async ({ 
 test('shows the end-of-feed status and never loads another page', async ({ page }) => {
   const requests = trackFeedRequests(page)
   await page.route(
-    (url) => url.pathname === '/api/video',
+    (url) => url.pathname === '/api/feed',
     async (route) => {
       await route.fulfill({
         contentType: 'application/json',
@@ -141,7 +151,7 @@ test('shows the end-of-feed status and never loads another page', async ({ page 
 test('renders the error state and recovers through the retry button', async ({ page }) => {
   let attempts = 0
   await page.route(
-    (url) => url.pathname === '/api/video',
+    (url) => url.pathname === '/api/feed',
     async (route) => {
       attempts += 1
       if (attempts === 1) {
@@ -176,7 +186,7 @@ test('renders the error state and recovers through the retry button', async ({ p
 
 test('renders the empty state without a retry entry', async ({ page }) => {
   await page.route(
-    (url) => url.pathname === '/api/video',
+    (url) => url.pathname === '/api/feed',
     async (route) => {
       await route.fulfill({ contentType: 'application/json', body: JSON.stringify(feedBody([])) })
     },
@@ -194,13 +204,13 @@ test('renders the empty state without a retry entry', async ({ page }) => {
 test('keeps the loaded feed and retries the same cursor after a page error', async ({ page }) => {
   const feedRequests: string[] = []
   page.on('request', (request) => {
-    if (new URL(request.url()).pathname === '/api/video') {
+    if (new URL(request.url()).pathname === '/api/feed') {
       feedRequests.push(request.url())
     }
   })
   const pagedRequests: string[] = []
   await page.route(
-    (url) => url.pathname === '/api/video',
+    (url) => url.pathname === '/api/feed',
     async (route) => {
       const cursor = new URL(route.request().url()).searchParams.get('cursor')
       if (!cursor) {
@@ -265,7 +275,7 @@ test('aborts the in-flight first page when the visitor leaves the feed route', a
     feedBody([{ ...firstVideo, description: 'x'.repeat(150_000) }], 'page-2'),
   )
   await page.route(
-    (url) => url.pathname === '/api/video',
+    (url) => url.pathname === '/api/feed',
     async (route) => {
       // 首屏请求不 fulfill（挂起），其它请求正常返回，避免路由跳转被阻塞
       if (!new URL(route.request().url()).searchParams.has('cursor')) {
@@ -279,7 +289,7 @@ test('aborts the in-flight first page when the visitor leaves the feed route', a
 
   const feedRequest = page.waitForRequest((request) => {
     const url = new URL(request.url())
-    return url.pathname === '/api/video' && !url.searchParams.has('cursor')
+    return url.pathname === '/api/feed' && !url.searchParams.has('cursor')
   })
   await page.goto('/')
   const pending = await feedRequest
@@ -296,7 +306,7 @@ test('aborts the in-flight first page when the visitor leaves the feed route', a
 test('renders the feed for a signed-in visitor', async ({ page }) => {
   await signIn(page)
   await page.route(
-    (url) => url.pathname === '/api/video',
+    (url) => url.pathname === '/api/feed',
     async (route) => {
       await route.fulfill({
         contentType: 'application/json',
@@ -329,7 +339,7 @@ test.describe('播放状态', () => {
     })
     // 只放一条，避免第二条卡片抢视口导致首条媒体迟迟不就绪
     await page.route(
-      (url) => url.pathname === '/api/video',
+      (url) => url.pathname === '/api/feed',
       async (route) => {
         await route.fulfill({
           contentType: 'application/json',
@@ -365,5 +375,9 @@ test.describe('播放状态', () => {
       document.dispatchEvent(new Event('visibilitychange'))
     })
     await expect.poll(pauseState).toBe(false)
+    const playerHandle = await player.elementHandle()
+    await page.getByRole('link', { name: '用户', exact: true }).first().click()
+    await expect(page).toHaveURL(/\/users$/)
+    expect(await playerHandle?.evaluate((element) => (element as HTMLVideoElement).paused)).toBe(true)
   })
 })

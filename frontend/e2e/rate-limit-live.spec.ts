@@ -152,7 +152,7 @@ test.describe('登录限流（真实后端）', () => {
 
     // 刷新后仍保持登录态，并真实读取公开 Feed
     const feedResponsePromise = page.waitForResponse((response) =>
-      response.url().includes('/api/video?'),
+      new URL(response.url()).pathname === '/api/feed',
     )
     await page.reload()
     const feedResponse = await feedResponsePromise

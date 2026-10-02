@@ -2,7 +2,7 @@ import { computed, ref } from 'vue'
 
 import { ApiError, apiUserMessage } from '@/lib/api'
 
-import { listPublishedVideos, type VideoItem, type VideoListResponse } from './api'
+import { listTimelineFeed, type VideoItem, type VideoListResponse } from './api'
 
 const feedRetryDelays = [300, 900] as const
 
@@ -109,7 +109,7 @@ export function usePublishedFeed() {
     try {
       for (let retry = 0; ; retry += 1) {
         try {
-          const response = await listPublishedVideos({ signal: controller.signal })
+          const response = await listTimelineFeed({ signal: controller.signal })
           if (!ownsInitialRequest(controller, requestGeneration)) {
             return undefined
           }
@@ -160,7 +160,7 @@ export function usePublishedFeed() {
     try {
       for (let retry = 0; ; retry += 1) {
         try {
-          const response = await listPublishedVideos({ cursor, signal: controller.signal })
+          const response = await listTimelineFeed({ cursor, signal: controller.signal })
           if (!ownsMoreRequest(controller, requestGeneration, cursor)) {
             return undefined
           }

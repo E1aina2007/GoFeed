@@ -55,7 +55,7 @@ function createFeedFetch() {
     const request = input instanceof Request ? input : undefined
     const url = typeof input === 'string' ? input : (request?.url ?? String(input))
     calls.push(url)
-    if (request) {
+    if (request || !url.startsWith('/api/feed?scene=timeline&limit=12')) {
       return new Response(null, { status: 404 })
     }
 
@@ -141,12 +141,14 @@ describe('FeedView 整合行为', () => {
     const { wrapper } = await mountFeed()
     await flushPromises()
     expect(feedStream(wrapper).findAll('.short-video')).toHaveLength(1)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/feed?scene=timeline&limit=12')
 
     await scrollToBottom(wrapper)
     await flushPromises()
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain('cursor=page-2')
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/feed?scene=timeline&limit=12&cursor=page-2')
     const cards = feedStream(wrapper).findAll('.short-video')
     expect(cards).toHaveLength(2)
     expect(cards[0]?.text()).toContain('更新后的首屏标题')

@@ -2,11 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/lib/api'
 
-import { listPublishedVideos, type VideoItem, type VideoListResponse } from '../api'
+import { listTimelineFeed, type VideoItem, type VideoListResponse } from '../api'
 import { usePublishedFeed } from '../usePublishedFeed'
 
 vi.mock('../api', () => ({
-  listPublishedVideos: vi.fn<typeof listPublishedVideos>(),
+  listTimelineFeed: vi.fn<typeof listTimelineFeed>(),
 }))
 
 function video(id: number, title = `视频 ${id}`): VideoItem {
@@ -46,7 +46,7 @@ describe('usePublishedFeed 分页与取消', () => {
   })
 
   it('第二页请求携带游标并追加到首屏之后，同时推进游标', async () => {
-    const listMock = vi.mocked(listPublishedVideos)
+    const listMock = vi.mocked(listTimelineFeed)
     listMock
       .mockResolvedValueOnce(response([video(1), video(2)], 'page-2'))
       .mockResolvedValueOnce(response([video(3)], 'page-3'))
@@ -54,6 +54,7 @@ describe('usePublishedFeed 分页与取消', () => {
 
     const firstPage = await feed.loadFirstPage()
     expect(firstPage?.next_cursor).toBe('page-2')
+    expect(listMock.mock.calls[0]?.[0]).toEqual({ signal: expect.any(AbortSignal) })
 
     // 第二页必须带上首屏游标，否则会重复拿到第一页
     const secondPage = await feed.loadMore()
@@ -67,8 +68,27 @@ describe('usePublishedFeed 分页与取消', () => {
     feed.dispose()
   })
 
+  it('重新加载首屏不携带上一轮游标，空页结束分页', async () => {
+    const listMock = vi.mocked(listTimelineFeed)
+    listMock
+      .mockResolvedValueOnce(response([video(1)], 'feed-only+/= &'))
+      .mockResolvedValueOnce(response([], 'next'))
+      .mockResolvedValueOnce(response([]))
+    const feed = usePublishedFeed()
+    await feed.loadFirstPage()
+    await feed.loadMore()
+    expect(listMock.mock.calls[1]?.[0]?.cursor).toBe('feed-only+/= &')
+    await feed.loadFirstPage()
+    expect(listMock.mock.calls[2]?.[0]).toEqual({ signal: expect.any(AbortSignal) })
+    expect(feed.videos.value).toEqual([])
+    expect(feed.hasMore.value).toBe(false)
+    await feed.loadMore()
+    expect(listMock).toHaveBeenCalledTimes(3)
+    feed.dispose()
+  })
+
   it('末页缺少 next_cursor 时结束分页并拒绝再次请求', async () => {
-    const listMock = vi.mocked(listPublishedVideos)
+    const listMock = vi.mocked(listTimelineFeed)
     listMock
       .mockResolvedValueOnce(response([video(1)], 'page-2'))
       .mockResolvedValueOnce(response([video(2)]))
@@ -91,7 +111,7 @@ describe('usePublishedFeed 分页与取消', () => {
   })
 
   it('分页遇到不可重试错误时保留已加载视频与游标供重试', async () => {
-    const listMock = vi.mocked(listPublishedVideos)
+    const listMock = vi.mocked(listTimelineFeed)
     listMock
       .mockResolvedValueOnce(response([video(1), video(2)], 'page-2'))
       .mockRejectedValueOnce(new ApiError(400, 'invalid cursor'))
@@ -122,7 +142,7 @@ describe('usePublishedFeed 分页与取消', () => {
 
   it('并发分页共用同一游标，按视频 ID 去重后保持首屏顺序', async () => {
     const secondPage = deferred<VideoListResponse>()
-    const listMock = vi.mocked(listPublishedVideos)
+    const listMock = vi.mocked(listTimelineFeed)
     listMock
       .mockResolvedValueOnce(response([video(1), video(2), video(3)], 'page-2'))
       .mockReturnValueOnce(secondPage.promise)
@@ -149,7 +169,7 @@ describe('usePublishedFeed 分页与取消', () => {
 
   it('销毁时真实中断在途请求，迟到的响应不会写回状态', async () => {
     const pending = deferred<VideoListResponse>()
-    const listMock = vi.mocked(listPublishedVideos)
+    const listMock = vi.mocked(listTimelineFeed)
     listMock.mockReturnValueOnce(pending.promise)
     const feed = usePublishedFeed()
 
@@ -173,7 +193,7 @@ describe('usePublishedFeed 分页与取消', () => {
 
   it('分页被销毁后不写回视频，也不留下加载态', async () => {
     const pending = deferred<VideoListResponse>()
-    const listMock = vi.mocked(listPublishedVideos)
+    const listMock = vi.mocked(listTimelineFeed)
     listMock
       .mockResolvedValueOnce(response([video(1)], 'page-2'))
       .mockReturnValueOnce(pending.promise)

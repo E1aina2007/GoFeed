@@ -24,7 +24,7 @@ const myVideo = {
 }
 
 async function mockEmptyFeed(page: Page) {
-  await page.route('**/api/video**', async (route) => {
+  await page.route((url) => url.pathname === '/api/feed', async (route) => {
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items: [] }) })
   })
 }

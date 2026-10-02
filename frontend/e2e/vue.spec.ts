@@ -17,7 +17,7 @@ const firstVideo = {
 }
 
 async function mockPublicFeed(page: Page) {
-  await page.route('**/api/video**', async (route) => {
+  await page.route((url) => url.pathname === '/api/feed', async (route) => {
     const url = new URL(route.request().url())
     const isNextPage = url.searchParams.get('cursor') === 'next-page'
     const body = isNextPage
@@ -154,6 +154,7 @@ test('redirects an anonymous follow to sign in with the profile as return target
   await page.route(
     (url) => url.pathname === '/api/video',
     async (route) => {
+      expect(new URL(route.request().url()).search).toBe('?limit=12&author_id=7')
       await route.fulfill({
         contentType: 'application/json',
         body: JSON.stringify({ items: [firstVideo] }),
@@ -165,4 +166,41 @@ test('redirects an anonymous follow to sign in with the profile as return target
   await page.getByRole('button', { name: '关注', exact: true }).click()
 
   await expect(page).toHaveURL(/\/login\?redirect=\/users\/7$/)
+})
+
+test('keeps author pagination on the legacy endpoint after visiting Timeline', async ({ page }) => {
+  await mockPublicFeed(page)
+  const requests: URL[] = []
+  const authorCursor = 'legacy-author+/= &'
+  await page.route('**/api/user/7/profile', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        account: firstVideo.author,
+        video_count: 2,
+        total_likes: 0,
+        follower_count: 0,
+        vlogger_count: 0,
+      }),
+    })
+  })
+  await page.route((url) => url.pathname === '/api/video', async (route) => {
+    const url = new URL(route.request().url())
+    requests.push(url)
+    expect(url.searchParams.get('author_id')).toBe('7')
+    expect(url.searchParams.get('limit')).toBe('12')
+    expect(url.searchParams.has('scene')).toBe(false)
+    const body = url.searchParams.has('cursor')
+      ? { items: [{ ...firstVideo, id: 8, title: '作者第二页' }] }
+      : { items: [firstVideo], next_cursor: authorCursor }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
+  })
+  await page.goto('/')
+  await page.getByRole('link', { name: '@first-author' }).first().click()
+  await expect(page).toHaveURL(/\/users\/7$/)
+  await page.getByRole('button', { name: '加载更多', exact: true }).click()
+  await expect(page.getByRole('link', { name: '作者第二页' })).toBeVisible()
+  expect(requests).toHaveLength(2)
+  expect(requests[0]?.searchParams.has('cursor')).toBe(false)
+  expect(requests[1]?.searchParams.get('cursor')).toBe(authorCursor)
 })

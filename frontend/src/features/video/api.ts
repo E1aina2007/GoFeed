@@ -39,6 +39,12 @@ export type ListPublishedVideosOptions = {
   signal?: AbortSignal
 }
 
+export type ListTimelineFeedOptions = {
+  cursor?: string
+  limit?: number
+  signal?: AbortSignal
+}
+
 export type UploadedVideo = Pick<
   VideoItem,
   'play_url' | 'play_file_name' | 'play_original_name'
@@ -79,6 +85,14 @@ export type VideoProcessingStatus = {
 
 export type PublishDraftResponse = {
   draft: DraftItem
+}
+
+export function listTimelineFeed({ cursor, limit = 12, signal }: ListTimelineFeedOptions = {}) {
+  const query = new URLSearchParams({ scene: 'timeline', limit: String(limit) })
+  if (cursor) {
+    query.set('cursor', cursor)
+  }
+  return request<VideoListResponse>(`/api/feed?${query.toString()}`, { signal })
 }
 
 export function listPublishedVideos({

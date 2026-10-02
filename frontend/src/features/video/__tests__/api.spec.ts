@@ -11,6 +11,7 @@ import {
   getVideoStatus,
   listMyVideos,
   listPublishedVideos,
+  listTimelineFeed,
   publishDraft,
   uploadCover,
   uploadVideo,
@@ -107,6 +108,54 @@ describe('listPublishedVideos', () => {
   afterEach(() => {
     clearSession()
     vi.unstubAllGlobals()
+  })
+
+  it('requests Timeline with explicit scene and default limit, without a cursor or author', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ items: [] }), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(listTimelineFeed()).resolves.toEqual({ items: [] })
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+      '/api/feed?scene=timeline&limit=12',
+      expect.any(Object),
+    )
+  })
+
+  it('passes the opaque Timeline cursor and cancellation signal without adding unsupported options', async () => {
+    const cursor = 'opaque+/= &?中文'
+    const controller = new AbortController()
+    const options = { cursor, limit: 8, signal: controller.signal, authorID: 42 }
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], next_cursor: cursor }), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(listTimelineFeed(options)).resolves.toEqual({ items: [], next_cursor: cursor })
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+      '/api/feed?scene=timeline&limit=8&cursor=opaque%2B%2F%3D+%26%3F%E4%B8%AD%E6%96%87',
+      expect.objectContaining({ signal: controller.signal }),
+    )
+  })
+
+  it('exposes Timeline errors without falling back to the legacy list', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'invalid feed cursor' }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(listTimelineFeed({ cursor: 'feed-only' })).rejects.toEqual(
+      new ApiError(400, 'invalid feed cursor'),
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/feed?scene=timeline&limit=12&cursor=feed-only')
   })
 
   it('requests the public feed with its cursor', async () => {
