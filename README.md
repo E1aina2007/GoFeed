@@ -220,7 +220,7 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 ## 后续开发
 
-首页 Timeline 接入与隔离真实链路验收已完成，Feed 页缓存继续默认关闭。F2-A 事件类型路由已实现，可靠 `video.published` 写入、对应消费者与预热仍待后续模块。路由装配边界与验收见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 3.1、5.6 节；缓存收益、容量与其他剩余验收仍见第 5 节。
+首页 Timeline 接入与隔离真实链路验收已完成，Feed 页缓存继续默认关闭。F2-A 事件类型路由已实现；F2-B 契约设计已整理，基础卡片缓存、可靠 `video.published` 写入及消费者均未实现。下一模块先交付可选卡片缓存及实际读取用途，再按同事务 Outbox、独立消费者和有限重试交付发布事件闭环；具体契约、验收与回滚见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 3.2 节。F2-A 的运行验收仍见第 5.6 节，缓存收益与容量验证仍待补。
 
 Following、Hot、推荐及其他待开发/评估能力统一见 [开发计划](./docs/DEVELOPMENT_PLAN.md)。每次只实施一个可独立 review 的模块，完成后先等待 review，明确指令后提交。
 
