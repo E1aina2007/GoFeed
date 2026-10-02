@@ -205,7 +205,7 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 - 账户与会话、匿名视频流、草稿上传/异步发布、公开详情、个人主页、我的视频、头像、点赞/评论/关注及对应前端页面；接口契约见 [API.md](./API.md)。
 - 视频与 social 列表使用带版本和范围的游标；用户列表兼容分页已提交为 `455849e`，保留旧的无参数读取。
 - `internal/error` 统一 user/video/social 的 HTTP 错误分类和安全响应，保持既有状态码与 `{"error":"..."}` 形状；后台任务保留自身错误语义。
-- MySQL 事务 + Outbox 可靠发布，RabbitMQ 运行时连接恢复与拓扑重建、publisher confirm、派发租约/退避、消费 CAS 幂等和 `1s/5s/30s` 重试/DLQ；现有事件仍仅为 `video.process`。
+- MySQL 事务 + Outbox 可靠发布，RabbitMQ 运行时连接恢复与拓扑重建、publisher confirm、派发租约/退避、消费 CAS 幂等和 `1s/5s/30s` 重试/DLQ。F2-A `48ce8df` 支持按 `event_type` 装配发布目标、快照检查与载荷构造；生产仍只注册并写入 `video.process`，未知类型继续固定退避。
 - 数据和媒体清扫、草稿租约、公开视频完整性过滤、请求日志与 MySQL 就绪检查；本地媒体孤儿回收已提交为 `d0902a3`，按宽限期与引用检查清理。
 - 登录/注册 Redis 固定窗口限流、故障 fail-open 和冷却/单探针恢复；页面按服务端 `Retry-After` 等待。Redis 不进入 `/ready`。
 - F0 新增匿名 Timeline `/api/feed` 的四层读取边界；F1-A 批量公开卡片 `a7e2bd4`、F1-B 轻量页缓存端口与适配 `509c123` 已提交。F1-C 已提交为 `f772349`，接入默认关闭的后续页缓存、命中校验、MySQL 回源、独立 Runtime 与有界并发。首页已通过 `896f4e1` 切换为 `/api/feed?scene=timeline&limit=12`，作者主页继续使用 `/api/video?author_id=...`；取消、去重、分页错误态、手动重试与播放暂停保持原行为。测试覆盖及实际依赖参与情况见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 5 节；缓存收益与容量压测仍待验证。
@@ -216,9 +216,11 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 回滚首页模块时，恢复 `896f4e1` 之前的首页读取实现（`usePublishedFeed` 调用 `listPublishedVideos`）。如需连同专用验收工具一起撤销，先 `git revert f4af6b8`，再 `git revert 896f4e1`，并同步文档。重新构建并重新加载页面，清空内存分页状态；不能将 Feed 游标继续用于 `/api/video`，也不能在失败后自动跨接口续页。
 
+2026-10-02 F2-A 验收：后端 `go vet ./...`、全量普通测试及 race 测试通过；真实 MySQL/RabbitMQ 的多路由、原发布闭环和 confirm 后崩溃恢复均通过。6 个未开启的专项用例跳过，完整命令与边界见开发计划第 5.6 节。回滚路由模块可执行 `git revert 48ce8df`，同步进度文档后重新构建并重启 worker；无需数据库迁移。
+
 ## 后续开发
 
-首页 Timeline 接入与隔离真实链路验收已完成，Feed 页缓存继续默认关闭。缓存收益、容量与其他剩余验收见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 5 节。F2 事件路由及可靠发布事件另按模块推进，本轮未开始。
+首页 Timeline 接入与隔离真实链路验收已完成，Feed 页缓存继续默认关闭。F2-A 事件类型路由已实现，可靠 `video.published` 写入、对应消费者与预热仍待后续模块。路由装配边界与验收见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 3.1、5.6 节；缓存收益、容量与其他剩余验收仍见第 5 节。
 
 Following、Hot、推荐及其他待开发/评估能力统一见 [开发计划](./docs/DEVELOPMENT_PLAN.md)。每次只实施一个可独立 review 的模块，完成后先等待 review，明确指令后提交。
 

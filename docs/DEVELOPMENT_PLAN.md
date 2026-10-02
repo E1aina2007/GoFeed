@@ -1,6 +1,6 @@
 # GoFeed 开发计划
 
-> 更新日期：2026-10-02。F1-C 已提交为 `f772349`；首页 Timeline 接入为 `896f4e1`，隔离浏览器联调工具为 `f4af6b8`，本轮验收见第 5.5 节。本文统一后续任务、设计边界与待补验收；已实现能力简述见 [README](../README.md)，已实现接口见 [API](../API.md)，协作规则见 [AGENTS](../AGENTS.md)。
+> 更新日期：2026-10-02。F1-C 已提交为 `f772349`；首页 Timeline 接入为 `896f4e1`，隔离浏览器联调工具为 `f4af6b8`，首页验收见第 5.5 节。F2-A 事件类型路由为 `48ce8df`，独立验收见第 5.6 节。本文统一后续任务、设计边界与待补验收；已实现能力简述见 [README](../README.md)，已实现接口见 [API](../API.md)，协作规则见 [AGENTS](../AGENTS.md)。
 
 本文已合并原 Feed 演进方案、跨项目参考路线及分步方案。F1-C 默认关闭的缓存接入已按用户指令提交；F0–F1-C 补测、旧业务兼容、MySQL/迁移、发布链路与浏览器回归按模块独立验证。第 5 节区分首轮补测记录与审查修复后的实际验证，历史测试记录不作为当前环境的验收结论。
 
@@ -14,7 +14,7 @@ MySQL 是唯一业务事实源；Redis 用于可丢失的加速和限流，Rabbi
 | F1-A：批量公开视频卡片 | `a7e2bd4` 已提交，F1-C 开启后的缓存命中路径调用 | 真实数据库批量读取验收已完成（第 5 节） |
 | F1-B：轻量页缓存端口与适配 | `509c123` 已提交，F1-C 已装配 | 适配器单测与真实 Redis 回归通过（第 5 节） |
 | F1-C：Timeline 缓存接入 | `f772349` 已提交，默认关闭 | 自动化开关、命中校验、回源与兼容回归通过；收益与容量压测待补 |
-| F2：Feed 事件与预热 | 未开始 | 先支持事件类型路由，再写新的 Outbox 事件 |
+| F2：Feed 事件与预热 | F2-A 事件类型路由 `48ce8df` 已提交；新事件与预热未开始 | 先确定新事件的消费者与派生数据契约，再实现同事务 Outbox 写入 |
 | F3：Following | 未开始 | 先 MySQL 正确查询，再推拉索引 |
 | F4：Hot | 未开始 | 互动事件、分钟桶和 MySQL 快照 |
 | F5：曝光与规则推荐 | 未开始 | 持久化归因、规则候选，向量召回另行评估 |
@@ -37,13 +37,21 @@ F1-C 已提交的读取行为见 README 与 API；默认关闭，不改变旧接
 
 | 阶段 | 最小交付及必须保留的约束 |
 | --- | --- |
-| F2：Feed 事件 | `processing → published` 实际 CAS 成功时，在同一 MySQL 事务写 `video.published`。当前 `CompleteVideoProcessing` 只更新状态，relay 跳过未知类型，必须先扩展事件路由与消费者规格，不能直接插入新类型。Consumer 幂等预热卡片、统计和首页，派发状态不能当作消费完成水位 |
+| F2：Feed 事件 | F2-A 已支持显式事件类型路由，生产仅注册 `video.process`。`CompleteVideoProcessing` 仍只更新状态；后续在 `processing → published` 实际 CAS 成功的同一 MySQL 事务写 `video.published`，须先确定并装配对应拓扑、消费者与幂等派生目标。卡片、统计和首页预热仍待设计，派发状态不能当作消费完成水位 |
 | F3：Following | 使用真实 `user_follows(follower_id, followee_id)`、活动作者与公开规则查询 MySQL，建立按观看者绑定的游标。现有公开视频规则不自动排除注销作者，活动作者过滤归关注场景。再增加小作者粉丝 Inbox、大作者 Author Outbox、关注补最近视频与取关过滤 |
 | F4：Hot | 点赞/评论仍同步落 MySQL，同事务写 `interaction.changed`。事件去重后更新分钟 ZSET；MySQL 保存有界快照或可重算事件窗口。Redis 故障先读快照，快照缺失再显式降为 Timeline，禁止每次请求实时全表聚合 |
 | F5：曝光与推荐 | 持久化 `request_id`、曝光、有效观看与完播归因，唯一键至少绑定 `user_id + request_id + video_id`。规则先覆盖新鲜度、热度、关注、近期去重与作者打散；规则稳定且数据足够后才评估内容/兴趣向量召回 |
 | F6：重建与运维 | 水位扫描、限批修复、事件重放与容量告警；基础恢复和观测随各模块交付，不能全部推迟到本阶段。大小作者阈值、Inbox 长度、补偿窗口、热榜窗口和重建批次需配置化、可观测、可回滚 |
 
-新增 Feed Outbox、消费幂等/水位、热榜事件或快照、曝光记录时，实施前按迁移目录和目标库状态分配新版本，不预占迁移号。现有迁移最高为 `000009`，不能据此声称某个目标数据库已经应用。
+### 3.1 F2-A：Outbox 事件类型路由
+
+`worker.NewRelay` 保留原构造签名，默认只有 `VideoProcessRoute()`。`NewRelayWithRoutes` 接收完整路由列表，按 `event_type` 建立独立映射，拒绝空列表、不完整的 `mq.EventSpec`、空准备函数和重复类型，并复制注册表。装配多个类型时须显式包含 `VideoProcessRoute()`；此入口不自动声明队列或启动消费者。
+
+每个 `RelayRoute` 提供发布目标和只基于本轮快照的检查、载荷构造。通用轮询继续负责 claim、租约接管日志、发布失败的有界指数退避、确认后标记与 attempt 围栏。未知类型或快照不一致按原有五分钟退避释放租约，并继续处理同批其他事件。视频处理载荷的版本、字段和目标不变；缺失快照、不完整处理状态仍拒绝派发，接管已由消费者完成的 published/rejected 事件仍直接收口。该终态规则仅属于视频处理路由，不能套到其他类型。
+
+生产 worker 的装配、业务状态更新、迁移和 RabbitMQ 拓扑均未改变；新增测试事件只存在于独立测试库和随机隔离拓扑。后续 `video.published` 必须先确定消息版本、消费目标、幂等和消费完成观测，再实现实际 CAS 成功时的同事务 Outbox 写入。当前首页首屏绕过页缓存，卡片/作者/统计缓存尚未实现，不能把路由完成或第二页命中当作预热能力已经交付。
+
+新增 Feed Outbox、消费幂等/水位、热榜事件或快照、曝光记录时，实施前按迁移目录和目标库状态分配新版本，不预占迁移号。现有迁移最高为 `000009`，不能据此声称某个目标数据库已经应用。F2-A 不新增迁移。
 
 原独立关注流方案归入 F3，目标入口优先评审 `/api/feed?scene=following` 的鉴权和观看者范围，不同时新增两套关注流编排。关注/取关、作者注销、发布/删除使结果集合动态变化，keyset 不保证跨页冻结快照。
 
@@ -230,6 +238,33 @@ flowchart LR
 
 回滚：恢复 `896f4e1` 之前 `usePublishedFeed` 调用 `listPublishedVideos` 的首页实现，重新构建并重新加载页面清空分页状态，禁止跨接口沿用游标。需要撤销整个代码/工具模块时，先 `git revert f4af6b8`，再 `git revert 896f4e1`，并同步 README/API/本计划。这里记录回滚步骤，未实际执行回滚。
 
-本模块没有真实链路阻塞。剩余边界仍在第 5.3 节：生产默认 TTL 自然过期、多实例竞争、容量与性能、运维告警等；本轮不覆盖真实限流窗口、MQ 异步发布或 Firefox/WebKit。F2、Following、Hot 和推荐未开始。完成本模块后停止，不推送远端。
+本次首页模块没有真实链路阻塞。剩余边界仍在第 5.3 节：生产默认 TTL 自然过期、多实例竞争、容量与性能、运维告警等；本次首页验收不覆盖真实限流窗口、MQ 异步发布或 Firefox/WebKit，也未实施 F2、Following、Hot 和推荐。后续 F2-A 的独立验收另记第 5.6 节。
+
+### 5.6 F2-A 事件类型路由验收（2026-10-02）
+
+开始时核对 HEAD 为 `8b830c7`，工作树干净；功能与测试提交为 `48ce8df`。仅修改 `backend/internal/worker` 的路由实现、契约断言和隔离测试装配，未改变生产 worker 入口、业务事件写入、前端、HTTP 契约、迁移、私有配置或缓存默认开关。完成该模块后停止，不推送远端。
+
+以下均从 `backend` 实际执行，不复用历史验收结果：
+
+| 命令 | 实际结果与范围 |
+| --- | --- |
+| `go vet ./...` | 通过 |
+| `go test -count=1 -json ./...` | 22 个测试包通过，500 个顶层用例及 298 个子用例通过记录；6 个专项用例跳过，4 个无测试包正常编译 |
+| `go test -race -count=1 -json ./...` | 同范围通过，无竞态；跳过项同上 |
+| `go test -race -count=1 -run '^(TestRelay\|TestVideoProcessRoute\|TestWorkerUsesMQSpec)' -v ./internal/worker` | 最终定向回归通过，包括实际 MySQL/RabbitMQ 多路由用例；测试中的未到期退避夹具固定到未来一分钟，避免机器调度延迟导致误到期 |
+
+全量测试输出保存于被忽略的 `.run/f2-a-test.jsonl`、`.run/f2-a-race.jsonl`，最终定向结果为 `.run/f2-a-relay-final.log`。提交前检查精确暂存路径、`git diff --cached --check` 和整体差异，功能提交无需依赖后续文档改动即可回归。
+
+依赖与验证证据：
+
+- 纯路由单元验证注册表校验、输入切片隔离、原处理消息的完整载荷及 processing/published/rejected、缺失快照/发布时间、接管终态规则。
+- 真实 MySQL + 模拟 publisher 验证未知类型、快照不一致和同批后续事件不被阻断，已派发或退避中的事件不重发；自定义载荷发布失败后保持 pending 并释放租约，恢复后使用同一事件标识、载荷和目标，attempt 递增且成功后才标记 dispatched。
+- `TestRelayMultipleRoutesIntegration` 使用真实 MySQL 与 RabbitMQ，同时派发 `video.process` 和测试专用 `test.snapshot`。两个随机交换机/队列分别收到原视频处理载荷与标题快照载荷，逐项检查交换机、路由键、事件 ID 与视频 ID；已发布测试快照的过期租约接管仍走自身路由，实际收到消息，未套用旧处理事件的终态收口。broker 发布确认后两条事件均为 dispatched，attempt 分别为 1、2；测试接收器验证载荷并 ACK，生产新事件消费者仍待实现。
+- 原真实发布成功、媒体拒绝/草稿清扫、消费重复 CAS、重试/DLQ、5 秒与 30 秒 TTL、confirm 后崩溃及租约接管恢复均通过全量普通/race 回归。全量 race 中 confirm 后进程崩溃恢复为 33.74 秒，多路由真实投递为 0.55 秒；这些时长不作为吞吐或性能证据。
+- 测试连接只读取已有环境或 `backend/.env`；`testutil` 为每个测试包创建独立临时 MySQL 库、应用已有迁移，结束后删库。拓扑夹具按创建的随机精确名称删除本轮队列和交换机，子进程由原测试管理并退出；未出现清理失败。F2-A 新测试不读写 Redis，全量既有 Redis 测试沿用原夹具及清理，不重启共享服务或修改业务库。
+
+6 个专项跳过项：`TestRuntimeRecoversAfterDedicatedRedisRestart` 与 `TestLoginRateLimitFailsOpenAndRecoversWithDedicatedRedis` 未开启 `GOFEED_REDIS_PROCESS_INTEGRATION`；`TestRealRedis` 与 `TestRegisterAndLoginRateLimitAgainstRealRedis` 未开启 `GOFEED_REDIS_INTEGRATION`；`TestBusinessDatabaseSchemaReadOnlyReport` 未开启 `GOFEED_BUSINESS_DB_REPORT`；`TestTimelineBrowserLive` 未开启 `GOFEED_TIMELINE_BROWSER`。其余自动装配的真实 MySQL、Redis 页缓存及 RabbitMQ 测试照常执行；不将这些跳过项算作通过。前端源码和交互未修改，本模块未重跑前端 lint、单测、构建或浏览器专项，第 5.5 节仍是上一模块的记录。
+
+回滚：`git revert 48ce8df`，同步 README 与本计划的进度记录，重新构建并重启 worker；恢复原固定 `video.process` 派发器，无新迁移或业务事件需要回收。F2-B 的 `video.published` 原子写入、对应拓扑/消费者、派生数据缓存与预热均未实现；F1 缓存收益、容量及运维缺口继续保留。
 
 每个模块先核对 Git、路由、迁移与可复用代码，再冻结事实表/事务、Key/TTL/失效、队列/schema/幂等、API/游标/用户范围和恢复/观测边界。按当前授权完成验证与独立提交；用户要求逐模块 review 时，完成一个模块后停止等待。完成任务从本计划移除，将必要结果简述入 README；已有接口契约继续归 API.md。
