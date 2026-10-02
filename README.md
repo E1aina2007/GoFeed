@@ -208,13 +208,17 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 - MySQL 事务 + Outbox 可靠发布，RabbitMQ 运行时连接恢复与拓扑重建、publisher confirm、派发租约/退避、消费 CAS 幂等和 `1s/5s/30s` 重试/DLQ；现有事件仍仅为 `video.process`。
 - 数据和媒体清扫、草稿租约、公开视频完整性过滤、请求日志与 MySQL 就绪检查；本地媒体孤儿回收已提交为 `d0902a3`，按宽限期与引用检查清理。
 - 登录/注册 Redis 固定窗口限流、故障 fail-open 和冷却/单探针恢复；页面按服务端 `Retry-After` 等待。Redis 不进入 `/ready`。
-- F0 新增匿名 Timeline `/api/feed` 的四层读取边界；F1-A 批量公开卡片 `a7e2bd4`、F1-B 轻量页缓存端口与适配 `509c123` 已提交。F1-C 已提交为 `f772349`，接入默认关闭的后续页缓存、命中校验、MySQL 回源、独立 Runtime 与有界并发。测试覆盖及实际依赖参与情况见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 5 节；缓存收益、容量压测和真实页面联调仍有待验证。
+- F0 新增匿名 Timeline `/api/feed` 的四层读取边界；F1-A 批量公开卡片 `a7e2bd4`、F1-B 轻量页缓存端口与适配 `509c123` 已提交。F1-C 已提交为 `f772349`，接入默认关闭的后续页缓存、命中校验、MySQL 回源、独立 Runtime 与有界并发。首页已通过 `896f4e1` 切换为 `/api/feed?scene=timeline&limit=12`，作者主页继续使用 `/api/video?author_id=...`；取消、去重、分页错误态、手动重试与播放暂停保持原行为。测试覆盖及实际依赖参与情况见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 5 节；缓存收益与容量压测仍待验证。
+
+2026-10-02 首页迁移验收：lint、149 个单元用例、构建通过；mock 浏览器桌面/移动 38 通过、2 个真实限流用例未启用。隔离联调工具 `f4af6b8` 在独立 MySQL 测试库准备 13 条可见视频，以真实 Go API 返回 JSON 与游标；缓存关闭/开启各通过桌面与移动浏览器，观测到第二页未命中、回填及重复查询命中，开关前后响应逐字节一致。媒体使用本地夹具，未验证 MQ 发布或性能收益。
+
+重跑隔离联调：从 `backend` 设置当前进程 `$env:GOFEED_TIMELINE_BROWSER='1'` 后执行 `go test -race -count=1 -v -run '^TestTimelineBrowserLive$' ./internal/router`。需已安装前端依赖/Chromium、当前进程 PATH 含 Node，以及可连接的 MySQL/Redis；连接配置只读取现有环境或 `backend/.env`。工具复用 `testutil` 建库、迁移与删库，使用随机 Redis 前缀和精确键清理，自动退出本轮 API/Vite 服务；不复用用户开发服务器，不改私有配置。完整命令及清理证据见开发计划第 5.5 节。
+
+回滚首页模块时，恢复 `896f4e1` 之前的首页读取实现（`usePublishedFeed` 调用 `listPublishedVideos`）。如需连同专用验收工具一起撤销，先 `git revert f4af6b8`，再 `git revert 896f4e1`，并同步文档。重新构建并重新加载页面，清空内存分页状态；不能将 Feed 游标继续用于 `/api/video`，也不能在失败后自动跨接口续页。
 
 ## 后续开发
 
-下一步可独立交付首页 Timeline 接入 `/api/feed?scene=timeline`，这是现有 Feed 演进计划中的前端迁移模块，无需等待 Following、Hot 或推荐。保留作者列表等旧 `/api/video` 调用，隔离新旧游标，并验证入口切换与回滚；当前首页仍使用旧入口，开启 Feed 缓存不会自动改变首页请求链路。F2 事件路由及可靠发布事件另按模块推进。
-
-本轮已补齐前端单元测试与浏览器回归，并修复分页失败后滚动自动重试：错误态保留，点击「重试」才重新请求同一游标。公共 Feed API 用例均为 mock，真实后端联调仍待补；详细验证记录见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 5 节。
+首页 Timeline 接入与隔离真实链路验收已完成，Feed 页缓存继续默认关闭。缓存收益、容量与其他剩余验收见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 5 节。F2 事件路由及可靠发布事件另按模块推进，本轮未开始。
 
 Following、Hot、推荐及其他待开发/评估能力统一见 [开发计划](./docs/DEVELOPMENT_PLAN.md)。每次只实施一个可独立 review 的模块，完成后先等待 review，明确指令后提交。
 
