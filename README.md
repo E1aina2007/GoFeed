@@ -140,6 +140,9 @@ pnpm dev
 | Redis DB | `REDIS_DB` | `0`；供限流与可选 Feed Runtime 选择逻辑库 |
 | Redis 密码 | `REDIS_PASSWORD` | 仅从环境变量读取；Compose Redis 将其传给 `requirepass` |
 | Feed 页缓存 | `FEED_PAGE_CACHE_ENABLED` | 默认 `false`，对应 `feed.page_cache_enabled`；环境变量非空但不是合法布尔值时关闭 |
+| Feed 基础卡片缓存 | `FEED_CARD_CACHE_ENABLED` | 默认 `false`，对应 `feed.card_cache_enabled`；仅页缓存同时开启时生效，非法非空布尔值关闭 |
+| 发布事件生产 | `FEED_PUBLISHED_EVENT_ENABLED` | 默认 `false`，对应 `feed.published_event_enabled`；worker 处理成功时同事务写发布事件，本进程须同时开启预热消费 |
+| 卡片预热消费 | `FEED_CARD_WARMUP_ENABLED` | 默认 `false`，对应 `feed.card_warmup_enabled`；开启发布路由、预热消费者和完整重连拓扑，可在关闭生产后继续排空 |
 | RabbitMQ 主机 | `RABBITMQ_HOST` | 本地默认 `localhost`；Docker 容器由 Compose 覆盖为 `rabbitmq` |
 | RabbitMQ 端口 | `RABBITMQ_PORT` | `5672` |
 | RabbitMQ 用户 | `RABBITMQ_DEFAULT_USER` | 默认 `gofeed`；覆盖 YAML 用户名并用于 Compose RabbitMQ 首次初始化 |
@@ -151,12 +154,20 @@ pnpm dev
 
 Feed 页缓存只作用于 `/api/feed` 的带游标后续页，首屏仍查 MySQL；默认 TTL 30 秒、单次缓存操作上限 100 毫秒。命中后批量检查整页（含探测记录）的当前公开卡片，失效时按原游标整页回源；作者和互动统计实时读取。Redis 失败回源，短超时同步回填失败不影响成功响应，不启动后台回填任务。开启时最多并发处理 32 个 Feed 请求和 16 次缓存操作；请求容量耗尽返回安全的 503，缓存容量耗尽直接回源。旧 `/api/video` 不受这些限制影响。
 
+F2-B1 增加可选基础卡片缓存，仍默认关闭。两个开关同时开启后，仅在后续页的页缓存命中路径使用：先按完整公开规则查询 MySQL 的 `id`、`author_id`、`published_at`，再批量读卡片；只有与当前状态匹配的值才能使用，缺失或坏值仅批量回源缺失卡片。作者资料和统计继续实时读取。Key 为 `gofeed:feed:card:v1:<video_id>`，默认 TTL 30 秒、单卡片上限 16 KiB；Redis 脚本在返回字符串前检查长度，超大卡片不回填。卡片与页缓存共享 16 次操作容量和同一个独立 Feed Runtime，缓存故障不影响成功回源，MySQL 故障仍返回错误。`feed_card_cache` 日志记录命中数量、回源、坏值、超大跳过及读写故障。
+
+只把 `FEED_CARD_CACHE_ENABLED` 设为 `false` 并重启 API，可回到原页缓存加 MySQL 卡片读取；再关闭页缓存则回到全部 MySQL 读取。HTTP 与游标格式不变，无迁移、无需全库清理；也可等待精确卡片键自然过期。B1 本身不包含发布事件或预热；后续 B2 后端代码见下文，默认关闭且本轮未做运行验收。已发布内容编辑尚无入口，未来增加编辑前须另补内容版本与旧写入围栏，不能用发布时间匹配作为编辑一致性保障。
+
 评审后可在 `backend` 目录用临时环境变量开启；设为 `false` 并重启 API 即回到原读取路径，无需迁移或清理 Redis。下面是操作说明；本轮的缓存验收通过测试内装配的 httptest 服务完成，未以 `go run ./cmd` 常驻启动 API：
 
 ```powershell
 $env:FEED_PAGE_CACHE_ENABLED = 'true'
 go run ./cmd
 ```
+
+F2-B2 后端实现：worker 在实际处理成功时可同事务写 `video.published`，通过独立 `feed.card.warm` 队列读取当前 MySQL 公开卡片并写入 B1 缓存，最多三次 `1s/5s/30s` 延迟重试及专用 DLQ。预热处理使用 5 秒上下文，缓存操作沿用 100ms；重复投递可覆盖当前卡片，不可见视频清理精确键，超大卡片记录跳过。首次连接和每次重连都声明两个消费规格，启用 B2 时为发布开启 mandatory/Return 检查，缺失绑定视为失败。`feed_card_warm` 记录处理结果，`feed_card_warm_queue` 记录主、重试与死信队列深度；stdout 不代表持久化消费水位或告警平台。
+
+部署先准备开启预热消费、关闭事件生产的新版 worker，确认完整拓扑与消费者就绪并完成全部处理 worker 升级，再开启生产者；API 需同时开启页缓存和卡片读取才能使用预热值。worker 不允许生产开启而本进程消费关闭。回滚先关闭事件生产，保留新版路由与预热消费排空已有 Outbox、主队列及重试队列，DLQ 记录受控重放清单；可独立关闭 API 卡片读取。在仍有新事件未处理时不要回退到仅识别旧类型的 worker。本轮未运行这些流程或真实链路验收，完整排除范围见开发计划第 5.9 节。
 
 ### Docker 部署
 
@@ -214,13 +225,15 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 重跑隔离联调：从 `backend` 设置当前进程 `$env:GOFEED_TIMELINE_BROWSER='1'` 后执行 `go test -race -count=1 -v -run '^TestTimelineBrowserLive$' ./internal/router`。需已安装前端依赖/Chromium、当前进程 PATH 含 Node，以及可连接的 MySQL/Redis；连接配置只读取现有环境或 `backend/.env`。工具复用 `testutil` 建库、迁移与删库，使用随机 Redis 前缀和精确键清理，自动退出本轮 API/Vite 服务；不复用用户开发服务器，不改私有配置。完整命令及清理证据见开发计划第 5.5 节。
 
+工作树中的补测工具已覆盖页缓存与基础卡片缓存同时开启的桌面/移动读取；历史完整工作树验收中，三种装配的浏览器响应逐字节一致，实际卡片读写与命中独立观测。这些测试文件本次保留未提交，历史记录见开发计划第 5.8 节；卡片冷读多一次校验查询，全命中只省去基础卡片大字段读取，不声明 SQL 数量减少或 p95 收益。
+
 回滚首页模块时，恢复 `896f4e1` 之前的首页读取实现（`usePublishedFeed` 调用 `listPublishedVideos`）。如需连同专用验收工具一起撤销，先 `git revert f4af6b8`，再 `git revert 896f4e1`，并同步文档。重新构建并重新加载页面，清空内存分页状态；不能将 Feed 游标继续用于 `/api/video`，也不能在失败后自动跨接口续页。
 
 2026-10-02 F2-A 验收：后端 `go vet ./...`、全量普通测试及 race 测试通过；真实 MySQL/RabbitMQ 的多路由、原发布闭环和 confirm 后崩溃恢复均通过。6 个未开启的专项用例跳过，完整命令与边界见开发计划第 5.6 节。回滚路由模块可执行 `git revert 48ce8df`，同步进度文档后重新构建并重启 worker；无需数据库迁移。
 
 ## 后续开发
 
-首页 Timeline 接入与隔离真实链路验收已完成，Feed 页缓存继续默认关闭。F2-A 事件类型路由已实现；F2-B 契约设计已整理，基础卡片缓存、可靠 `video.published` 写入及消费者均未实现。下一模块先交付可选卡片缓存及实际读取用途，再按同事务 Outbox、独立消费者和有限重试交付发布事件闭环；具体契约、验收与回滚见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 3.2 节。F2-A 的运行验收仍见第 5.6 节，缓存收益与容量验证仍待补。
+首页 Timeline 接入与隔离真实链路验收已完成，Feed 页缓存继续默认关闭。F2-A 事件类型路由已实现；F2-B1 基础卡片缓存后端提交为 `98f9df2`，F2-B2 同事务 `video.published` 写入、独立预热消费、重试/DLQ 与重连装配后端提交为 `0c68c82`。本次沿用上一轮排除测试、前端和 `*_test.go` 的范围，7 个补测文件保留在工作树；两个模块均编译通过，本次未运行测试或真实联调，发布预热闭环尚未验收。下一步先收口 F2-B2 的可靠性验证，再实施 F3-A 的 MySQL 关注流；缓存收益评估作为生产开启前的独立门槛。具体顺序、契约与验收见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 3.2、3.3、5.8、5.9 节。
 
 Following、Hot、推荐及其他待开发/评估能力统一见 [开发计划](./docs/DEVELOPMENT_PLAN.md)。每次只实施一个可独立 review 的模块，完成后先等待 review，明确指令后提交。
 
