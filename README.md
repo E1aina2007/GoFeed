@@ -141,7 +141,7 @@ pnpm dev
 | Redis 密码 | `REDIS_PASSWORD` | 仅从环境变量读取；Compose Redis 将其传给 `requirepass` |
 | Feed 页缓存 | `FEED_PAGE_CACHE_ENABLED` | 默认 `false`，对应 `feed.page_cache_enabled`；环境变量非空但不是合法布尔值时关闭 |
 | Feed 基础卡片缓存 | `FEED_CARD_CACHE_ENABLED` | 默认 `false`，对应 `feed.card_cache_enabled`；仅页缓存同时开启时生效，非法非空布尔值关闭 |
-| 发布事件生产 | `FEED_PUBLISHED_EVENT_ENABLED` | 默认 `false`，对应 `feed.published_event_enabled`；worker 处理成功时同事务写发布事件，本进程须同时开启预热消费 |
+| 发布事件生产 | `FEED_PUBLISHED_EVENT_ENABLED` | 默认 `false`，对应 `feed.published_event_enabled`；worker 处理成功时同事务写发布事件，本进程须同时开启预热消费，只开生产而未开本进程预热消费时启动即拒绝 |
 | 卡片预热消费 | `FEED_CARD_WARMUP_ENABLED` | 默认 `false`，对应 `feed.card_warmup_enabled`；开启发布路由、预热消费者和完整重连拓扑，可在关闭生产后继续排空 |
 | RabbitMQ 主机 | `RABBITMQ_HOST` | 本地默认 `localhost`；Docker 容器由 Compose 覆盖为 `rabbitmq` |
 | RabbitMQ 端口 | `RABBITMQ_PORT` | `5672` |
@@ -156,7 +156,7 @@ Feed 页缓存只作用于 `/api/feed` 的带游标后续页，首屏仍查 MySQ
 
 F2-B1 增加可选基础卡片缓存，仍默认关闭。两个开关同时开启后，仅在后续页的页缓存命中路径使用：先按完整公开规则查询 MySQL 的 `id`、`author_id`、`published_at`，再批量读卡片；只有与当前状态匹配的值才能使用，缺失或坏值仅批量回源缺失卡片。作者资料和统计继续实时读取。Key 为 `gofeed:feed:card:v1:<video_id>`，默认 TTL 30 秒、单卡片上限 16 KiB；Redis 脚本在返回字符串前检查长度，超大卡片不回填。卡片与页缓存共享 16 次操作容量和同一个独立 Feed Runtime，缓存故障不影响成功回源，MySQL 故障仍返回错误。`feed_card_cache` 日志记录命中数量、回源、坏值、超大跳过及读写故障。
 
-只把 `FEED_CARD_CACHE_ENABLED` 设为 `false` 并重启 API，可回到原页缓存加 MySQL 卡片读取；再关闭页缓存则回到全部 MySQL 读取。HTTP 与游标格式不变，无迁移、无需全库清理；也可等待精确卡片键自然过期。B1 本身不包含发布事件或预热；后续 B2 后端代码见下文，默认关闭且本轮未做运行验收。已发布内容编辑尚无入口，未来增加编辑前须另补内容版本与旧写入围栏，不能用发布时间匹配作为编辑一致性保障。
+只把 `FEED_CARD_CACHE_ENABLED` 设为 `false` 并重启 API，可回到原页缓存加 MySQL 卡片读取；再关闭页缓存则回到全部 MySQL 读取。HTTP 与游标格式不变，无迁移、无需全库清理；也可等待精确卡片键自然过期。B1 本身不包含发布事件或预热；后续 B2 后端代码见下文，默认关闭，可靠性验收见开发计划第 5.10 节。已发布内容编辑尚无入口，未来增加编辑前须另补内容版本与旧写入围栏，不能用发布时间匹配作为编辑一致性保障。
 
 评审后可在 `backend` 目录用临时环境变量开启；设为 `false` 并重启 API 即回到原读取路径，无需迁移或清理 Redis。下面是操作说明；本轮的缓存验收通过测试内装配的 httptest 服务完成，未以 `go run ./cmd` 常驻启动 API：
 
@@ -167,7 +167,7 @@ go run ./cmd
 
 F2-B2 后端实现：worker 在实际处理成功时可同事务写 `video.published`，通过独立 `feed.card.warm` 队列读取当前 MySQL 公开卡片并写入 B1 缓存，最多三次 `1s/5s/30s` 延迟重试及专用 DLQ。预热处理使用 5 秒上下文，缓存操作沿用 100ms；重复投递可覆盖当前卡片，不可见视频清理精确键，超大卡片记录跳过。首次连接和每次重连都声明两个消费规格，启用 B2 时为发布开启 mandatory/Return 检查，缺失绑定视为失败。`feed_card_warm` 记录处理结果，`feed_card_warm_queue` 记录主、重试与死信队列深度；stdout 不代表持久化消费水位或告警平台。
 
-部署先准备开启预热消费、关闭事件生产的新版 worker，确认完整拓扑与消费者就绪并完成全部处理 worker 升级，再开启生产者；API 需同时开启页缓存和卡片读取才能使用预热值。worker 不允许生产开启而本进程消费关闭。回滚先关闭事件生产，保留新版路由与预热消费排空已有 Outbox、主队列及重试队列，DLQ 记录受控重放清单；可独立关闭 API 卡片读取。在仍有新事件未处理时不要回退到仅识别旧类型的 worker。本轮未运行这些流程或真实链路验收，完整排除范围见开发计划第 5.9 节。
+部署先准备开启预热消费、关闭事件生产的新版 worker，确认完整拓扑与消费者就绪并完成全部处理 worker 升级，再开启生产者；API 需同时开启页缓存和卡片读取才能使用预热值。worker 不允许生产开启而本进程消费关闭。回滚先关闭事件生产，保留新版路由与预热消费排空已有 Outbox、主队列及重试队列，DLQ 记录受控重放清单；可独立关闭 API 卡片读取。在仍有新事件未处理时不要回退到仅识别旧类型的 worker。本轮未运行这些部署/回滚流程，隔离测试内的真实链路验收见开发计划第 5.10 节，实现阶段的排除范围见第 5.9 节。
 
 ### Docker 部署
 
@@ -233,9 +233,11 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 ## 后续开发
 
-首页 Timeline 接入与隔离真实链路验收已完成，Feed 页缓存继续默认关闭。F2-A 事件类型路由已实现；F2-B1 基础卡片缓存后端提交为 `98f9df2`，F2-B2 同事务 `video.published` 写入、独立预热消费、重试/DLQ 与重连装配后端提交为 `0c68c82`。本次沿用上一轮排除测试、前端和 `*_test.go` 的范围，7 个补测文件保留在工作树；两个模块均编译通过，本次未运行测试或真实联调，发布预热闭环尚未验收。下一步先收口 F2-B2 的可靠性验证，再实施 F3-A 的 MySQL 关注流；缓存收益评估作为生产开启前的独立门槛。具体顺序、契约与验收见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 3.2、3.3、5.8、5.9 节。
+首页 Timeline 接入与真实链路验收已完成，Feed 页缓存继续默认关闭。F2-B1 基础卡片缓存后端为 `98f9df2`，F2-B2 同事务发布事件、预热消费、重试/DLQ 与重连装配后端为 `0c68c82`。补测经审查后分为 `5a87830`（卡片读取）与 `719e873`（发布预热），修复了测试清空固定 MQ 队列的问题，改用每用例随机拓扑，并在真实 ACK 后停止消费循环。配置校验提取保留既有 worker 启动行为。构建、vet、普通和 race 全量回归通过，真实 MySQL/RabbitMQ/Redis 参与；6 个专项开关用例跳过，不算通过。后续继续 F3-A MySQL 关注流后端，页面接入另行 review；生产开关仍默认关闭，缓存收益、容量与重启专项缺口见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 5.10、5.11 节。
 
 Following、Hot、推荐及其他待开发/评估能力统一见 [开发计划](./docs/DEVELOPMENT_PLAN.md)。每次只实施一个可独立 review 的模块，完成后先等待 review，明确指令后提交。
+
+F3-A MySQL 关注流的鉴权、观看者绑定游标、公开过滤、批量组装与实施边界已整理在开发计划第 3.4 节；目前仅完成设计，`scene=following` 仍返回 501，代码实现与页面接入分别等待后续 review。
 
 ## 文档维护
 

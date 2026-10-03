@@ -1,6 +1,6 @@
 # GoFeed 开发计划
 
-> 更新日期：2026-10-03。F1-C 已提交为 `f772349`；首页 Timeline 接入为 `896f4e1`，隔离浏览器联调工具为 `f4af6b8`，首页验收见第 5.5 节。F2-A 事件类型路由为 `48ce8df`，独立验收见第 5.6 节；F2-B 契约设计为 `ecef426`，当前分支的 F2-B1、F2-B2 后端分别提交为 `98f9df2`、`0c68c82`。测试与前端本次排除，7 个补测文件保留未提交；编译检查与历史运行记录分别见第 5.8、5.9 节，下一步顺序见第 3.3 节。本文统一后续任务、设计边界与待补验收；已实现能力简述见 [README](../README.md)，已实现接口见 [API](../API.md)，协作规则见 [AGENTS](../AGENTS.md)。
+> 更新日期：2026-10-03。F1-C 已提交为 `f772349`；首页 Timeline 接入为 `896f4e1`，隔离浏览器联调工具为 `f4af6b8`，首页验收见第 5.5 节。F2-A 事件类型路由为 `48ce8df`，独立验收见第 5.6 节；F2-B 契约设计为 `ecef426`，当前分支的 F2-B1、F2-B2 后端分别提交为 `98f9df2`、`0c68c82`。测试与前端本次排除，7 个补测文件保留未提交；编译检查与历史运行记录分别见第 5.8、5.9 节，下一步顺序见第 3.3 节。2026-10-03 同日第二轮在用户测试授权下补做 F2-B2 后端可靠性验收（新增 6 个后端测试文件、1 处最小配置校验修复，均未提交），结果与剩余缺口见第 5.10 节。本文统一后续任务、设计边界与待补验收；已实现能力简述见 [README](../README.md)，已实现接口见 [API](../API.md)，协作规则见 [AGENTS](../AGENTS.md)。
 
 本文已合并原 Feed 演进方案、跨项目参考路线及分步方案。F1-C 默认关闭的缓存接入已按用户指令提交；F0–F1-C 补测、旧业务兼容、MySQL/迁移、发布链路与浏览器回归按模块独立验证。第 5 节区分首轮补测记录与审查修复后的实际验证，历史测试记录不作为当前环境的验收结论。
 
@@ -14,8 +14,8 @@ MySQL 是唯一业务事实源；Redis 用于可丢失的加速和限流，Rabbi
 | F1-A：批量公开视频卡片 | `a7e2bd4` 已提交，F1-C 开启后的缓存命中路径调用 | 真实数据库批量读取验收已完成（第 5 节） |
 | F1-B：轻量页缓存端口与适配 | `509c123` 已提交，F1-C 已装配 | 适配器单测与真实 Redis 回归通过（第 5 节） |
 | F1-C：Timeline 缓存接入 | `f772349` 已提交，默认关闭 | 自动化开关、命中校验、回源与兼容回归通过；收益与容量压测待补 |
-| F2：Feed 事件与预热 | F2-A 路由 `48ce8df`、F2-B1 后端 `98f9df2`、F2-B2 后端 `0c68c82` 已提交，测试文件排除 | 先补 B2 可靠性与真实链路验收；生产开关仍关闭 |
-| F3：Following | 未开始 | 先 MySQL 正确查询，再推拉索引 |
+| F2：Feed 事件与预热 | F2-A 路由 `48ce8df`、F2-B1 后端 `98f9df2`、F2-B2 后端 `0c68c82` 已提交；F2-B2 后端可靠性验收已执行（第 5.10 节，未提交） | 生产开关仍关闭；收益、真实容量、浏览器与性能缺口保留 |
+| F3：Following | F3-A 契约设计已完成（第 3.4 节），业务未实现 | 先 review 契约并收口 F2-B2 补测提交，再实现 MySQL 关注流；推拉索引另立模块 |
 | F4：Hot | 未开始 | 互动事件、分钟桶和 MySQL 快照 |
 | F5：曝光与规则推荐 | 未开始 | 持久化归因、规则候选，向量召回另行评估 |
 | F6：重建与运维收口 | 未开始 | 整合恢复水位、容量、重放、指标和告警 |
@@ -37,7 +37,7 @@ F1-C 已提交的读取行为见 README 与 API；默认关闭，不改变旧接
 
 | 阶段 | 最小交付及必须保留的约束 |
 | --- | --- |
-| F2：Feed 事件 | F2-A 已支持显式事件类型路由，生产仅注册 `video.process`。B1 基础卡片读写已提交，B2 后端代码已实现待验收；默认关闭新事件，开启时 `CompleteVideoProcessing` 的实际 CAS 与发布事件同事务，独立预热消费和拓扑已装配。统计缓存与首页预热另行规划，派发状态不能当作消费完成水位 |
+| F2：Feed 事件 | F2-A 已支持显式事件类型路由，生产仅注册 `video.process`。B1 基础卡片读写已提交，B2 后端代码已实现并完成后端可靠性验收（第 5.10 节，未提交）；默认关闭新事件，开启时 `CompleteVideoProcessing` 的实际 CAS 与发布事件同事务，独立预热消费和拓扑已装配。统计缓存与首页预热另行规划，派发状态不能当作消费完成水位 |
 | F3：Following | 使用真实 `user_follows(follower_id, followee_id)`、活动作者与公开规则查询 MySQL，建立按观看者绑定的游标。现有公开视频规则不自动排除注销作者，活动作者过滤归关注场景。再增加小作者粉丝 Inbox、大作者 Author Outbox、关注补最近视频与取关过滤 |
 | F4：Hot | 点赞/评论仍同步落 MySQL，同事务写 `interaction.changed`。事件去重后更新分钟 ZSET；MySQL 保存有界快照或可重算事件窗口。Redis 故障先读快照，快照缺失再显式降为 Timeline，禁止每次请求实时全表聚合 |
 | F5：曝光与推荐 | 持久化 `request_id`、曝光、有效观看与完播归因，唯一键至少绑定 `user_id + request_id + video_id`。规则先覆盖新鲜度、热度、关注、近期去重与作者打散；规则稳定且数据足够后才评估内容/兴趣向量召回 |
@@ -49,13 +49,13 @@ F1-C 已提交的读取行为见 README 与 API；默认关闭，不改变旧接
 
 每个 `RelayRoute` 提供发布目标和只基于本轮快照的检查、载荷构造。通用轮询继续负责 claim、租约接管日志、发布失败的有界指数退避、确认后标记与 attempt 围栏。未知类型或快照不一致按原有五分钟退避释放租约，并继续处理同批其他事件。视频处理载荷的版本、字段和目标不变；缺失快照、不完整处理状态仍拒绝派发，接管已由消费者完成的 published/rejected 事件仍直接收口。该终态规则仅属于视频处理路由，不能套到其他类型。
 
-F2-A 提交本身未改变生产 worker 装配、业务状态、迁移或 RabbitMQ 拓扑；该阶段测试事件只存在于隔离测试资源。后续 B2 的默认关闭装配和同事务发布事件代码现已实现，见第 3.2、5.9 节，本轮尚未运行验收。首页首屏仍绕过页缓存，基础卡片缓存由 B1 实现，作者/统计缓存仍未实现；不能把读取命中当作预热验收已经完成。
+F2-A 提交本身未改变生产 worker 装配、业务状态、迁移或 RabbitMQ 拓扑；该阶段测试事件只存在于隔离测试资源。后续 B2 的默认关闭装配和同事务发布事件代码现已实现，见第 3.2、5.9 节；运行验收已在 2026-10-03 同日第二轮按测试授权补做（第 5.10 节）。首页首屏仍绕过页缓存，基础卡片缓存由 B1 实现，作者/统计缓存仍未实现；不能把读取命中当作预热验收已经完成。
 
 新增 Feed Outbox、消费幂等/水位、热榜事件或快照、曝光记录时，实施前按迁移目录和目标库状态分配新版本，不预占迁移号。现有迁移最高为 `000009`，不能据此声称某个目标数据库已经应用。F2-A 不新增迁移。
 
-### 3.2 F2-B：发布事件与单视频卡片预热契约（B1/B2 后端已提交，B2 待运行验收）
+### 3.2 F2-B：发布事件与单视频卡片预热契约（B1/B2 后端已提交，B2 后端可靠性验收见第 5.10 节）
 
-契约设计已提交为 `ecef426`，F2-B1 基础卡片读写和公开状态端口后端提交为 `98f9df2`；历史完整工作树运行记录见第 5.8 节。下述 F2-B2 发布消息、队列、生产者和消费者后端提交为 `0c68c82`。本次按“提交并分析下一步”完成分模块提交，沿用上一轮不修改或运行测试、前端且不提交 `*_test.go` 的范围；真实链路验收仍待补，不把 B1 命中或 B2 编译通过作为事件预热验收。
+契约设计已提交为 `ecef426`，F2-B1 基础卡片读写和公开状态端口后端提交为 `98f9df2`；历史完整工作树运行记录见第 5.8 节。下述 F2-B2 发布消息、队列、生产者和消费者后端提交为 `0c68c82`。本次按“提交并分析下一步”完成分模块提交，沿用上一轮不修改或运行测试、前端且不提交 `*_test.go` 的范围；真实链路验收仍待补，不把 B1 命中或 B2 编译通过作为事件预热验收。该缺口已在 2026-10-03 同日第二轮的测试授权下于第 5.10 节补做。
 
 **消费目标与交付顺序**
 
@@ -66,7 +66,7 @@ F2-A 提交本身未改变生产 worker 装配、业务状态、迁移或 Rabbit
 | 独立模块 | 完整交付范围 | 停止点 |
 | --- | --- | --- |
 | F2-B1：基础卡片缓存读写 | 已实现批量端口、Redis 适配、公开状态验证和 `CardReader` 装配；回源/取消/容量/删除并发与真实浏览器结果属于历史完整工作树 | 后端 `98f9df2` 已提交，7 个补测文件排除；默认关闭 |
-| F2-B2：发布事件闭环 | 后端已实现实际 CAS 与 Outbox 同事务、发布路由、完整重连拓扑、专用消费、ACK/重试/DLQ 和默认关闭开关；测试与真实故障验收待补 | 后端 `0c68c82` 已提交；先收口验收，不单独开启生产者 |
+| F2-B2：发布事件闭环 | 后端已实现实际 CAS 与 Outbox 同事务、发布路由、完整重连拓扑、专用消费、ACK/重试/DLQ 和默认关闭开关；后端可靠性验收已执行（第 5.10 节） | 后端 `0c68c82` 已提交；先收口验收，不单独开启生产者 |
 
 F2-B1 不写 `video.published`，F2-B2 不补发历史所有已发布视频，也不实现 Following、Hot 或推荐。基础卡片缓存是否值得生产启用仍需 F1 的查询成本、容量与 p95 证据；预热存在和命中率不证明收益。
 
@@ -136,7 +136,7 @@ B1 回滚设 `FEED_CARD_CACHE_ENABLED=false` 并重启 API，即恢复页缓存�
 
 参考 GCFeed 的卡片/统计拆分、分钟热榜、大小作者推拉和推荐分场景；参考 feedsystem 的队列隔离、独立消费者、QoS 和运行方式。保留 GoFeed 的 Outbox + confirm + lease + CAS + retry/DLQ，不复制 Redis 先写互动再异步落库或 API 先发 MQ 再直接写库的路径。
 
-下图表示派生链路目标；B2 后端已装配发布预热路径，运行验收尚未完成，其他派生索引和重建仍待后续：
+下图表示派生链路目标；B2 后端已装配发布预热路径并完成后端可靠性验收（第 5.10 节），其他派生索引和重建仍待后续：
 
 ```mermaid
 flowchart LR
@@ -164,17 +164,114 @@ flowchart LR
 
 ### 3.3 本次提交后的下一步（2026-10-03，仅分析）
 
-当前 B1 解决卡片缓存的实际读取，B2 解决发布后的同事务事件与派生写入；两者后端已提交，新开关仍默认关闭。代码与编译不能补上可靠性证据，下一步优先完成 B2 验收收口，本次不开展新功能或执行已排除的测试。
+当前 B1 解决卡片缓存的实际读取，B2 解决发布后的同事务事件与派生写入；两者后端已提交，新开关仍默认关闭。代码与编译不能补上可靠性证据。2026-10-03 同日第二轮已在测试授权下完成 B2 后端可靠性验收（第 5.10 节），下表的第 1 项据此收口；本次仍不开展新功能，也不开启生产开关。
 
 | 顺序 | 独立范围 | 交付条件 |
 | --- | --- | --- |
-| 1. F2-B2 验收收口 | 在后续允许测试的范围内补事务 CAS/并发唯一事件/插入与提交回滚、重复投递、软删除、重试确认后 ACK、DLQ、缺失绑定、断线重连和取消关闭；用隔离 MySQL、RabbitMQ、Redis 证明真实预热与读路径使用 | 单独提交补测与必要修复，保留原媒体处理及旧接口兼容；不能用 dispatched 或日志存在代替消费成功 |
+| 1. F2-B2 验收收口 | 已执行：新增 6 个后端测试文件（事务 CAS 与唯一事件、真实 MySQL→Outbox→Relay→RabbitMQ→consumer→Redis 链路、消费与确认契约、两类规格拓扑与 mandatory 路由、预热卡片被 HTTP 读路径使用、发布开关默认与组合校验）并提取 1 处既有配置校验，见第 5.10 节 | 后端可靠性验收已执行并通过；补测正按本轮提交前审查结果分模块提交，见第 5.11 节；不能用 dispatched 或日志存在代替消费成功 |
 | 2. 缓存开启决策 | 分别比较关闭缓存、仅页缓存、页加卡片缓存、事件预热；记录 SQL 成本、p95、Redis 操作、TTL、容量与多实例同键竞争 | 只作为生产开启门槛；没有收益则继续关闭，不人为阻塞独立的 Following 开发 |
-| 3. F3-A MySQL 关注流 | 先冻结 `/api/feed?scene=following` 的鉴权、观看者绑定游标与公开规则，再实现 MySQL 查询及既有批量作者/统计组装 | 形成可独立 review 的关注流后端；本模块不同时引入 Inbox/Author Outbox、热榜、推荐或前端页面 |
+| 3. F3-A MySQL 关注流 | 契约与源码复用已整理在第 3.4 节；实现阶段增加观看者上下文、独立游标、MySQL 查询及既有批量作者/统计组装 | 设计完成后先 review；实施前审查 F2-B2 补测与修复，不同时引入 Inbox/Author Outbox、热榜、推荐或前端页面 |
 
 F3-A 可复用现有 `user_follows` 唯一键与关注者索引、用户会话鉴权、完整公开视频作用域以及 Feed 作者/统计批量接口。当前 `/api/feed` 注册为匿名路由，`FeedRequest` 没有观看者字段，Following 仍明确返回 501；已有关注列表不是关注视频流。需从 JWT/session 获取观看者，游标绑定 `following`、观看者、版本和 `(published_at, video_id)`；通过同一查询的关注关系及活动作者过滤，使取关、作者注销或视频删除后的下一次读取反映 MySQL 当前状态。Timeline 匿名契约与旧 `/api/video` 保持原行为，不接入匿名 Timeline 页缓存，也不承诺跨页冻结快照。索引是否需要迁移须依据目标库元数据与 EXPLAIN 再决定。
 
-若后续仍排除测试，可先完成 F3-A 的契约设计和源码复用核对；不将这一设计或继续编译记为 F2-B2 验收完成，也不自动开启生产开关。上述顺序是后续建议，本次授权仅覆盖现有改动提交与分析。
+F3-A 的契约设计和源码复用核对已按后续“那就继续”指令完成，见第 3.4 节；设计阶段未实施关注流。用户随后已授权审查补测、安全后提交并继续下一步；本轮执行记录见第 5.11 节，生产开关保持默认关闭。
+
+### 3.4 F3-A：MySQL 关注流契约（2026-10-03，仅设计，未实现）
+
+本轮范围为关注流契约和源码复用核对。当前真实路由仍只启用匿名 Timeline，Following 仍返回 501；本节描述后续实现目标，不写入 API.md 的已实现接口。用户已确认 F2-B2 验收任务结束、允许更新开发计划；其现有配置修复、测试与第 5.10 节记录原样保留。设计阶段未修改后端、前端、测试、迁移或私有配置，未执行测试、启动服务或提交；后续授权实施的状态另行记录。
+
+**入口、鉴权与响应**
+
+| 项目 | 冻结契约 |
+| --- | --- |
+| 入口 | 沿用 `GET /api/feed?scene=following&limit=20&cursor=...`，仅新增该场景的处理；不另建 `/api/video/following` |
+| 查询参数 | 只接受单值 `scene`、`limit`、`cursor`；重复、未知或 URL 编码非法为 400。省略 limit 为 20，显式 limit 必须为 1–50；省略/空 cursor 为首屏，省略/空 scene 继续指向 Timeline |
+| 身份来源 | Following 必须通过现有 Bearer JWT 与活动 session 校验，观看者仅来自 `jwt.UserID`，不接受 query/body 的 viewer_id、user_id 或 author_id，也不从游标读取授权身份 |
+| 参数与鉴权顺序 | 先按现有规则校验查询参数、limit 与场景；Following 再鉴权，成功后校验游标。合法 Following 请求缺少凭据或凭据无效为 401，即使其游标也无效；合法凭据加非法游标为 400 |
+| 活动观看者 | 在 Following 读适配器复用 `social.Repository.GetActiveUser`；会话有效但用户已注销/缺失仍为 401，不能当成空关注集合。该检查的数据库错误映射为安全的 503 |
+| 其他认证语义 | 复用 `jwt.Auth(sessionService)`，不修改所有旧接口的鉴权规则。当前中间件把 session 校验的数据库错误也统一映射为 401；此行为明确保留，不宣称认证阶段的所有数据库故障均为 503。统一鉴权错误分类另立模块 |
+| 正常响应 | 复用 `feedItemsResponse`，字段、时间表示与当前 Timeline DTO 一致；空结果为 `{"items":[]}`，末页省略 next_cursor。没有关注、仅关注无公开视频的作者或关注作者均已注销时均为合法空页 |
+| 个性化字段 | 不新增 isLiked、viewer、following 等响应字段；作者资料、点赞/评论数量继续实时批量读取 |
+| 错误 | 错误体仍为 `{"error":"<public message>"}`。非法场景/参数/游标为 400；认证失败或活动观看者缺失为 401；业务读取/组装依赖错误为 503；已知但未启用的 Hot、Recommend 继续为 501，不伪造空页或回退 Timeline |
+| HTTP 缓存 | 可识别的 Following 请求及其错误响应设置 `Cache-Control: private, no-store`，合并 `Vary: Authorization`，保留已有 Vary 值；不写公共页缓存 |
+
+HTTP handler 增加可注入的 Following 鉴权选项，由 router 传入现有 `jwt.Auth(sessionService)`；参数校验后仅在 Following 分支调用，认证中止后不继续业务处理。router 仍负责 session 依赖装配，应用层只接收可信观看者 ID，不依赖 Gin、JWT、GORM 或 Redis。未装配认证器的 Following 请求必须拒绝；实现时验证手动调用中间件后的 `IsAborted` 与处理顺序，不能忽略认证中止。
+
+Timeline 保持当前匿名行为：不因携带 Authorization 增加 session 查询、登录态字段或新错误；其现有参数、响应、游标和缓存容量规则保持兼容。旧 `/api/video`、作者页和社交列表保留原入口。
+
+**独立游标与动态集合**
+
+Following 游标采用独立载荷，不修改现有 Timeline 游标：
+
+```json
+{"version":1,"scene":"following","sort_version":1,"viewer_id":123,"published_at":"2026-10-03T00:00:00Z","video_id":456}
+```
+
+编码沿用严格无填充 URL-safe Base64，发布时间统一 UTC；最长 1024 字符。解码校验版本、following 场景、排序版本、非零观看者/视频 ID、非零时间、未知字段、尾随 JSON 和 viewer_id 与已认证观看者的一致性。跨观看者、Timeline、旧视频或 social 关注列表游标均为 400。limit 不绑定游标，允许在 1–50 范围内改变页大小。
+
+游标只定位查询，不是授权凭据；查询始终使用已认证观看者，不能用载荷中的 viewer_id 替换它。初版不新增签名或 session 绑定，相同活动用户重新登录后可继续同一游标。切换用户、场景或回滚接口后须重新拉首屏；客户端不得混用游标。
+
+排序固定为 `(videos.published_at DESC, videos.id DESC)`，续页条件为 `published_at < p OR (published_at = p AND id < i)`，发布时间沿用既有发布流程，不按关注时间或处理完成时间排序。不增加“仅关注后发布”的限制：新增关注会把该作者当前可见历史视频纳入集合，但续页只读取原边界之后的行，更早排序位置需刷新首屏。取关、作者注销、视频删除在各次查询的当前 MySQL 状态下过滤；不承诺跨页冻结快照，也不在读请求中补发历史事件。
+
+**MySQL 查询与数据边界**
+
+新增视频仓储方法 `GetFollowingVideoList(ctx, viewerID, position, fetchLimit)`，保留 `GetPublishedVideoList` 原行为。查询以 `PublicVideoQuery(db.WithContext(ctx))` 为起点，在同一视频 SELECT 内：
+
+1. JOIN `user_follows`，限制 `follower_id = 已认证观看者` 且 `followee_id = videos.author_id`
+2. JOIN `users` 的作者别名，限制作者存在且 `deleted_at IS NULL`
+3. 保留 published、视频未软删除、非空发布时间及六个完整媒体字段的公开作用域
+4. 明确 `SELECT videos.*`，分页、排序使用限定表名的 `videos.published_at`、`videos.id`，避免 JOIN 的同名 id 覆盖映射或形成歧义
+5. 使用参数化 keyset 条件和 `LIMIT limit+1`，不先加载全部关注 ID、不逐作者查询、不在客户端过滤
+
+`user_follows` 的 `(follower_id, followee_id)` 唯一键保证同一视频不会因关注关系重复出现在结果中。活动作者限定只属于 Following，不修改通用公开作用域；Timeline 继续允许已注销作者占位。自关注已由既有服务拒绝，读路径按真实关系查询，不自动插入“本人视频”。
+
+外层适配器复用 `IsPublicVideo` 与卡片映射，查询结果若出现违反公开读模型的异常行（例如解码为零值的发布时间），返回安全的 503 并记录原因，不能在 LIMIT 后静默丢行并据此生成错误分页。正常数据的可见性过滤在 SQL 中完成。作者在视频查询后、批量资料读取前注销时，既有作者读取可能返回“已注销用户”占位；这属于不同查询时点的并发变化，下一次 Following 查询将排除该作者，不宣称响应完成时的全局快照。
+
+**端口、装配与复用**
+
+| 文件/边界 | 后续最小改动 |
+| --- | --- |
+| [domain/feed/entity.go](../backend/internal/domain/feed/entity.go)、[repository.go](../backend/internal/domain/feed/repository.go)、[errors.go](../backend/internal/domain/feed/errors.go) | 新增结构化 FollowingCursor、窄 FollowingReader 及观看者错误；FollowingReader 的 ListFollowingPage 接收可信 viewerID 与结构化位置，复用现有 TimelinePage 作为条目/卡片容器，不改变原 Repository 的方法集合 |
+| [application/feed/service.go](../backend/internal/application/feed/service.go) 与本包新增 following.go | FeedRequest 增加内部 ViewerID；用 WithFollowingReader 装配窄端口，Following 分支在进入 Timeline 的游标解码和缓存容量逻辑前分流；未装配必需读取依赖时返回不可用，不自动回退 |
+| [application/feed/cursor.go](../backend/internal/application/feed/cursor.go) 与独立 Following 编解码 | 保留 Timeline 载荷与编码逐字节兼容；新编解码检查观看者绑定，不把结构化 Following 位置交给 Timeline 解码器 |
+| [infra/persistence/feed/legacy_reader.go](../backend/internal/infra/persistence/feed/legacy_reader.go)、[card_reader.go](../backend/internal/infra/persistence/feed/card_reader.go) 与本包新增 following_reader.go | 适配器组合活动用户检查与视频窄读取接口，复用 feedCardFromVideo；BatchGetAuthors、BatchGetStats 继续由现有 Feed Repository 提供，避免扩展其视频读取接口破坏既有 fake |
+| [video/video_repo.go](../backend/internal/video/video_repo.go)、[video_scope.go](../backend/internal/video/video_scope.go)、[social/repo.go](../backend/internal/social/repo.go) | 在 video.Repository 增加专用关联查询；复用公开作用域、social.GetActiveUser 和真实关注表；不调用 social.GetFollowingList 再循环查作者视频 |
+| [interfaces/http/feed/handler.go](../backend/internal/interfaces/http/feed/handler.go)、[dto.go](../backend/internal/interfaces/http/feed/dto.go)、[router/router.go](../backend/internal/router/router.go) | 注入按场景使用的现有认证器、读取 jwt.UserID、设置私有响应头、装配 Following 读适配器；复用 DTO 与错误请求层，不新建单一适配器包 |
+| [middleware/jwt/jwt.go](../backend/internal/middleware/jwt/jwt.go)、[auth/session.go](../backend/internal/auth/session.go)、[video/user_author_reader.go](../backend/internal/video/user_author_reader.go) | 使用现有会话校验、可信上下文与批量作者读取，不改共享实现；用户正常注销的同事务会话撤销保持原流程 |
+
+FollowingPage 的读取端口以 fetchLimit 接收 `limit+1`（最大 51）。应用层只根据探测行决定 hasMore，先截断为最多 limit 行，再复用 assembleFeedItems 对最终页一次批量读作者及点赞/评论聚合；next_cursor 从最终页最后一条行生成。所有读取传递请求 context；失败不返回伪成功，空页不读取作者/统计。
+
+F3-A 全程直接查询 MySQL，不使用 Timeline 的页/卡片缓存、32 个缓存读取名额或 16 个缓存操作名额，不写 Inbox/Author Outbox，不新增 MQ 事件、Redis Key、配置开关、事实表或读请求内补偿。已有缓存及事件开关无论开启或关闭，关注流的集合与读路径保持相同。
+
+**查询成本、索引与后续页面入口**
+
+静态查询预算（不是已验证性能结论）：非空有效 Following 请求为 session 校验 1 次、活动观看者 1 次、关注/作者/视频 JOIN 1 次、批量作者 1 次、点赞/评论聚合各 1 次，共 6 次；合法空页只做前三项，共 3 次。JWT 解析、游标校验不访问数据库，探测行不参与作者/统计组装。实施后用真实查询记录核对预算，不用返回条数证明数据库扫描量有界。
+
+迁移源码已有 `uq_user_follows_follower_followee`、关注者索引、`idx_videos_published_id`、`idx_videos_author_published`。本轮未访问真实数据库或执行 EXPLAIN，不声明这些索引已证明关联查询成本。本模块不预占迁移号；实施前只读核对实际版本/列/索引，再用无关注、少量/大量关注、同时间视频、低可见比例等数据形态检查计划与成本，确有必要才新增递增迁移，不能修改已应用迁移。
+
+当前首页入口为 `listTimelineFeed → usePublishedFeed → FeedView`，作者页使用旧 `listPublishedVideos`；本轮不改它们。后续页面接入需新增首页/关注场景专用 listFollowingFeed，通过 withAuthenticatedSession 传 Bearer 凭据，并处理取消、用户切换清游标及独立分页状态，不全局替换原请求函数。该页面模块在 F3-A 后端稳定后单独 review。
+
+```mermaid
+flowchart LR
+    Request[Feed request] --> Query[Validate query]
+    Query --> Scene{Scene}
+    Scene -->|timeline| Timeline[Existing anonymous Timeline]
+    Scene -->|following| Auth[JWT and session]
+    Auth --> Viewer[Active viewer check]
+    Viewer --> SQL[MySQL follows and active authors and public videos]
+    SQL --> Page[Limit plus one and truncate]
+    Page --> Batch[Batch authors and statistics]
+    Batch --> Response[Existing DTO and viewer bound cursor]
+```
+
+**实施验收与回滚门槛**
+
+- 先 review 本节，审查 F2-B2 补测/修复及第 5.10 节未覆盖项并独立提交；随后以该实际 HEAD 为基线实施 F3-A，不把本节设计算作关注流上线
+- 覆盖匿名 Timeline 与原响应/游标、非法 Authorization 不改变 Timeline、Hot/Recommend 501；Following 查询校验、缺凭据/过期/撤销/跨用户/注销用户 401、跨场景与跨观看者游标 400、私有响应头及认证中止不继续业务
+- 在独立 MySQL 中覆盖无关注空页、历史视频、同时间 keyset、limit+1、取关/重新关注、作者注销/视频软删、六个媒体缺陷、异常时间、取消与数据库故障；证明最终查询只包含本观看者关注的活动作者，作者和统计是批量当前读取
+- 明确验证 Following 不触发任何 Timeline 缓存读写或名额获取；视频响应字段无 JOIN 覆盖，返回/探测 ID 无重复，查询预算与 EXPLAIN 有实际证据
+- 按实现改动执行后端定向及常规回归，届时同步 API.md 的已实现契约；不要求本轮设计执行测试，不用 mock 代替真实 MySQL 或新增浏览器验收
+- 回滚后续 F3-A 功能提交并同步文档，Following 恢复原 501，Timeline 和旧接口保留；F3-A 没有写入事实或派生队列可排空。若实施时另增索引迁移，按实际迁移与运行状态单独评审回滚，不在本设计虚构 down 命令
 
 ## 4. 其他待开发与评估模块
 
@@ -434,4 +531,56 @@ Node 只在测试进程 PATH 中补入 `C:\Program Files\nodejs`，浏览器使�
 
 回滚：先把事件生产设为 false，保留新版发布路由、预热消费及拓扑排空新类型 Outbox、主队列与重试队列；DLQ 记录受控重放清单，不直接把未消费 Outbox 标记完成。API 可独立关卡片读取恢复原 MySQL 卡片路径。有新事件未处理时不回退仅认识旧类型的 worker；无迁移回滚，精确卡片键可等待 TTL，禁止全库扫描或 FLUSHDB。B2 后端提交为 `0c68c82`，排空后才能撤销实现；若连同 B1 撤销，按 B2 后 B1 的顺序同步代码与进度文档，后续功能不在本次范围。
 
+### 5.10 F2-B2 后端可靠性验收（2026-10-03 同日第二轮的历史记录）
+
+本节记录 2026-10-03 同日第二轮，与第 5.9 节的实现提交记录区分：本轮在用户明确测试授权下执行，允许新增、修改和运行后端测试并做最小缺陷修复。开始时实际 HEAD 为 `e0a9fac`（main），第 5.8 节所列 7 个既有补测文件原样保留、未改动。本轮全程未提交、未推送，生产开关保持默认关闭；除下述文件外未修改前端、迁移或共享配置。
+
+该验收阶段的改动（当时未提交；后续提交状态见第 5.11 节）：
+
+- 新增 6 个后端测试文件：`backend/internal/video/published_event_test.go`（8 用例，A1–A8）、`backend/internal/worker/feed_card_warm_chain_integration_test.go`（6 用例，B1–B4/B6/D4）、`backend/internal/router/feed_card_warm_readpath_test.go`（2 用例，B5）、`backend/internal/worker/feed_card_warm_test.go`（11 顶层 + 20 子用例，C1–C7/D5）、`backend/internal/mq/feed_card_warm_topology_test.go`（6 用例，D1/D2）、`backend/internal/config/feed_published_config_test.go`（8 用例，D3）。
+- 1 处配置校验提取：`backend/internal/config/config.go` 新增 `ErrPublishedWithoutCardWarmup` 与 `Config.ValidateFeedRuntime`，`backend/cmd/worker/main.go` 改为调用该校验；拒绝「只开发布事件生产而未开本进程预热消费」的启动组合，行为影响仅限启动期，日志文本与原 inline 判断等价。无新增迁移；接口契约无变化，这两个开关属配置项且 `API.md` 只维护已注册接口，故未修改 `API.md`。
+- 文档：README 配置表与后续开发段、本计划文首摘要及第 1、3.1、3.2、3.3 节状态表述与本节。
+
+A–E 覆盖与证据类型（完整脱敏日志位于 `backend/.run/f2-b2-acceptance/` 的 lead 与 t1–t5 目录）：
+
+| 要求 | 用例位置（数量） | 依赖与证据类型 |
+| --- | --- | --- |
+| A1–A8 事务 CAS、唯一事件、回滚、开关关闭 | `video/published_event_test.go`（8） | 真实临时 MySQL；A6/A7 为显式故障注入（GORM 回调对 `video_outbox_events` 注错；连接池层包装 `Commit` 注错） |
+| B1–B4、B6、D4 真实派生链路 | `worker/feed_card_warm_chain_integration_test.go`（6） | 真实 MySQL 临时库 + 真实 RabbitMQ + 真实 Redis，全部 RUN 非 SKIP；证据见 `t4/evidence.md` |
+| B5 预热卡片被 HTTP 读路径使用 | `router/feed_card_warm_readpath_test.go`（2） | 真实 MySQL/Redis + 生产 `CardWarmer` 预热后把缓存标题改写为哨兵值，断言响应、读写计数与事件日志 |
+| C1–C7、D5 消费与确认契约 | `worker/feed_card_warm_test.go`（11 顶层 + 20 子） | 纯 fake 信道，不连 broker/MySQL/Redis；含损坏载荷、非法重试头与消费处理断言；提交前复核已移除结构体字段反射断言 |
+| D1/D2 拓扑与 mandatory | `mq/feed_card_warm_topology_test.go`（6） | 假信道逐项断言队列/TTL/绑定/规格恢复；`TestMandatoryRouteRejectsUnroutableOnRealBroker` 为真实 broker |
+| D3 开关默认与组合校验 | `config/feed_published_config_test.go`（8） | 配置加载断言 |
+| E 原业务兼容 | 复用既有 router 全包与 relay/confirm/重投等用例 | 真实依赖，未新写 |
+
+验证命令（workdir `backend`，`GOCACHE=$PWD/.run/gocache`，均实际执行，命令与退出码逐条记录于 `lead/round2-commands.log`）：
+
+| 命令 | 结果 |
+| --- | --- |
+| `go build ./...` | EXIT 0，无输出（`lead/build.txt`） |
+| `go vet ./...` | EXIT 0，无诊断（`lead/vet.txt`） |
+| `go test -count=1 -json ./...` | EXIT 0；26 包 = 22 pass + 4 无测试文件（`gofeed/cmd`、`gofeed/cmd/worker`、`gofeed/internal/domain/feed`、`gofeed/internal/middleware/jwt`）；顶层 557 + 子用例 354 共 911 pass，FAIL 0（`lead/test-all.json`） |
+| `go test -race -count=1 -json ./...` | EXIT 0；范围与计数同上，`DATA RACE` 0，`gofeed/internal/worker` PASS（`lead/test-race.json`）。第一轮被人工中断、缺 worker 包的 25 包旧记录另存 `lead/test-race.round1-interrupted.json` |
+| `go test -count=1 -run 'FeedCardWarmTopology|MandatoryRoute|ConsumerSpecs' -v ./internal/mq/` | EXIT 0，6 用例 PASS（`t3/mq_topology.log`，为补记第一轮缺失日志而重跑） |
+
+跳过项（6 个顶层用例，均为未开启专项环境开关，与本轮 A–E 无关，不计为通过）：`TestRuntimeRecoversAfterDedicatedRedisRestart`、`TestLoginRateLimitFailsOpenAndRecoversWithDedicatedRedis`（未开 `GOFEED_REDIS_PROCESS_INTEGRATION`）；`TestRealRedis`、`TestRegisterAndLoginRateLimitAgainstRealRedis`（未开 `GOFEED_REDIS_INTEGRATION`）；`TestBusinessDatabaseSchemaReadOnlyReport`（未开 `GOFEED_BUSINESS_DB_REPORT`）；`TestTimelineBrowserLive`（未开 `GOFEED_TIMELINE_BROWSER`）。
+
+真实依赖与隔离：MySQL 写入只发生在 `testutil.Main` 创建的 `feedsystem_test_*` 临时库并在结束时删除；Redis 用随机命名空间前缀，清理按记录的精确键逐个 `DEL` 后 `EXISTS` 校验为 0，禁用 SCAN/FLUSHDB；历史 RabbitMQ 用例实际使用固定 `feed.card.warm` 队列族并执行 `QueuePurge`，该做法不能算独占隔离；提交前审查已发现并改为每用例随机队列族和随机事件交换机，只 `QueueDelete` / `ExchangeDelete` 自有资源，保留共享死信交换机（见第 5.11 节）；本轮所有验证命令由单人串行执行，未在套件之外并行运行任何真实 broker 用例。故障注入边界如实区分：A6/A7 为显式注入，C 组确认语义为纯 fake，其余为真实依赖观测。
+
+未覆盖缺口（保留，不扩大结论）：真实 broker 上断线重连后恢复两类消费规格完整拓扑仅由假信道断言（D1）与既有单规格真实重连用例覆盖，未新增双规格真实重连证据；`video.published` 专门的「Outbox 派发标记失败后恢复」由既有通用 Relay 恢复用例与租约接管重发间接覆盖，未单独新写；浏览器端到端、缓存收益、p95、真实容量与多实例同键竞争仍未验证。
+
+回滚：删除上述 6 个新增测试文件，将 `config.go` 与 `cmd/worker/main.go` 恢复为 `e0a9fac` 原状并撤销文档改动即可；无迁移回滚、无业务库写入、无生产开关变更，测试临时资源已在用例结束时回收（清理记录见 `t4/evidence.md`）。
+
 每个模块先核对 Git、路由、迁移与可复用代码，再冻结事实表/事务、Key/TTL/失效、队列/schema/幂等、API/游标/用户范围和恢复/观测边界。按当前授权完成验证与独立提交；用户要求逐模块 review 时，完成一个模块后停止等待。完成任务从本计划移除，将必要结果简述入 README；已有接口契约继续归 API.md。
+
+### 5.11 补测提交前审查与 F3-A 实施（2026-10-03）
+
+用户已确认外部验收结束，并明确授权“先检查测试代码能否安全提交，如果可以则提交，然后继续下一步”。本轮以 `e0a9fac` 为起点，未修改私有配置、前端或迁移，生产开关继续默认关闭。
+
+提交前发现并修复：发布预热链路 fixture 先清空固定业务队列、后检查消费者，可能删除已有消息。改为每个用例的 UUID 队列族及事件交换机，Relay 路由与消费者使用同一隔离规格，mandatory 发布开启，初始化失败也回收自己创建的资源；不清空固定业务队列，不删除共享死信交换机。消费循环用例等待真实 Ack 成功再取消，防止只观察 warmed 日志就取消导致投递重新入队。mandatory 探针也使用独立事件交换机，避免已有通配绑定改变断言。移除只约束结构体字段名的反射断言，保留消费成功与耗尽失败的行为断言。
+
+`Config.ValidateFeedRuntime` 是对既有 worker inline 校验的提取，启动期拒绝组合与日志文字不变，不视为新功能修复。补测按 B1 卡片读取、B2 发布预热分模块提交；B1 使用 Git 暂存内容导出独立副本回归，确认不依赖未提交的 B2 测试或配置提取。
+
+补测提交为 `5a87830`（B1，7 文件）与 `719e873`（B2，8 文件）。独立副本的 B1 五包回归、B2 构建及定向 race 回归与配置全包 race 回归通过。完整修正版本的 `go build ./...`、`go vet ./...`、`go test -p 1 -count=1 -timeout=5m -json ./...` 和 `go test -p 1 -race -count=1 -timeout=5m -json ./...` 全部 EXIT 0；普通与 race 均 22 测试包、911 顶层及子用例 PASS，FAIL 0，race 报告无竞争。第 5.10 节列出的 6 个专项仍为 SKIP，F2 真实链路六例及 mandatory 探针实际执行。
+
+只读业务库结构报告通过（MySQL 8.0.45，迁移版本 9，非 dirty，无对象差异），不写业务数据。日志位于被忽略的 `backend/.run/f2-review-20261003/`，历史运行日志仍保留。F3-A 后端实施沿用第 3.4 节契约，页面接入仍属于后续独立模块。
