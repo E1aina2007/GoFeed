@@ -70,6 +70,14 @@ func main() {
 			feedCacheRuntime = nil
 		} else {
 			routerOptions.FeedPageCache = pageCache
+			if cfg.Feed.CardCacheEnabled {
+				cardCache, err := infracachefeed.NewCardCache(feedCacheRuntime, infracachefeed.CardCacheOptions{})
+				if err != nil {
+					log.Printf("event=feed_card_cache result=configuration_failed")
+				} else {
+					routerOptions.FeedCardCache = cardCache
+				}
+			}
 		}
 	}
 	r := router.New(DB, cfg.Dev, routerOptions)

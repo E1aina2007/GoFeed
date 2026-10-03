@@ -52,6 +52,7 @@ type RabbitMQConfig struct {
 
 type FeedConfig struct {
 	PageCacheEnabled bool `yaml:"page_cache_enabled"`
+	CardCacheEnabled bool `yaml:"card_cache_enabled"`
 }
 
 type RetentionConfig struct {
@@ -154,6 +155,10 @@ func OverrideWithEnv(cfg *Config) {
 	if v := os.Getenv("FEED_PAGE_CACHE_ENABLED"); v != "" {
 		enabled, err := strconv.ParseBool(v)
 		cfg.Feed.PageCacheEnabled = err == nil && enabled
+	}
+	if v := os.Getenv("FEED_CARD_CACHE_ENABLED"); v != "" {
+		enabled, err := strconv.ParseBool(v)
+		cfg.Feed.CardCacheEnabled = err == nil && enabled
 	}
 
 	// 读取 RabbitMQ 配置

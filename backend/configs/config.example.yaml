@@ -40,6 +40,7 @@ redis:
 
 feed:
   page_cache_enabled: false # 可用 FEED_PAGE_CACHE_ENABLED 覆盖；只作用于 /api/feed
+  card_cache_enabled: false # 可用 FEED_CARD_CACHE_ENABLED 覆盖；页缓存开启后才装配
 
 rabbitmq:
   host: localhost  # 可用 RABBITMQ_HOST 覆盖

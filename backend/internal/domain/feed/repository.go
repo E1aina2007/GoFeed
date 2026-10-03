@@ -16,3 +16,8 @@ type Repository interface {
 type CardReader interface {
 	BatchGetCards(ctx context.Context, videoIDs []uint) (map[uint]FeedCard, error)
 }
+
+// PublicCardStateReader 批量读取符合完整公开规则的轻量标识与排序字段
+type PublicCardStateReader interface {
+	BatchGetPublicCardStates(ctx context.Context, videoIDs []uint) (map[uint]FeedPageItem, error)
+}

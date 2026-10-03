@@ -31,6 +31,7 @@ type Options struct {
 	// RateLimitCache 为注册与登录限流提供脚本执行能力
 	RateLimitCache ratelimit.Cache
 	FeedPageCache  applicationfeed.PageCache
+	FeedCardCache  applicationfeed.CardCache
 }
 
 func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
@@ -110,6 +111,9 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	feedService := applicationfeed.New(feedRepo,
 		applicationfeed.WithPageCache(opts.FeedPageCache, infrafeed.NewCardReader(videoRepo), func(observation applicationfeed.CacheObservation) {
 			log.Printf("event=feed_page_cache result=%s duration_ms=%d", observation.Result, observation.Duration.Milliseconds())
+		}),
+		applicationfeed.WithCardCache(opts.FeedCardCache, infrafeed.NewPublicStateReader(videoRepo), func(observation applicationfeed.CardCacheObservation) {
+			log.Printf("event=feed_card_cache result=%s count=%d duration_ms=%d", observation.Result, observation.Count, observation.Duration.Milliseconds())
 		}),
 	)
 	feedHandler := interfaceshttpfeed.New(feedService)
