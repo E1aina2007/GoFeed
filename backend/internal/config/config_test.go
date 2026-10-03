@@ -293,3 +293,34 @@ func TestOverrideWithEnvFeedPageCacheEmptyEnvKeepsValue(t *testing.T) {
 		t.Fatal("环境变量为空时不应改写调用方传入的页缓存开关")
 	}
 }
+
+// 测试目标：验证卡片开关默认值、YAML 与环境变量覆盖
+// 预期效果：默认关闭，非法值关闭，空值保留 YAML，单独开启卡片不会开启页缓存
+func TestFeedCardCacheConfiguration(t *testing.T) {
+	t.Setenv("FEED_PAGE_CACHE_ENABLED", "")
+	for _, tc := range []struct {
+		name, yaml, env string
+		want            bool
+	}{
+		{"default", "dev: true\n", "", false},
+		{"yaml", "feed:\n  card_cache_enabled: true\n", "", true},
+		{"env_true", "feed:\n  card_cache_enabled: false\n", "1", true},
+		{"env_false", "feed:\n  card_cache_enabled: true\n", "false", false},
+		{"invalid", "feed:\n  card_cache_enabled: true\n", "on", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("FEED_CARD_CACHE_ENABLED", tc.env)
+			file := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(file, []byte(tc.yaml), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Feed.CardCacheEnabled != tc.want || cfg.Feed.PageCacheEnabled {
+				t.Fatalf("feed=%+v", cfg.Feed)
+			}
+		})
+	}
+}

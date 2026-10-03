@@ -20,6 +20,7 @@ import (
 
 type timelineCacheEvents struct {
 	mu     sync.Mutex
+	event  string
 	counts map[string]int
 }
 
@@ -29,7 +30,11 @@ func (e *timelineCacheEvents) Write(data []byte) (int, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, line := range strings.Split(string(data), "\n") {
-		if !strings.Contains(line, "event=feed_page_cache ") {
+		event := e.event
+		if event == "" {
+			event = "feed_page_cache"
+		}
+		if !strings.Contains(line, "event="+event+" ") {
 			continue
 		}
 		for _, field := range strings.Fields(line) {
@@ -188,8 +193,9 @@ func TestTimelineBrowserLive(t *testing.T) {
 	}
 	env := newFeedTestEnv(t)
 	events := &timelineCacheEvents{counts: make(map[string]int)}
+	cardEvents := &timelineCacheEvents{event: "feed_card_cache", counts: make(map[string]int)}
 	originalOutput := log.Writer()
-	log.SetOutput(io.MultiWriter(originalOutput, events))
+	log.SetOutput(io.MultiWriter(originalOutput, events, cardEvents))
 	t.Cleanup(func() { log.SetOutput(originalOutput) })
 	uncached, client := env.newServer(t, nil)
 	register(t, client, uncached.URL, "timeline_browser_author", "timeline-browser-password-123")
@@ -241,5 +247,33 @@ func TestTimelineBrowserLive(t *testing.T) {
 			t.Fatal("真实 Redis 回填键不存在")
 		}
 		t.Logf("实际 Feed 缓存观测: %v; Redis reads=4 writes=1", counts)
+	})
+	cardCache, recorder := env.liveCardCache(t)
+	both, _ := env.newServer(t, env.livePageCache(t), cardCache)
+	t.Run("page_and_card_enabled", func(t *testing.T) {
+		if len(cardEvents.snapshot()) != 0 {
+			t.Fatal("先前关闭卡片缓存时出现访问")
+		}
+		bodies := runTimelineBrowser(t, both.URL, ids)
+		for project, body := range bodies {
+			if body != baseline[project] {
+				t.Errorf("卡片缓存 %s JSON 变化", project)
+			}
+		}
+		counts := cardEvents.snapshot()
+		for result, want := range map[string]int{"miss": 1, "mysql_read": 1, "write_ok": 1, "hit": 3} {
+			if counts[result] != want {
+				t.Errorf("卡片事件 %s got=%d want=%d events=%v", result, counts[result], want, counts)
+			}
+		}
+		if recorder.reads != 4 || recorder.writes != 1 {
+			t.Fatalf("卡片脚本 reads=%d writes=%d", recorder.reads, recorder.writes)
+		}
+		for _, key := range recorder.base.writes() {
+			if !recorder.base.keyExists(t, key) {
+				t.Fatal("真实卡片键不存在")
+			}
+		}
+		t.Logf("实际 Feed 卡片缓存观测: %v; Redis batch reads=4 writes=1", counts)
 	})
 }

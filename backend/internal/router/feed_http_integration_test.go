@@ -194,11 +194,16 @@ func (e *feedTestEnv) livePageCache(t *testing.T) applicationfeed.PageCache {
 
 // 测试目标：装配共享同一测试库的路由服务
 // 预期效果：用例可对比启用与关闭页缓存时的可见行为
-func (e *feedTestEnv) newServer(t *testing.T, pageCache applicationfeed.PageCache) (*httptest.Server, *http.Client) {
+func (e *feedTestEnv) newServer(t *testing.T, pageCache applicationfeed.PageCache, cardCaches ...applicationfeed.CardCache) (*httptest.Server, *http.Client) {
 	t.Helper()
+	var cardCache applicationfeed.CardCache
+	if len(cardCaches) > 0 {
+		cardCache = cardCaches[0]
+	}
 	engine := New(e.gdb, false, Options{
 		UploadDir:     t.TempDir(),
 		FeedPageCache: pageCache,
+		FeedCardCache: cardCache,
 		Middlewares:   []gin.HandlerFunc{e.capture.middleware(), e.faults.middleware()},
 	})
 	srv := httptest.NewServer(engine)
