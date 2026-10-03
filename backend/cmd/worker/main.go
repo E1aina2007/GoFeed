@@ -59,8 +59,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-	if cfg.Feed.PublishedEventEnabled && !cfg.Feed.CardWarmupEnabled {
-		log.Fatal("Feed published events require card warmup consumption in this worker")
+	if err := cfg.ValidateFeedRuntime(); err != nil {
+		log.Fatal(err)
 	}
 
 	var dbConn *gorm.DB

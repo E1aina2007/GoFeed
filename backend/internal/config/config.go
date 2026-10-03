@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -55,6 +56,17 @@ type FeedConfig struct {
 	CardCacheEnabled      bool `yaml:"card_cache_enabled"`
 	PublishedEventEnabled bool `yaml:"published_event_enabled"`
 	CardWarmupEnabled     bool `yaml:"card_warmup_enabled"`
+}
+
+// ErrPublishedWithoutCardWarmup 表示开启了发布事件却没有让本进程承担预热消费
+var ErrPublishedWithoutCardWarmup = errors.New("feed published events require card warmup consumption in this worker")
+
+// ValidateFeedRuntime 校验发布事件与本进程预热消费的开关组合
+func (c Config) ValidateFeedRuntime() error {
+	if c.Feed.PublishedEventEnabled && !c.Feed.CardWarmupEnabled {
+		return ErrPublishedWithoutCardWarmup
+	}
+	return nil
 }
 
 type RetentionConfig struct {
