@@ -12,7 +12,15 @@ import (
 )
 
 type Repository struct {
-	db *gorm.DB
+	db              *gorm.DB
+	publishedEvents bool
+}
+
+type RepositoryOption func(*Repository)
+
+// WithPublishedEvents 仅在处理成功的事务中启用发布事件
+func WithPublishedEvents(enabled bool) RepositoryOption {
+	return func(r *Repository) { r.publishedEvents = enabled }
 }
 
 var ErrInvalidDraftPurgeLease = errors.New("invalid draft purge lease")
@@ -22,8 +30,14 @@ const MaxPublishedVideoBatchSize = MaxListLimit + 1
 
 var ErrInvalidPublishedVideoBatch = errors.New("invalid published video batch")
 
-func NewRepository(db *gorm.DB) *Repository {
-	return &Repository{db: db}
+func NewRepository(db *gorm.DB, options ...RepositoryOption) *Repository {
+	r := &Repository{db: db}
+	for _, option := range options {
+		if option != nil {
+			option(r)
+		}
+	}
+	return r
 }
 
 // Create 写入一条视频记录

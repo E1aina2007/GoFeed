@@ -107,3 +107,52 @@ func observationAgeSeconds(now time.Time, createdAt *time.Time) int64 {
 	}
 	return int64(now.Sub(*createdAt) / time.Second)
 }
+
+type QueueObserver struct {
+	queues mq.QueueDepthReader
+	spec   mq.ConsumerSpec
+}
+
+func NewQueueObserver(queues mq.QueueDepthReader, spec mq.ConsumerSpec) (*QueueObserver, error) {
+	if queues == nil {
+		return nil, fmt.Errorf("queue observer requires a queue reader")
+	}
+	if err := spec.Validate(); err != nil {
+		return nil, err
+	}
+	spec.Retry.Delays = append([]time.Duration(nil), spec.Retry.Delays...)
+	return &QueueObserver{queues: queues, spec: spec}, nil
+}
+
+// Run 采集独立派生队列的主队列、重试与死信深度
+func (o *QueueObserver) Run(ctx context.Context) {
+	o.observe(ctx)
+	ticker := time.NewTicker(mqObservationInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			o.observe(ctx)
+		}
+	}
+}
+
+func (o *QueueObserver) observe(ctx context.Context) {
+	names := []string{o.spec.Queue, o.spec.DeadLetterQueueName()}
+	for index := range o.spec.Retry.Delays {
+		names = append(names, o.spec.RetryQueueName(index))
+	}
+	for _, queue := range names {
+		if ctx.Err() != nil {
+			return
+		}
+		depth, err := o.queues.QueueDepth(queue)
+		if err != nil {
+			log.Printf("event=feed_card_warm_queue event_type=%s queue=%s result=failed", o.spec.Event.EventType, queue)
+			continue
+		}
+		log.Printf("event=feed_card_warm_queue event_type=%s queue=%s result=success depth=%d", o.spec.Event.EventType, queue, depth)
+	}
+}

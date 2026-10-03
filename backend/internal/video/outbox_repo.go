@@ -5,6 +5,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -106,8 +108,7 @@ func (r *Repository) ClaimPendingOutboxEvents(ctx context.Context, limit int, le
 	for _, event := range claimed {
 		row, ok := byID[event.VideoID]
 		if !ok {
-			// 视频行已软删除或缺失：仍返回事件并留空快照，由调用方按不一致释放租约，
-			// 避免事件在 publishing 与过期接管之间无限churn
+			// 留空快照交由各路由处理，发布事件仍可按持久化标识派发
 			dispatches = append(dispatches, OutboxDispatch{Event: event, LeaseTakenOver: takenOver[event.ID]})
 			continue
 		}
@@ -192,13 +193,29 @@ func truncateOutboxError(cause error) string {
 // CompleteVideoProcessing 将处理中的视频发布；返回是否发生状态变更
 // RowsAffected 为 0 表示视频不处于 processing，由调用方按重复消息确认
 func (r *Repository) CompleteVideoProcessing(ctx context.Context, videoID uint) (bool, error) {
-	result := r.db.WithContext(ctx).Model(&Video{}).
-		Where("id = ? AND status = ?", videoID, VideoStatusProcessing).
-		Update("status", VideoStatusPublished)
-	if result.Error != nil {
-		return false, result.Error
+	complete := func(tx *gorm.DB) (bool, error) {
+		result := tx.Model(&Video{}).Where("id = ? AND status = ?", videoID, VideoStatusProcessing).Update("status", VideoStatusPublished)
+		if result.Error != nil {
+			return false, result.Error
+		}
+		return result.RowsAffected > 0, nil
 	}
-	return result.RowsAffected > 0, nil
+	if !r.publishedEvents {
+		return complete(r.db.WithContext(ctx))
+	}
+	changed := false
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var err error
+		changed, err = complete(tx)
+		if err != nil || !changed {
+			return err
+		}
+		return tx.Create(&OutboxEvent{EventID: uuid.NewString(), VideoID: videoID, EventType: VideoPublishedEventType, Status: OutboxEventStatusPending}).Error
+	})
+	if err != nil {
+		return false, err
+	}
+	return changed, nil
 }
 
 // RejectVideoProcessing 将处理中的视频标记为拒绝并记录原因与时间；返回是否发生状态变更

@@ -45,6 +45,21 @@ type Dialer func(config.RabbitMQConfig) (BrokerConnection, error)
 // RuntimeOption 覆盖 runtime 的可注入依赖
 type RuntimeOption func(*Runtime)
 
+// WithConsumerSpecs 同时覆盖首次连接与每次重连声明的拓扑
+func WithConsumerSpecs(specs ...ConsumerSpec) RuntimeOption {
+	return func(r *Runtime) {
+		r.consumerSpecs = make([]ConsumerSpec, len(specs))
+		for index, spec := range specs {
+			spec.Retry.Delays = append([]time.Duration(nil), spec.Retry.Delays...)
+			r.consumerSpecs[index] = spec
+		}
+	}
+}
+
+func WithMandatoryPublishing(enabled bool) RuntimeOption {
+	return func(r *Runtime) { r.mandatoryPublishing = enabled }
+}
+
 // WithDialer 注入自定义连接建立函数
 func WithDialer(dial Dialer) RuntimeOption {
 	return func(r *Runtime) {
@@ -60,11 +75,13 @@ type Runtime struct {
 	cfg  config.RabbitMQConfig
 	dial Dialer
 
-	mu            sync.Mutex
-	conn          BrokerConnection
-	pub           *publisher
-	closed        bool
-	connectedOnce bool
+	mu                  sync.Mutex
+	conn                BrokerConnection
+	pub                 *publisher
+	closed              bool
+	connectedOnce       bool
+	consumerSpecs       []ConsumerSpec
+	mandatoryPublishing bool
 }
 
 // NewRuntime 构造运行时；未注入 dialer 时使用真实 AMQP 连接
@@ -191,12 +208,20 @@ func (r *Runtime) ensureLocked() (BrokerConnection, error) {
 		}
 		return nil, err
 	}
-	if err := conn.DeclareTopology(); err != nil {
+	var topologyErr error
+	if r.consumerSpecs == nil {
+		topologyErr = conn.DeclareTopology()
+	} else if declarer, ok := conn.(interface{ DeclareConsumerTopology(...ConsumerSpec) error }); ok {
+		topologyErr = declarer.DeclareConsumerTopology(r.consumerSpecs...)
+	} else {
+		topologyErr = errors.New("mq: broker connection does not support configured topology")
+	}
+	if topologyErr != nil {
 		_ = conn.Close()
 		if reconnecting {
-			log.Printf("event=%s result=failed duration_ms=%d error=%q", ObservationEventReconnect, time.Since(startedAt).Milliseconds(), err)
+			log.Printf("event=%s result=failed duration_ms=%d error=%q", ObservationEventReconnect, time.Since(startedAt).Milliseconds(), topologyErr)
 		}
-		return nil, err
+		return nil, topologyErr
 	}
 	r.conn = conn
 	r.connectedOnce = true
@@ -214,6 +239,13 @@ func (r *Runtime) publisherLocked(conn BrokerConnection) (*publisher, error) {
 	seam, err := conn.NewConfirmingPublisher()
 	if err != nil {
 		return nil, err
+	}
+	if r.mandatoryPublishing {
+		checked, ok := seam.(interface{ EnableRoutingChecks() })
+		if !ok {
+			return nil, errors.New("mq: publisher does not support mandatory routing checks")
+		}
+		checked.EnableRoutingChecks()
 	}
 	r.pub = newPublisherWithSeam(seam)
 	return r.pub, nil
@@ -251,12 +283,16 @@ func dialAMQP(cfg config.RabbitMQConfig) (BrokerConnection, error) {
 }
 
 func (c *amqpBrokerConnection) DeclareTopology() error {
+	return c.DeclareConsumerTopology(VideoProcessSpec())
+}
+
+func (c *amqpBrokerConnection) DeclareConsumerTopology(specs ...ConsumerSpec) error {
 	ch, err := c.conn.Channel()
 	if err != nil {
 		return fmt.Errorf("打开拓扑信道失败: %w", err)
 	}
 	defer ch.Close()
-	return DeclareTopology(ch)
+	return DeclareTopologyFor(ch, specs...)
 }
 
 func (c *amqpBrokerConnection) NewConfirmingPublisher() (confirmingPublisher, error) {

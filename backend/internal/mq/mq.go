@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -52,10 +53,42 @@ type declareChannel interface {
 // DeclareTopology 声明事件交换机、处理队列、分级重试队列与死信拓扑，重复声明为幂等操作
 // 重试队列各自以消息 TTL 到期后经死信路由回主队列实现退避，无需插件
 func DeclareTopology(ch declareChannel) error {
+	return DeclareTopologyFor(ch, VideoProcessSpec())
+}
+
+// DeclareTopologyFor 声明本连接持有的完整消费拓扑
+func DeclareTopologyFor(ch declareChannel, specs ...ConsumerSpec) error {
 	if ch == nil {
 		return errors.New("channel is not initialized")
 	}
-	spec := VideoProcessSpec()
+	if len(specs) == 0 {
+		return errors.New("mq: topology requires a consumer spec")
+	}
+	queues := make(map[string]struct{})
+	for _, spec := range specs {
+		if err := spec.Validate(); err != nil {
+			return err
+		}
+		names := []string{spec.Queue, spec.DeadLetterQueueName()}
+		for index := range spec.Retry.Delays {
+			names = append(names, spec.RetryQueueName(index))
+		}
+		for _, name := range names {
+			if _, exists := queues[name]; exists {
+				return fmt.Errorf("mq: duplicate topology queue %q", name)
+			}
+			queues[name] = struct{}{}
+		}
+	}
+	for _, spec := range specs {
+		if err := declareConsumerTopology(ch, spec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func declareConsumerTopology(ch declareChannel, spec ConsumerSpec) error {
 	if err := spec.Validate(); err != nil {
 		return err
 	}
@@ -100,12 +133,30 @@ type confirmingPublisher interface {
 
 // amqpChannelPublisher 将 *amqp.Channel 适配为带确认的发布接缝
 type amqpChannelPublisher struct {
-	ch *amqp.Channel
+	ch        *amqp.Channel
+	mu        sync.Mutex
+	mandatory bool
+	returns   <-chan amqp.Return
+}
+
+// EnableRoutingChecks 在发布前注册 Return 通知，缺失绑定视为发布失败
+func (a *amqpChannelPublisher) EnableRoutingChecks() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.mandatory {
+		a.returns = a.ch.NotifyReturn(make(chan amqp.Return, 1))
+		a.mandatory = true
+	}
 }
 
 func (a *amqpChannelPublisher) publishAndWait(ctx context.Context, exchange, routingKey string, headers amqp.Table, msg amqp.Publishing) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	msg.Headers = headers
-	confirmation, err := a.ch.PublishWithDeferredConfirmWithContext(ctx, exchange, routingKey, false, false, msg)
+	confirmation, err := a.ch.PublishWithDeferredConfirmWithContext(ctx, exchange, routingKey, a.mandatory, false, msg)
 	if err != nil {
 		return fmt.Errorf("发布消息失败: %w", err)
 	}
@@ -113,6 +164,17 @@ func (a *amqpChannelPublisher) publishAndWait(ctx context.Context, exchange, rou
 		return fmt.Errorf("等待发布确认失败: %w", err)
 	} else if !acked {
 		return errors.New("broker 未确认消息")
+	}
+	if a.mandatory {
+		// broker 在确认前发送 Return，同一信道串行发布保证归属
+		select {
+		case returned, ok := <-a.returns:
+			if !ok {
+				return errors.New("mq: return notification closed")
+			}
+			return fmt.Errorf("mq: unroutable message exchange=%q routing_key=%q code=%d", returned.Exchange, returned.RoutingKey, returned.ReplyCode)
+		default:
+		}
 	}
 	return nil
 }

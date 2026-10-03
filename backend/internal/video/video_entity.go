@@ -62,7 +62,9 @@ const (
 // VideoProcessEventType 表示发布后进入异步媒体处理的事件类型
 const VideoProcessEventType = "video.process"
 
-// OutboxEvent 记录发布事务产生的待派发处理事件
+const VideoPublishedEventType = "video.published"
+
+// OutboxEvent 记录业务事务产生的待派发事件
 // relay 以 (status, next_attempt_at, id) claim 到 publishing 并持有租约，confirm 成功后标记 dispatched
 type OutboxEvent struct {
 	ID            uint   `gorm:"primaryKey"`
