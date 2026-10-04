@@ -152,7 +152,7 @@ pnpm dev
 
 本机 MySQL 的完整初始化、迁移和直接启动流程见上方「本地开发（不使用 Compose）」。`backend/.env` 存放数据库和中间件密码及固定 `JWT_SECRET`，`backend/configs/config.dev.yaml` 存放非敏感配置；从 `backend` 目录运行的 API 和 worker 都会读取这些配置。仅启动 API 仍只要求 MySQL；Redis 已接入注册/登录限流，但不可用时 API 启动和这两个业务接口均按 fail-open 继续。要验证异步发布闭环，需在填好 `backend/.env` 后启动 RabbitMQ 并运行 worker（可执行 `docker compose up -d rabbitmq`，再直接运行 worker）。
 
-Feed 页缓存只作用于 `/api/feed` 的带游标后续页，首屏仍查 MySQL；默认 TTL 30 秒、单次缓存操作上限 100 毫秒。命中后批量检查整页（含探测记录）的当前公开卡片，失效时按原游标整页回源；作者和互动统计实时读取。Redis 失败回源，短超时同步回填失败不影响成功响应，不启动后台回填任务。开启时最多并发处理 32 个 Feed 请求和 16 次缓存操作；请求容量耗尽返回安全的 503，缓存容量耗尽直接回源。旧 `/api/video` 不受这些限制影响。
+Feed 页缓存只作用于 `/api/feed?scene=timeline` 的带游标后续页，首屏仍查 MySQL；默认 TTL 30 秒、单次缓存操作上限 100 毫秒。命中后批量检查整页（含探测记录）的当前公开卡片，失效时按原游标整页回源；作者和互动统计实时读取。Redis 失败回源，短超时同步回填失败不影响成功响应，不启动后台回填任务。开启时最多并发处理 32 个 Timeline 缓存读取请求和 16 次缓存操作；请求容量耗尽返回安全的 503，缓存容量耗尽直接回源。旧 `/api/video` 不受这些限制影响。
 
 F2-B1 增加可选基础卡片缓存，仍默认关闭。两个开关同时开启后，仅在后续页的页缓存命中路径使用：先按完整公开规则查询 MySQL 的 `id`、`author_id`、`published_at`，再批量读卡片；只有与当前状态匹配的值才能使用，缺失或坏值仅批量回源缺失卡片。作者资料和统计继续实时读取。Key 为 `gofeed:feed:card:v1:<video_id>`，默认 TTL 30 秒、单卡片上限 16 KiB；Redis 脚本在返回字符串前检查长度，超大卡片不回填。卡片与页缓存共享 16 次操作容量和同一个独立 Feed Runtime，缓存故障不影响成功回源，MySQL 故障仍返回错误。`feed_card_cache` 日志记录命中数量、回源、坏值、超大跳过及读写故障。
 
@@ -216,7 +216,7 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 - 账户与会话、匿名视频流、草稿上传/异步发布、公开详情、个人主页、我的视频、头像、点赞/评论/关注及对应前端页面；接口契约见 [API.md](./API.md)。
 - 视频与 social 列表使用带版本和范围的游标；用户列表兼容分页已提交为 `455849e`，保留旧的无参数读取。
 - `internal/error` 统一 user/video/social 的 HTTP 错误分类和安全响应，保持既有状态码与 `{"error":"..."}` 形状；后台任务保留自身错误语义。
-- MySQL 事务 + Outbox 可靠发布，RabbitMQ 运行时连接恢复与拓扑重建、publisher confirm、派发租约/退避、消费 CAS 幂等和 `1s/5s/30s` 重试/DLQ。F2-A `48ce8df` 支持按 `event_type` 装配发布目标、快照检查与载荷构造；生产仍只注册并写入 `video.process`，未知类型继续固定退避。
+- MySQL 事务 + Outbox 可靠发布，RabbitMQ 运行时连接恢复与拓扑重建、publisher confirm、派发租约/退避、消费 CAS 幂等和 `1s/5s/30s` 重试/DLQ。F2-A `48ce8df` 支持按 `event_type` 装配发布目标、快照检查与载荷构造；默认只写入及派发 `video.process`，开启 F2-B2 的发布事件与预热消费开关后也装配 `video.published`；未知类型继续固定退避。
 - 数据和媒体清扫、草稿租约、公开视频完整性过滤、请求日志与 MySQL 就绪检查；本地媒体孤儿回收已提交为 `d0902a3`，按宽限期与引用检查清理。
 - 登录/注册 Redis 固定窗口限流、故障 fail-open 和冷却/单探针恢复；页面按服务端 `Retry-After` 等待。Redis 不进入 `/ready`。
 - F0 新增匿名 Timeline `/api/feed` 的四层读取边界；F1-A 批量公开卡片 `a7e2bd4`、F1-B 轻量页缓存端口与适配 `509c123` 已提交。F1-C 已提交为 `f772349`，接入默认关闭的后续页缓存、命中校验、MySQL 回源、独立 Runtime 与有界并发。首页已通过 `896f4e1` 切换为 `/api/feed?scene=timeline&limit=12`，作者主页继续使用 `/api/video?author_id=...`；取消、去重、分页错误态、手动重试与播放暂停保持原行为。测试覆盖及实际依赖参与情况见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 5 节；缓存收益与容量压测仍待验证。
@@ -225,7 +225,7 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 重跑隔离联调：从 `backend` 设置当前进程 `$env:GOFEED_TIMELINE_BROWSER='1'` 后执行 `go test -race -count=1 -v -run '^TestTimelineBrowserLive$' ./internal/router`。需已安装前端依赖/Chromium、当前进程 PATH 含 Node，以及可连接的 MySQL/Redis；连接配置只读取现有环境或 `backend/.env`。工具复用 `testutil` 建库、迁移与删库，使用随机 Redis 前缀和精确键清理，自动退出本轮 API/Vite 服务；不复用用户开发服务器，不改私有配置。完整命令及清理证据见开发计划第 5.5 节。
 
-工作树中的补测工具已覆盖页缓存与基础卡片缓存同时开启的桌面/移动读取；历史完整工作树验收中，三种装配的浏览器响应逐字节一致，实际卡片读写与命中独立观测。这些测试文件本次保留未提交，历史记录见开发计划第 5.8 节；卡片冷读多一次校验查询，全命中只省去基础卡片大字段读取，不声明 SQL 数量减少或 p95 收益。
+工作树中的补测工具已覆盖页缓存与基础卡片缓存同时开启的桌面/移动读取；历史完整工作树验收中，三种装配的浏览器响应逐字节一致，实际卡片读写与命中独立观测。这些测试文件已作为 `5a87830` 提交，历史记录见开发计划第 5.8 节、本轮复核见第 5.11 节；卡片冷读多一次校验查询，全命中只省去基础卡片大字段读取，不声明 SQL 数量减少或 p95 收益。
 
 回滚首页模块时，恢复 `896f4e1` 之前的首页读取实现（`usePublishedFeed` 调用 `listPublishedVideos`）。如需连同专用验收工具一起撤销，先 `git revert f4af6b8`，再 `git revert 896f4e1`，并同步文档。重新构建并重新加载页面，清空内存分页状态；不能将 Feed 游标继续用于 `/api/video`，也不能在失败后自动跨接口续页。
 
@@ -233,11 +233,11 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 ## 后续开发
 
-首页 Timeline 接入与真实链路验收已完成，Feed 页缓存继续默认关闭。F2-B1 基础卡片缓存后端为 `98f9df2`，F2-B2 同事务发布事件、预热消费、重试/DLQ 与重连装配后端为 `0c68c82`。补测经审查后分为 `5a87830`（卡片读取）与 `719e873`（发布预热），修复了测试清空固定 MQ 队列的问题，改用每用例随机拓扑，并在真实 ACK 后停止消费循环。配置校验提取保留既有 worker 启动行为。构建、vet、普通和 race 全量回归通过，真实 MySQL/RabbitMQ/Redis 参与；6 个专项开关用例跳过，不算通过。后续继续 F3-A MySQL 关注流后端，页面接入另行 review；生产开关仍默认关闭，缓存收益、容量与重启专项缺口见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 5.10、5.11 节。
+首页 Timeline 接入与真实链路验收已完成，Feed 页缓存继续默认关闭。F2-B1 基础卡片缓存后端为 `98f9df2`，F2-B2 同事务发布事件、预热消费、重试/DLQ 与重连装配后端为 `0c68c82`。补测经审查后分为 `5a87830`（卡片读取）与 `719e873`（发布预热），修复了测试清空固定 MQ 队列的问题，改用每用例随机拓扑，并在真实 ACK 后停止消费循环。配置校验提取保留既有 worker 启动行为。构建、vet、普通和 race 全量回归通过，真实 MySQL/RabbitMQ/Redis 参与；6 个专项开关用例跳过，不算通过。F3-A 后端/API `3a85681`、F3-B 页面 `c8e88df`、真实浏览器与脱敏测试 `5e545c9` 已分别提交；最新独立副本验证、真实联调及证据边界见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 5.15 节，生产开关仍默认关闭。
 
-Following、Hot、推荐及其他待开发/评估能力统一见 [开发计划](./docs/DEVELOPMENT_PLAN.md)。每次只实施一个可独立 review 的模块，完成后先等待 review，明确指令后提交。
+下一步建议先建立 Feed 指标与容量基线，再依据收益推进 Following 混合推拉，随后实施互动事实事件、分钟热榜与 Hot、曝光及规则推荐；分步范围与验收见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 3.5 节。每次只实施一个可独立 review 的模块，完成后先等待 review，明确指令后提交。
 
-F3-A MySQL 关注流的鉴权、观看者绑定游标、公开过滤、批量组装与实施边界已整理在开发计划第 3.4 节；目前仅完成设计，`scene=following` 仍返回 501，代码实现与页面接入分别等待后续 review。
+F3-A 后端支持 `GET /api/feed?scene=following`：复用 JWT/session 与活动观看者校验，在 MySQL 内关联当前关注关系、活动作者和完整公开视频，使用绑定观看者的独立 keyset 游标，并批量读取作者与当前统计。Following 响应为私有且不使用 Timeline 缓存；Timeline 保持匿名，Hot/Recommend 保持 501。真实 MySQL 用例验证非空页 6 次 SQL、空页 3 次，0/1/32/128 个关注作者下已执行 EXPLAIN ANALYZE；样本不代表生产容量或 p95。已提交的 F3-B 页面支持场景切换、独立分页、`/?scene=following` 与登录回跳；接口见 [API](./API.md)，历史验证、本轮提交和剩余范围见开发计划第 5.12、5.15、3.4 节。
 
 ## 文档维护
 
