@@ -45,6 +45,12 @@ export type ListTimelineFeedOptions = {
   signal?: AbortSignal
 }
 
+export type ListFollowingFeedOptions = {
+  cursor?: string
+  limit?: number
+  signal?: AbortSignal
+}
+
 export type UploadedVideo = Pick<
   VideoItem,
   'play_url' | 'play_file_name' | 'play_original_name'
@@ -93,6 +99,20 @@ export function listTimelineFeed({ cursor, limit = 12, signal }: ListTimelineFee
     query.set('cursor', cursor)
   }
   return request<VideoListResponse>(`/api/feed?${query.toString()}`, { signal })
+}
+
+// 读取当前登录用户的关注视频，认证失效时恢复会话后重试
+export function listFollowingFeed({ cursor, limit = 12, signal }: ListFollowingFeedOptions = {}) {
+  const query = new URLSearchParams({ scene: 'following', limit: String(limit) })
+  if (cursor) {
+    query.set('cursor', cursor)
+  }
+  return withAuthenticatedSession((accessToken) =>
+    request<VideoListResponse>(`/api/feed?${query.toString()}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal,
+    }),
+  )
 }
 
 export function listPublishedVideos({

@@ -9,6 +9,7 @@ import {
   getDraft,
   getPublishedVideo,
   getVideoStatus,
+  listFollowingFeed,
   listMyVideos,
   listPublishedVideos,
   listTimelineFeed,
@@ -623,5 +624,124 @@ describe('listPublishedVideos', () => {
       await expect(getVideoStatus(videoID)).rejects.toEqual(new ApiError(400, '视频 ID 无效'))
     }
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('listFollowingFeed', () => {
+  afterEach(() => {
+    clearSession()
+    vi.unstubAllGlobals()
+  })
+
+  function sessionResponse(accessToken: string, refreshToken: string) {
+    return new Response(
+      JSON.stringify({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+        expires_at: '2026-08-26T08:00:00Z',
+        user: { id: 42, username: 'alice' },
+      }),
+      { headers: { 'content-type': 'application/json' } },
+    )
+  }
+
+  function requestURL(input: Parameters<typeof fetch>[0]) {
+    return typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input))
+  }
+
+  it('rejects before any request while signed out', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(listFollowingFeed()).rejects.toEqual(new ApiError(401, '请先登录后再继续'))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('sends the Bearer token, passes the cursor, and keeps the signal across session recovery', async () => {
+    const followingCalls: Array<{ path: string; authorization: string | null }> = []
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = requestURL(input)
+      if (url === '/api/user/login') {
+        return sessionResponse('access-a', 'refresh-1')
+      }
+      if (url === '/api/user/refresh') {
+        return sessionResponse('access-b', 'refresh-2')
+      }
+      if (url.startsWith('/api/feed?scene=following')) {
+        followingCalls.push({
+          path: url,
+          authorization: new Headers(init?.headers).get('Authorization'),
+        })
+        if (followingCalls.length === 1) {
+          return new Response(JSON.stringify({ error: 'token expired' }), {
+            status: 401,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify({ items: [], next_cursor: 'following-next' }), {
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(null, { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await login({ username: 'alice', password: 'password-123' })
+    const controller = new AbortController()
+    await expect(
+      listFollowingFeed({ cursor: 'following-page', limit: 8, signal: controller.signal }),
+    ).resolves.toEqual({ items: [], next_cursor: 'following-next' })
+
+    expect(followingCalls.map((call) => call.path)).toEqual([
+      '/api/feed?scene=following&limit=8&cursor=following-page',
+      '/api/feed?scene=following&limit=8&cursor=following-page',
+    ])
+    expect(followingCalls.map((call) => call.authorization)).toEqual([
+      'Bearer access-a',
+      'Bearer access-b',
+    ])
+    const lastFeedCall = fetchMock.mock.calls[fetchMock.mock.calls.length - 1]
+    expect(lastFeedCall?.[1]?.signal).toBe(controller.signal)
+  })
+
+  it('exposes Following server errors without triggering session recovery', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = requestURL(input)
+      if (url === '/api/user/login') {
+        return sessionResponse('access-a', 'refresh-1')
+      }
+      return new Response(JSON.stringify({ error: 'invalid feed cursor' }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await login({ username: 'alice', password: 'password-123' })
+    await expect(listFollowingFeed({ cursor: 'feed-only' })).rejects.toEqual(
+      new ApiError(400, 'invalid feed cursor'),
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/feed?scene=following&limit=12&cursor=feed-only')
+  })
+
+  it('keeps Timeline anonymous even with an active session', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = requestURL(input)
+      if (url === '/api/user/login') {
+        return sessionResponse('access-a', 'refresh-1')
+      }
+      return new Response(JSON.stringify({ items: [] }), {
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await login({ username: 'alice', password: 'password-123' })
+    await expect(listTimelineFeed()).resolves.toEqual({ items: [] })
+
+    const lastCall = fetchMock.mock.calls[fetchMock.mock.calls.length - 1]
+    expect(new Headers(lastCall?.[1]?.headers).get('Authorization')).toBeNull()
+    expect(lastCall?.[0]).toBe('/api/feed?scene=timeline&limit=12')
   })
 })

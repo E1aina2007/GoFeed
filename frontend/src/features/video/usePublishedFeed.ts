@@ -1,10 +1,19 @@
-import { computed, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 
+import { currentSession, isAuthenticated } from '@/features/auth/session'
 import { ApiError, apiUserMessage } from '@/lib/api'
 
-import { listTimelineFeed, type VideoItem, type VideoListResponse } from './api'
+import {
+  listFollowingFeed,
+  listTimelineFeed,
+  type VideoItem,
+  type VideoListResponse,
+} from './api'
+
+export type FeedScene = 'timeline' | 'following'
 
 const feedRetryDelays = [300, 900] as const
+const feedScenes = ['timeline', 'following'] as const
 
 function isAbortError(error: unknown) {
   return (
@@ -64,153 +73,277 @@ function mergeVideos(current: VideoItem[], incoming: VideoItem[]) {
   return merged
 }
 
+type SceneFeed = {
+  videos: VideoItem[]
+  nextCursor: string | undefined
+  isInitialLoading: boolean
+  isLoadingMore: boolean
+  errorMessage: string
+  loaded: boolean
+}
+
+function createSceneFeed(): SceneFeed {
+  return {
+    videos: [],
+    nextCursor: undefined,
+    isInitialLoading: false,
+    isLoadingMore: false,
+    errorMessage: '',
+    loaded: false,
+  }
+}
+
+type SceneRuntime = {
+  generation: number
+  initialController?: AbortController
+  moreController?: AbortController
+}
+
+function createSceneRuntime(): SceneRuntime {
+  return { generation: 0 }
+}
+
+// 管理最新与关注视频流的独立分页状态，避免旧请求覆盖当前列表
 export function usePublishedFeed() {
-  const videos = ref<VideoItem[]>([])
-  const nextCursor = ref<string>()
-  const isInitialLoading = ref(true)
-  const isLoadingMore = ref(false)
-  const errorMessage = ref('')
-  const hasMore = computed(() => Boolean(nextCursor.value))
+  const scene = ref<FeedScene>('timeline')
+  const scenes = {
+    timeline: reactive(createSceneFeed()),
+    following: reactive(createSceneFeed()),
+  }
+  const runtimes = {
+    timeline: createSceneRuntime(),
+    following: createSceneRuntime(),
+  }
 
-  let generation = 0
-  let initialController: AbortController | undefined
-  let moreController: AbortController | undefined
+  const activeScene = computed(() => scenes[scene.value])
+  const videos = computed(() => activeScene.value.videos)
+  const nextCursor = computed(() => activeScene.value.nextCursor)
+  const isInitialLoading = computed(() => activeScene.value.isInitialLoading)
+  const isLoadingMore = computed(() => activeScene.value.isLoadingMore)
+  const errorMessage = computed(() => activeScene.value.errorMessage)
+  const hasMore = computed(() => Boolean(activeScene.value.nextCursor))
+  const isSceneLoaded = computed(() => activeScene.value.loaded)
 
-  function ownsInitialRequest(controller: AbortController, requestGeneration: number) {
+  // 观看者以 user ID 判定：token 刷新会替换会话对象但不改变 ID，不触发重置
+  const viewerID = computed(() => currentSession.value?.user.id ?? null)
+
+  // 取消指定场景的请求并使其迟到响应失效
+  function abortScene(sceneName: FeedScene) {
+    const runtime = runtimes[sceneName]
+    const feed = scenes[sceneName]
+    runtime.generation += 1
+    runtime.initialController?.abort()
+    runtime.moreController?.abort()
+    runtime.initialController = undefined
+    runtime.moreController = undefined
+    feed.isInitialLoading = false
+    feed.isLoadingMore = false
+  }
+
+  function resetScene(sceneName: FeedScene) {
+    abortScene(sceneName)
+    const feed = scenes[sceneName]
+    feed.videos = []
+    feed.nextCursor = undefined
+    feed.errorMessage = ''
+    feed.loaded = false
+  }
+
+  function ownsInitialRequest(
+    sceneName: FeedScene,
+    controller: AbortController,
+    requestGeneration: number,
+  ) {
+    const runtime = runtimes[sceneName]
     return (
-      initialController === controller
-      && generation === requestGeneration
+      runtime.initialController === controller
+      && runtime.generation === requestGeneration
       && !controller.signal.aborted
     )
   }
 
-  function ownsMoreRequest(controller: AbortController, requestGeneration: number, cursor: string) {
+  function ownsMoreRequest(
+    sceneName: FeedScene,
+    controller: AbortController,
+    requestGeneration: number,
+    cursor: string,
+  ) {
+    const runtime = runtimes[sceneName]
     return (
-      moreController === controller
-      && generation === requestGeneration
-      && nextCursor.value === cursor
+      runtime.moreController === controller
+      && runtime.generation === requestGeneration
+      && scenes[sceneName].nextCursor === cursor
       && !controller.signal.aborted
     )
   }
 
-  async function loadFirstPage(): Promise<VideoListResponse | undefined> {
-    generation += 1
-    const requestGeneration = generation
-    initialController?.abort()
-    moreController?.abort()
-
-    const controller = new AbortController()
-    initialController = controller
-    moreController = undefined
-    isInitialLoading.value = true
-    isLoadingMore.value = false
-    errorMessage.value = ''
-
-    try {
-      for (let retry = 0; ; retry += 1) {
-        try {
-          const response = await listTimelineFeed({ signal: controller.signal })
-          if (!ownsInitialRequest(controller, requestGeneration)) {
-            return undefined
-          }
-
-          videos.value = mergeVideos([], response.items)
-          nextCursor.value = response.next_cursor
-          return response
-        } catch (error) {
-          if (!ownsInitialRequest(controller, requestGeneration) || isAbortError(error)) {
-            return undefined
-          }
-
-          const retryDelay = feedRetryDelays[retry]
-          if (retryDelay !== undefined && isRetryableFeedError(error)) {
-            await waitForRetry(controller.signal, retryDelay)
-            if (!ownsInitialRequest(controller, requestGeneration)) {
-              return undefined
-            }
-            continue
-          }
-
-          videos.value = []
-          nextCursor.value = undefined
-          errorMessage.value = requestErrorMessage(error)
-          return undefined
-        }
-      }
-    } finally {
-      if (initialController === controller) {
-        initialController = undefined
-        isInitialLoading.value = false
-      }
+  function loadSceneFeed(sceneName: FeedScene, options: { cursor?: string; signal: AbortSignal }) {
+    if (sceneName === 'following') {
+      return listFollowingFeed(options)
     }
+    return listTimelineFeed(options)
   }
 
-  async function loadMore(): Promise<VideoListResponse | undefined> {
-    const cursor = nextCursor.value
-    if (!cursor || isInitialLoading.value || isLoadingMore.value) {
+  // 重新加载指定场景首屏，有限重试并丢弃失效请求的结果
+  async function loadSceneFirstPage(sceneName: FeedScene): Promise<VideoListResponse | undefined> {
+    // 未登录时 Following 不发请求，由页面展示登录入口
+    if (sceneName === 'following' && !isAuthenticated.value) {
       return undefined
     }
 
-    const requestGeneration = generation
+    const feed = scenes[sceneName]
+    abortScene(sceneName)
+    const requestGeneration = runtimes[sceneName].generation
+
     const controller = new AbortController()
-    moreController = controller
-    isLoadingMore.value = true
-    errorMessage.value = ''
+    runtimes[sceneName].initialController = controller
+    feed.isInitialLoading = true
+    feed.errorMessage = ''
 
     try {
       for (let retry = 0; ; retry += 1) {
         try {
-          const response = await listTimelineFeed({ cursor, signal: controller.signal })
-          if (!ownsMoreRequest(controller, requestGeneration, cursor)) {
+          const response = await loadSceneFeed(sceneName, { signal: controller.signal })
+          if (!ownsInitialRequest(sceneName, controller, requestGeneration)) {
             return undefined
           }
 
-          videos.value = mergeVideos(videos.value, response.items)
-          nextCursor.value = response.next_cursor
+          feed.videos = mergeVideos([], response.items)
+          feed.nextCursor = response.next_cursor
+          feed.loaded = true
           return response
         } catch (error) {
-          if (!ownsMoreRequest(controller, requestGeneration, cursor) || isAbortError(error)) {
+          if (!ownsInitialRequest(sceneName, controller, requestGeneration) || isAbortError(error)) {
             return undefined
           }
 
           const retryDelay = feedRetryDelays[retry]
           if (retryDelay !== undefined && isRetryableFeedError(error)) {
             await waitForRetry(controller.signal, retryDelay)
-            if (!ownsMoreRequest(controller, requestGeneration, cursor)) {
+            if (!ownsInitialRequest(sceneName, controller, requestGeneration)) {
               return undefined
             }
             continue
           }
 
-          errorMessage.value = requestErrorMessage(error)
+          feed.videos = []
+          feed.nextCursor = undefined
+          feed.loaded = false
+          feed.errorMessage = requestErrorMessage(error)
           return undefined
         }
       }
     } finally {
-      if (moreController === controller) {
-        moreController = undefined
-        isLoadingMore.value = false
+      if (runtimes[sceneName].initialController === controller) {
+        runtimes[sceneName].initialController = undefined
+        feed.isInitialLoading = false
       }
     }
   }
 
+  // 去重追加指定场景的下一页，游标失效时允许从首屏重试
+  async function loadSceneMore(sceneName: FeedScene): Promise<VideoListResponse | undefined> {
+    const feed = scenes[sceneName]
+    const cursor = feed.nextCursor
+    if (!cursor || feed.isInitialLoading || feed.isLoadingMore) {
+      return undefined
+    }
+
+    const requestGeneration = runtimes[sceneName].generation
+    const controller = new AbortController()
+    runtimes[sceneName].moreController = controller
+    feed.isLoadingMore = true
+    feed.errorMessage = ''
+
+    try {
+      for (let retry = 0; ; retry += 1) {
+        try {
+          const response = await loadSceneFeed(sceneName, { cursor, signal: controller.signal })
+          if (!ownsMoreRequest(sceneName, controller, requestGeneration, cursor)) {
+            return undefined
+          }
+
+          feed.videos = mergeVideos(feed.videos, response.items)
+          feed.nextCursor = response.next_cursor
+          return response
+        } catch (error) {
+          if (
+            !ownsMoreRequest(sceneName, controller, requestGeneration, cursor)
+            || isAbortError(error)
+          ) {
+            return undefined
+          }
+
+          const retryDelay = feedRetryDelays[retry]
+          if (retryDelay !== undefined && isRetryableFeedError(error)) {
+            await waitForRetry(controller.signal, retryDelay)
+            if (!ownsMoreRequest(sceneName, controller, requestGeneration, cursor)) {
+              return undefined
+            }
+            continue
+          }
+
+          if (error instanceof ApiError && error.status === 400) {
+            // 游标已被服务端判定失效：清空后重试只能重新加载首屏，不再复用旧游标
+            feed.nextCursor = undefined
+          }
+          feed.errorMessage = requestErrorMessage(error)
+          return undefined
+        }
+      }
+    } finally {
+      if (runtimes[sceneName].moreController === controller) {
+        runtimes[sceneName].moreController = undefined
+        feed.isLoadingMore = false
+      }
+    }
+  }
+
+  // 切换视频流并取消旧请求，重新进入关注流时刷新列表
+  function setScene(next: FeedScene) {
+    if (scene.value === next) {
+      return
+    }
+    const previous = scene.value
+    abortScene(previous)
+    if (previous === 'following') {
+      // 关注关系可能在离开期间变化：每次进入 Following 都重新读取服务端列表
+      scenes.following.loaded = false
+    }
+    scene.value = next
+  }
+
+  function loadFirstPage() {
+    return loadSceneFirstPage(scene.value)
+  }
+
+  function loadMore() {
+    return loadSceneMore(scene.value)
+  }
+
+  const stopViewerWatch = watch(viewerID, () => {
+    // 退出或更换观看者：作废两个场景的在途请求与缓存，由页面重新加载当前场景
+    resetScene('timeline')
+    resetScene('following')
+  })
+
   function dispose() {
-    generation += 1
-    initialController?.abort()
-    moreController?.abort()
-    initialController = undefined
-    moreController = undefined
-    isInitialLoading.value = false
-    isLoadingMore.value = false
+    stopViewerWatch()
+    for (const sceneName of feedScenes) {
+      abortScene(sceneName)
+    }
   }
 
   return {
+    scene,
     videos,
     nextCursor,
     isInitialLoading,
     isLoadingMore,
     errorMessage,
     hasMore,
+    isSceneLoaded,
+    setScene,
     loadFirstPage,
     loadMore,
     dispose,

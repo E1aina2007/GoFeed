@@ -1,21 +1,25 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
+import { currentUser, isAuthenticated } from '@/features/auth/session'
 import LikeButton from '@/features/social/LikeButton.vue'
-import { usePublishedFeed } from '@/features/video/usePublishedFeed'
+import { usePublishedFeed, type FeedScene } from '@/features/video/usePublishedFeed'
 
 const route = useRoute()
 const router = useRouter()
 const feedElement = ref<HTMLElement>()
 const publishedMessage = ref('')
 const {
+  scene,
   videos,
   nextCursor,
   isInitialLoading,
   isLoadingMore,
   errorMessage,
   hasMore,
+  isSceneLoaded,
+  setScene,
   loadFirstPage: loadFeedFirstPage,
   loadMore: loadFeedMore,
   dispose,
@@ -24,6 +28,25 @@ const playerElements = new Map<number, HTMLVideoElement>()
 const visiblePlayerRatios = new Map<number, number>()
 let playerObserver: IntersectionObserver | undefined
 let activePlayerID: number | undefined
+// 切换代次：场景切换或观看者变化时递增，迟到的异步回调不得作用于新状态
+let sceneGeneration = 0
+
+// 场景的唯一事实来源是 URL 查询参数：单值 following 进入 Following，其余一律回退 Timeline
+function sceneFromRoute(): FeedScene {
+  return route.query.scene === 'following' ? 'following' : 'timeline'
+}
+
+// 初始化场景（登录回跳、外部直达 /?scene=following、刷新后恢复）
+setScene(sceneFromRoute())
+
+const viewerID = computed(() => currentUser.value?.id ?? null)
+const showFollowingSignIn = computed(() => scene.value === 'following' && !isAuthenticated.value)
+const emptyFeedText = computed(() =>
+  scene.value === 'following' ? '还没有可看的关注视频' : '暂时没有公开视频',
+)
+const followingRedirectFullPath = computed(() =>
+  router.resolve({ path: '/', query: { ...route.query, scene: 'following' } }).fullPath,
+)
 
 function registerPlayer(id: number, element: Element | null) {
   if (element instanceof HTMLVideoElement) {
@@ -70,15 +93,27 @@ function syncPlayback(activeID?: number) {
   }
 }
 
+// 作废旧场景的播放器观察与播放状态，防止迟到回调跨场景生效
+function detachPlayersObserver() {
+  playerObserver?.disconnect()
+  playerObserver = undefined
+  visiblePlayerRatios.clear()
+  activePlayerID = undefined
+}
+
+// 根据当前场景的视频可见范围更新播放状态
 function observePlayers() {
   if (typeof IntersectionObserver === 'undefined') {
     return
   }
 
-  playerObserver?.disconnect()
-  visiblePlayerRatios.clear()
-  playerObserver = new IntersectionObserver(
+  detachPlayersObserver()
+  const observer = new IntersectionObserver(
     (entries) => {
+      // 丢弃旧场景观察者的迟到回调
+      if (playerObserver !== observer) {
+        return
+      }
       for (const entry of entries) {
         const id = Number((entry.target as HTMLElement).dataset.videoId)
         if (!Number.isSafeInteger(id)) {
@@ -98,10 +133,11 @@ function observePlayers() {
     },
     { root: feedElement.value, threshold: [0.6, 0.75] },
   )
+  playerObserver = observer
 
   for (const [id, player] of playerElements) {
     player.dataset.videoId = String(id)
-    playerObserver.observe(player)
+    observer.observe(player)
   }
 }
 
@@ -130,11 +166,24 @@ async function clearPublishedQuery() {
   await router.replace({ query })
 }
 
+function scrollFeedToTop() {
+  const container = feedElement.value
+  if (container) {
+    container.scrollTop = 0
+  }
+}
+
+// 加载当前场景首屏并重置滚动位置与播放状态
 async function loadFirstPage() {
+  const generation = sceneGeneration
+  const startedScene = scene.value
   publishedMessage.value = ''
+  pausePlayers()
+  detachPlayersObserver()
+  scrollFeedToTop()
   const publishedID = publishedVideoID()
   const response = await loadFeedFirstPage()
-  if (!response) {
+  if (!response || generation !== sceneGeneration || scene.value !== startedScene) {
     return
   }
 
@@ -145,16 +194,25 @@ async function loadFirstPage() {
     await clearPublishedQuery()
   }
   await nextTick()
+  if (generation !== sceneGeneration || scene.value !== startedScene) {
+    return
+  }
+  scrollFeedToTop()
   observePlayers()
 }
 
+// 追加当前场景的视频并更新播放器观察
 async function loadMore() {
+  const generation = sceneGeneration
   const response = await loadFeedMore()
-  if (!response) {
+  if (!response || generation !== sceneGeneration) {
     return
   }
 
   await nextTick()
+  if (generation !== sceneGeneration) {
+    return
+  }
   observePlayers()
 }
 
@@ -174,14 +232,79 @@ function retry() {
   void loadFirstPage()
 }
 
+let pendingSceneNavigation: { scene: FeedScene } | undefined
+
+// 切换 URL 场景，快速连点时以最后一次选择为准
+function switchScene(next: FeedScene) {
+  if (pendingSceneNavigation?.scene === next) {
+    return
+  }
+  if (!pendingSceneNavigation && sceneFromRoute() === next) {
+    return
+  }
+  const navigation = { scene: next }
+  pendingSceneNavigation = navigation
+  const query = { ...route.query }
+  if (next === 'following') {
+    query.scene = 'following'
+  } else {
+    delete query.scene
+  }
+  void router.replace({ query }).finally(() => {
+    // 被更新导航取代的旧请求不得清除新一次点击的目标
+    if (pendingSceneNavigation === navigation) {
+      pendingSceneNavigation = undefined
+    }
+  })
+}
+
+// 应用路由场景，将列表与播放器恢复到首屏状态
+async function applyScene(next: FeedScene) {
+  if (scene.value === next) {
+    return
+  }
+  sceneGeneration += 1
+  const generation = sceneGeneration
+  pausePlayers()
+  detachPlayersObserver()
+  scrollFeedToTop()
+  setScene(next)
+  await nextTick()
+  if (generation !== sceneGeneration || scene.value !== next) {
+    return
+  }
+  scrollFeedToTop()
+  observePlayers()
+  if (!isSceneLoaded.value) {
+    await loadFirstPage()
+  }
+}
+
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibilityChange)
   void loadFirstPage()
 })
 
+watch(
+  () => route.query.scene,
+  () => {
+    // 离开 Feed 路由（如跳转登录页）时不响应查询参数变化
+    if (route.name !== 'feed') {
+      return
+    }
+    void applyScene(sceneFromRoute())
+  },
+)
+
+watch(viewerID, () => {
+  // 退出或更换观看者：hook 已作废旧状态，这里重新加载当前场景并回到顶部
+  sceneGeneration += 1
+  void loadFirstPage()
+})
+
 onBeforeUnmount(() => {
   dispose()
-  playerObserver?.disconnect()
+  detachPlayersObserver()
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   pausePlayers()
   playerElements.clear()
@@ -191,11 +314,42 @@ onBeforeUnmount(() => {
 
 <template>
   <main ref="feedElement" class="short-feed" aria-label="最新视频" @scroll="handleScroll">
+    <nav class="feed-tabs" aria-label="切换视频流">
+      <button
+        type="button"
+        class="feed-tab"
+        :class="{ 'feed-tab--active': scene === 'timeline' }"
+        :aria-pressed="scene === 'timeline'"
+        @click="switchScene('timeline')"
+      >
+        最新
+      </button>
+      <button
+        type="button"
+        class="feed-tab"
+        :class="{ 'feed-tab--active': scene === 'following' }"
+        :aria-pressed="scene === 'following'"
+        @click="switchScene('following')"
+      >
+        关注
+      </button>
+    </nav>
+
     <h1 class="sr-only">最新视频</h1>
 
     <p v-if="publishedMessage" class="feed-notice" role="status">{{ publishedMessage }}</p>
 
-    <section v-if="isInitialLoading" class="loading-feed" aria-label="正在加载视频">
+    <section v-if="showFollowingSignIn" class="feed-message" role="status">
+      <p>{{ errorMessage || '登录后查看关注作者的最新视频' }}</p>
+      <RouterLink
+        class="feed-signin-link"
+        :to="{ name: 'login', query: { redirect: followingRedirectFullPath } }"
+      >
+        登录
+      </RouterLink>
+    </section>
+
+    <section v-else-if="isInitialLoading" class="loading-feed" aria-label="正在加载视频">
       <article
         v-for="index in 2"
         :key="index"
@@ -272,13 +426,28 @@ onBeforeUnmount(() => {
     </section>
 
     <section v-else class="feed-message" role="alert">
-      <p>{{ errorMessage || '暂时没有公开视频' }}</p>
+      <p>{{ errorMessage || emptyFeedText }}</p>
       <button v-if="errorMessage" type="button" @click="retry">重试</button>
     </section>
   </main>
 </template>
 
 <style scoped>
+/* 视觉隐藏的标题必须离开文档流：否则它会占位滚动容器顶部，
+   把第一张卡片的 scroll-snap 吸附点推离 scrollTop=0，切换后的回顶会被弹回占位处 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .short-feed {
   height: calc(100dvh - 60px);
   overflow-y: auto;
@@ -295,7 +464,7 @@ onBeforeUnmount(() => {
 .feed-notice {
   position: fixed;
   z-index: 20;
-  top: 80px;
+  top: 128px;
   left: 50%;
   margin: 0;
   border: 1px solid #4c8e83;
@@ -305,6 +474,58 @@ onBeforeUnmount(() => {
   background: #193d36;
   font-size: 0.9rem;
   transform: translateX(-50%);
+}
+
+/* 场景切换悬浮在视频流上方，桌面与移动都固定在顶部栏下方 */
+.feed-tabs {
+  position: fixed;
+  z-index: 15;
+  top: 72px;
+  left: 50%;
+  display: inline-flex;
+  gap: 4px;
+  border: 1px solid #ffffff26;
+  border-radius: 999px;
+  padding: 4px;
+  background: #0b1110a8;
+  box-shadow: 0 4px 16px #00000033;
+  transform: translateX(-50%);
+  backdrop-filter: blur(8px);
+}
+
+.feed-tab {
+  min-height: 32px;
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 16px;
+  color: #cfd6d4;
+  background: transparent;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.feed-tab--active {
+  color: #062922;
+  background: #72d5c4;
+}
+
+.feed-signin-link {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  border: 1px solid #2e8e7c;
+  border-radius: 8px;
+  padding: 8px 18px;
+  color: #f5fffc;
+  background: #176557;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.feed-signin-link:hover {
+  background: #1d7968;
 }
 
 .short-video {
@@ -529,7 +750,11 @@ onBeforeUnmount(() => {
   }
 
   .feed-notice {
-    top: 114px;
+    top: 162px;
+  }
+
+  .feed-tabs {
+    top: 110px;
   }
 
   .short-video__meta h2 {

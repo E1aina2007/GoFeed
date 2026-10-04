@@ -2,11 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/lib/api'
 
-import { listTimelineFeed, type VideoItem, type VideoListResponse } from '../api'
+import { listFollowingFeed, listTimelineFeed, type VideoItem, type VideoListResponse } from '../api'
 import { usePublishedFeed } from '../usePublishedFeed'
 
 vi.mock('../api', () => ({
   listTimelineFeed: vi.fn<typeof listTimelineFeed>(),
+  listFollowingFeed: vi.fn<typeof listFollowingFeed>(),
 }))
 
 function video(id: number, title = `视频 ${id}`): VideoItem {
@@ -110,7 +111,7 @@ describe('usePublishedFeed 分页与取消', () => {
     feed.dispose()
   })
 
-  it('分页遇到不可重试错误时保留已加载视频与游标供重试', async () => {
+  it('分页遇到 400 时保留已加载视频并清空失效游标', async () => {
     const listMock = vi.mocked(listTimelineFeed)
     listMock
       .mockResolvedValueOnce(response([video(1), video(2)], 'page-2'))
@@ -122,20 +123,22 @@ describe('usePublishedFeed 分页与取消', () => {
 
     expect(listMock).toHaveBeenCalledTimes(2)
     expect(feed.errorMessage.value).toBe('分页状态已失效，请重新加载')
-    // 已渲染的内容不能被清空，游标也必须保留，重试才有可能继续这一页
+    // 已渲染的内容不能被清空，但游标已被服务端判定失效，必须清空不再复用
     expect(feed.videos.value).toEqual([video(1), video(2)])
-    expect(feed.nextCursor.value).toBe('page-2')
-    expect(feed.hasMore.value).toBe(true)
+    expect(feed.nextCursor.value).toBeUndefined()
+    expect(feed.hasMore.value).toBe(false)
     expect(feed.isLoadingMore.value).toBe(false)
 
-    // 用户重试：沿用同一游标只补发一次请求并恢复到新游标
-    listMock.mockResolvedValueOnce(response([video(3)], 'page-3'))
+    // 游标已清空：滚动触发的 loadMore 不得再发请求，重试只能重新加载首屏
     await feed.loadMore()
+    expect(listMock).toHaveBeenCalledTimes(2)
 
-    expect(listMock).toHaveBeenCalledTimes(3)
-    expect(listMock.mock.calls[2]?.[0]).toMatchObject({ cursor: 'page-2' })
+    listMock.mockResolvedValueOnce(response([video(3)], 'page-3'))
+    await feed.loadFirstPage()
+
+    expect(listMock.mock.calls[2]?.[0]).toEqual({ signal: expect.any(AbortSignal) })
     expect(feed.errorMessage.value).toBe('')
-    expect(feed.videos.value).toEqual([video(1), video(2), video(3)])
+    expect(feed.videos.value).toEqual([video(3)])
     expect(feed.nextCursor.value).toBe('page-3')
     feed.dispose()
   })
