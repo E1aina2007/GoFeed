@@ -5,25 +5,44 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	applicationfeed "gofeed/internal/application/feed"
 	domainfeed "gofeed/internal/domain/feed"
 	apierror "gofeed/internal/error"
+	"gofeed/internal/middleware/jwt"
 
 	"github.com/gin-gonic/gin"
 )
 
 type Handler struct {
-	service *applicationfeed.Service
+	service       *applicationfeed.Service
+	followingAuth gin.HandlerFunc
 }
 
-func New(service *applicationfeed.Service) *Handler {
-	return &Handler{service: service}
+type Option func(*Handler)
+
+func WithFollowingAuth(auth gin.HandlerFunc) Option {
+	return func(h *Handler) { h.followingAuth = auth }
 }
 
-// GetFeed 处理 GET /api/feed；F0 只启用匿名 Timeline
+func New(service *applicationfeed.Service, options ...Option) *Handler {
+	handler := &Handler{service: service}
+	for _, option := range options {
+		option(handler)
+	}
+	return handler
+}
+
+// GetFeed 按场景处理公开 Timeline 与认证 Following
 func (h *Handler) GetFeed(c *gin.Context) {
 	values, err := url.ParseQuery(c.Request.URL.RawQuery)
+	for _, scene := range values["scene"] {
+		if scene == string(domainfeed.SceneFollowing) {
+			privateFollowingResponse(c)
+			break
+		}
+	}
 	if err != nil || !validQuery(values) {
 		apierror.WriteCode(c, apierror.CodeInvalid, "invalid feed query")
 		return
@@ -36,10 +55,35 @@ func (h *Handler) GetFeed(c *gin.Context) {
 			return
 		}
 	}
+	scene := domainfeed.Scene(values.Get("scene"))
+	switch scene {
+	case "", domainfeed.SceneTimeline, domainfeed.SceneFollowing, domainfeed.SceneHot, domainfeed.SceneRecommend:
+	default:
+		apierror.WriteCode(c, apierror.CodeInvalid, domainfeed.ErrInvalidScene.Error())
+		return
+	}
+	var viewerID uint
+	if scene == domainfeed.SceneFollowing {
+		if h.followingAuth == nil {
+			apierror.WriteUnauthorized(c, domainfeed.ErrUnauthenticated.Error())
+			return
+		}
+		h.followingAuth(c)
+		if c.IsAborted() {
+			return
+		}
+		var ok bool
+		viewerID, ok = jwt.UserID(c)
+		if !ok || viewerID == 0 {
+			apierror.WriteUnauthorized(c, domainfeed.ErrUnauthenticated.Error())
+			return
+		}
+	}
 	result, err := h.service.GetFeed(c.Request.Context(), applicationfeed.FeedRequest{
-		Scene:  domainfeed.Scene(values.Get("scene")),
-		Cursor: values.Get("cursor"),
-		Limit:  limit,
+		ViewerID: viewerID,
+		Scene:    scene,
+		Cursor:   values.Get("cursor"),
+		Limit:    limit,
 	})
 	if err != nil {
 		if errors.Is(err, domainfeed.ErrSceneNotEnabled) {
@@ -48,12 +92,28 @@ func (h *Handler) GetFeed(c *gin.Context) {
 			return
 		}
 		apierror.Write(c, err, "feed operation failed",
+			apierror.Rule{Match: apierror.Is(domainfeed.ErrUnauthenticated), Code: apierror.CodeUnauthorized, PublicMessage: domainfeed.ErrUnauthenticated.Error()},
 			apierror.Rule{Match: apierror.Is(domainfeed.ErrInvalidScene, domainfeed.ErrInvalidLimit, domainfeed.ErrInvalidCursor), Code: apierror.CodeInvalid, UseErrorText: true},
 			apierror.Rule{Match: apierror.Is(domainfeed.ErrUnavailable), Code: apierror.CodeUnavailable, PublicMessage: domainfeed.ErrUnavailable.Error()},
 		)
 		return
 	}
 	c.JSON(http.StatusOK, feedItemsResponseFromResult(result))
+}
+
+// privateFollowingResponse 防止观看者专属的关注流响应被共享缓存复用
+func privateFollowingResponse(c *gin.Context) {
+	c.Header("Cache-Control", "private, no-store")
+	values := c.Writer.Header().Values("Vary")
+	for _, value := range values {
+		for _, field := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(field), "Authorization") {
+				return
+			}
+		}
+	}
+	values = append(values, "Authorization")
+	c.Header("Vary", strings.Join(values, ", "))
 }
 
 // 参数只允许 F0 已冻结的单值查询，避免把 author_id 等过滤条件静默忽略

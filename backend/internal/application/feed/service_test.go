@@ -267,7 +267,7 @@ func TestGetFeedSceneContract(t *testing.T) {
 		})
 	}
 
-	disabled := []domainfeed.Scene{domainfeed.SceneFollowing, domainfeed.SceneHot, domainfeed.SceneRecommend}
+	disabled := []domainfeed.Scene{domainfeed.SceneHot, domainfeed.SceneRecommend}
 	for _, scene := range disabled {
 		repo := &stubRepository{}
 		if _, err := New(repo).GetFeed(context.Background(), FeedRequest{Scene: scene}); !errors.Is(err, domainfeed.ErrSceneNotEnabled) {

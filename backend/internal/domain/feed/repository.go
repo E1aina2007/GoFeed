@@ -2,6 +2,11 @@ package domainfeed
 
 import "context"
 
+// FollowingReader 从当前关注关系读取公开页，fetchLimit 包含一条分页探测记录
+type FollowingReader interface {
+	ListFollowingPage(ctx context.Context, viewerID uint, cursor *FollowingCursor, fetchLimit int) (TimelinePage, error)
+}
+
 // Repository 定义当前 Timeline 所需的读取能力，不接收或返回编码后的游标
 // 实现保证公开视频边界，作者与统计读取使用截断后的批量 ID
 type Repository interface {

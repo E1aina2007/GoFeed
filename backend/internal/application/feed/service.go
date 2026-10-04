@@ -9,8 +9,9 @@ import (
 const defaultFeedLimit = 20
 
 type Service struct {
-	repo          domainfeed.Repository
-	timelineCache *timelineCache
+	repo            domainfeed.Repository
+	timelineCache   *timelineCache
+	followingReader domainfeed.FollowingReader
 }
 
 type Option func(*Service)
@@ -24,9 +25,10 @@ func New(repo domainfeed.Repository, options ...Option) *Service {
 }
 
 type FeedRequest struct {
-	Scene  domainfeed.Scene
-	Cursor string
-	Limit  int
+	ViewerID uint
+	Scene    domainfeed.Scene
+	Cursor   string
+	Limit    int
 }
 
 type FeedResult struct {
@@ -40,8 +42,8 @@ func (s *Service) GetFeed(ctx context.Context, req FeedRequest) (FeedResult, err
 		req.Scene = domainfeed.DefaultScene
 	}
 	switch req.Scene {
-	case domainfeed.SceneTimeline:
-	case domainfeed.SceneFollowing, domainfeed.SceneHot, domainfeed.SceneRecommend:
+	case domainfeed.SceneTimeline, domainfeed.SceneFollowing:
+	case domainfeed.SceneHot, domainfeed.SceneRecommend:
 		return FeedResult{}, domainfeed.ErrSceneNotEnabled
 	default:
 		return FeedResult{}, domainfeed.ErrInvalidScene
@@ -51,6 +53,9 @@ func (s *Service) GetFeed(ctx context.Context, req FeedRequest) (FeedResult, err
 	}
 	if req.Limit < 1 || req.Limit > domainfeed.MaxLimit {
 		return FeedResult{}, domainfeed.ErrInvalidLimit
+	}
+	if req.Scene == domainfeed.SceneFollowing {
+		return s.getFollowingFeed(ctx, req)
 	}
 	cursor, err := decodeTimelineCursor(req.Cursor)
 	if err != nil {

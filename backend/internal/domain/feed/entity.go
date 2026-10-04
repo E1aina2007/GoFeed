@@ -23,6 +23,12 @@ type TimelineCursor struct {
 	VideoID     uint
 }
 
+// FollowingCursor 只定位关注流，观看者身份由读取请求单独传入
+type FollowingCursor struct {
+	PublishedAt time.Time
+	VideoID     uint
+}
+
 // FeedPageItem 保存排序与后续批量组装需要的轻量页条目
 type FeedPageItem struct {
 	VideoID     uint

@@ -291,7 +291,7 @@ func TestFeedLimitValidation(t *testing.T) {
 }
 
 // 测试目标：验证场景校验与未启用场景的拒绝语义
-// 预期效果：timeline 返回 200，未知场景 400，following、hot、recommend 返回 501 与 no-store 且不查询数据库
+// 预期效果：timeline 返回 200，未知场景 400，following 缺少鉴权装配返回 401，hot、recommend 返回 501 与 no-store 且不查询数据库
 func TestFeedSceneContract(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -305,7 +305,7 @@ func TestFeedSceneContract(t *testing.T) {
 		{name: "空场景回落时间线", rawQuery: "scene=", wantCode: http.StatusOK},
 		{name: "未知场景", rawQuery: "scene=unknown", wantCode: http.StatusBadRequest, wantMessage: "invalid feed scene"},
 		{name: "场景大小写敏感", rawQuery: "scene=Timeline", wantCode: http.StatusBadRequest, wantMessage: "invalid feed scene"},
-		{name: "关注流未启用", rawQuery: "scene=following", wantCode: http.StatusNotImplemented, wantMessage: "feed scene is not enabled", wantNoStore: true},
+		{name: "关注流需要认证", rawQuery: "scene=following", wantCode: http.StatusUnauthorized, wantMessage: "authentication required", wantNoStore: true},
 		{name: "热门未启用", rawQuery: "scene=hot", wantCode: http.StatusNotImplemented, wantMessage: "feed scene is not enabled", wantNoStore: true},
 		{name: "推荐未启用", rawQuery: "scene=recommend", wantCode: http.StatusNotImplemented, wantMessage: "feed scene is not enabled", wantNoStore: true},
 	}
@@ -329,7 +329,7 @@ func TestFeedSceneContract(t *testing.T) {
 			}
 
 			gotCacheControl := recorder.Header().Get("Cache-Control")
-			if testCase.wantNoStore && gotCacheControl != "no-store" {
+			if testCase.wantNoStore && !strings.Contains(gotCacheControl, "no-store") {
 				t.Fatalf("未启用场景必须禁用缓存 got=%q", gotCacheControl)
 			}
 			if !testCase.wantNoStore && gotCacheControl != "" {

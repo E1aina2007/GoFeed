@@ -109,6 +109,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	videoCtl := video.NewController(videoService, mediaStorage)
 	feedRepo := infrafeed.New(videoRepo, authorReader, socialRepo)
 	feedService := applicationfeed.New(feedRepo,
+		applicationfeed.WithFollowingReader(infrafeed.NewFollowingReader(videoRepo, socialRepo)),
 		applicationfeed.WithPageCache(opts.FeedPageCache, infrafeed.NewCardReader(videoRepo), func(observation applicationfeed.CacheObservation) {
 			log.Printf("event=feed_page_cache result=%s duration_ms=%d", observation.Result, observation.Duration.Milliseconds())
 		}),
@@ -116,7 +117,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 			log.Printf("event=feed_card_cache result=%s count=%d duration_ms=%d", observation.Result, observation.Count, observation.Duration.Milliseconds())
 		}),
 	)
-	feedHandler := interfaceshttpfeed.New(feedService)
+	feedHandler := interfaceshttpfeed.New(feedService, interfaceshttpfeed.WithFollowingAuth(jwt.Auth(sessionService)))
 	api.GET("/feed", feedHandler.GetFeed)
 	videos := api.Group("/video")
 	videos.GET("", videoCtl.GetVideoList)

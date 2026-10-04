@@ -37,7 +37,7 @@
 | PUT | `/api/user/auth/:id/follow` | 是 | 关注指定用户 |
 | DELETE | `/api/user/auth/:id/follow` | 是 | 取消关注指定用户 |
 | DELETE | `/api/user/auth` | 是 | 注销当前账号 |
-| GET | `/api/feed` | 否 | 查询 Feed（当前仅启用 Timeline） |
+| GET | `/api/feed` | 按场景 | Timeline 匿名读取；Following 需要 Bearer JWT 与活动 session |
 | GET | `/api/video` | 否 | 查询公开视频流 |
 | GET | `/api/video/:id` | 否 | 查询公开视频详情 |
 | GET | `/api/video/:id/comments` | 否 | 查询公开视频评论 |
@@ -543,11 +543,11 @@ Redis 不可用时限流会 fail-open，注册或登录继续按原有业务契�
 
 `GET /api/feed`
 
-当前仅启用匿名 `timeline`，按 `(published_at DESC, id DESC)` 排序。Feed 应用层负责分页与批量组装，基础设施适配器复用现有 MySQL 仓储、作者读取和互动聚合。只返回已发布、未软删除且具备完整媒体字段及发布时间的视频；HTTP DTO 保持现有展示字段。携带 `Authorization` 不改变 Timeline 结果，不返回用户专属点赞或关注状态。
+已启用匿名 `timeline` 与需要 Bearer JWT、活动 session 和活动观看者的 `following`，均按 `(published_at DESC, id DESC)` 排序。Feed 应用层负责分页与批量组装，基础设施适配器复用现有 MySQL 仓储、作者读取和互动聚合。只返回已发布、未软删除且具备完整媒体字段及发布时间的视频；HTTP DTO 保持现有展示字段。携带 `Authorization` 不改变 Timeline 结果，不返回用户专属点赞或关注状态。
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `scene` | string | 否 | 省略或空值时为 `timeline`；`following`、`hot`、`recommend` 已规划但尚未启用 |
+| `scene` | string | 否 | 省略或空值时为 `timeline`；`following` 已启用且需要认证；`hot`、`recommend` 尚未启用 |
 | `limit` | int | 否 | 范围 1-50，省略时默认 20；显式空值或 0 均无效 |
 | `cursor` | string | 否 | 当前场景上一次响应的 `next_cursor`；省略或空值表示第一页 |
 
@@ -563,19 +563,24 @@ Redis 不可用时限流会 fail-open，注册或登录继续按原有业务契�
 
 示例展示空列表；非空列表的每项采用 `VideoItem`，存在后续页面时另返回字符串字段 `next_cursor`，没有后续页面时省略它。客户端应直接复用展示字段并原样回传游标。
 
-Feed 游标版本为 `1`，独立绑定 `timeline` 场景、排序版本 `1`（发布时间与 ID 倒序）和分页位置。不能与 `/api/video` 的 `public`、`author`、`mine` 游标互换；结构、版本、场景、排序版本或位置不合法、含未知字段、编码不正确或长度超过 1024 字符时返回 `400`。该接口为匿名全局读取，游标不绑定用户；后续个性化场景需另行定义用户范围。
+Feed 游标版本为 `1`，独立绑定 `timeline` 场景、排序版本 `1`（发布时间与 ID 倒序）和分页位置。不能与 `/api/video` 的 `public`、`author`、`mine` 游标互换；结构、版本、场景、排序版本或位置不合法、含未知字段、编码不正确或长度超过 1024 字符时返回 `400`。Timeline 游标不绑定用户。Following 使用独立 `following` 场景载荷并增加非零 `viewer_id`，必须与已认证观看者一致；跨场景、跨观看者或社交关注列表游标不能复用。
 
 游标由以下 JSON 载荷经过 Base64 URL 编码生成；字段说明用于后端维护，客户端仍应原样回传游标：
 
 | JSON 字段 | 含义 |
 |---|---|
 | `version` | 游标载荷结构版本，当前为 `1` |
-| `scene` | 游标所属 Feed 场景，当前为 `timeline` |
+| `scene` | 游标所属 Feed 场景：`timeline` 或 `following` |
 | `sort_version` | 排序规则版本，当前为 `1`，对应 `(published_at DESC, id DESC)` |
 | `published_at` | 上一页最后一条视频的发布时间，统一按 UTC 渲染（例如 `2026-08-01T07:59:50Z`）；客户端应原样回传，不要自行改写时区 |
 | `video_id` | 上一页最后一条视频的 ID，与发布时间共同确定下一页读取位置 |
+| `viewer_id` | 仅 Following 载荷包含，必须等于已认证观看者；Timeline 不包含该字段 |
 
-新 Feed 游标统一使用上述完整字段名，不接受此前开发过程中的单字母字段名；既有 `/api/video` 游标格式不变。
+新 Feed 游标统一使用上述完整字段名，不接受此前开发过程中的单字母字段名；既有 `/api/video` 游标格式不变。Following 使用无填充 URL-safe Base64，拒绝未知字段、尾随 JSON 与非规范编码。游标只提供查询位置，不能用作认证凭据；查询始终使用 JWT 上下文的观看者 ID。相同用户的新活动 session 可续用其游标，limit 可在 1–50 之间改变。
+
+Following 在同一视频查询内限定观看者当前关注的活动作者和完整公开视频，不包含未关注作者或自动包含自己的视频。不要求视频在关注后发布，新关注作者的可见历史视频也属于集合；续页只读取当前游标边界之后的记录。取关、作者注销和视频软删除在下一次查询生效，跨页不保证冻结快照。作者在视频查询后注销仍可能出现既有“已注销用户”占位，下一次查询排除。无关注或无可见视频为正常空页。
+
+所有可识别的 Following 请求及错误响应设置 `Cache-Control: private, no-store`，将 `Authorization` 合入已有 `Vary`。Following 直接读取 MySQL，不读取或写入 Timeline 页/卡片缓存，也不占用其缓存并发名额。
 
 | 状态码 | 条件 | 错误响应 |
 | --- | --- | --- |
@@ -583,15 +588,16 @@ Feed 游标版本为 `1`，独立绑定 `timeline` 场景、排序版本 `1`（�
 | `400` | 数量不合法 | `{"error":"invalid limit"}` |
 | `400` | 游标不合法 | `{"error":"invalid feed cursor"}` |
 | `400` | 查询参数结构不合法 | `{"error":"invalid feed query"}` |
-| `501` | 合法参数请求尚未启用的 `following`、`hot` 或 `recommend` | `{"error":"feed scene is not enabled"}`，并设置 `Cache-Control: no-store` |
-| `503` | 视频、作者或互动统计读取不可用，或开启缓存后 Feed 请求容量耗尽 | `{"error":"feed temporarily unavailable"}` |
+| `401` | Following 缺少、过期、无效或撤销凭据；观看者缺失或已注销 | 沿用现有鉴权错误文案；活动观看者检查失败为 `{"error":"authentication required"}` |
+| `501` | 合法参数请求尚未启用的 `hot` 或 `recommend` | `{"error":"feed scene is not enabled"}`，并设置 `Cache-Control: no-store` |
+| `503` | Following 活动观看者或视频、作者、统计读取不可用；开启缓存的 Timeline 请求容量耗尽 | `{"error":"feed temporarily unavailable"}` |
 | `500` | 未预期的内部错误 | `{"error":"feed operation failed"}` |
 
-处理顺序为查询字符串和数量校验、场景选择、Timeline 游标校验及读取。未启用场景返回 `501`，不会读取数据库或静默返回 Timeline。内部读取错误不回显给客户端。
+处理顺序为查询字符串和数量校验、场景选择；Timeline 直接校验游标及读取，Following 先认证再校验游标并读取。合法 Following 参数缺少凭据时，即使游标也非法仍返回 401；认证成功加非法游标返回 400。活动观看者检查及业务数据库故障为安全的 503；共享 session 中间件的数据库校验失败仍沿用 401。未启用场景返回 `501`，不会读取数据库或静默返回 Timeline。内部读取错误不回显给客户端。
 
-Feed 页缓存默认关闭。开启后仅缓存带游标的后续页，保存轻量排序条目并保留探测记录；命中仍读取 MySQL 校验当前公开视频卡片。卡片缺失或排序字段变化时按原游标整页回源，Redis 未命中、载荷非法或故障也回源。缓存写失败不改变成功响应，作者与互动统计仍实时读取。开启时最多并发处理 32 个 Feed 请求；缓存操作最多并发 16 次，容量耗尽时跳过缓存回源。开关不改变查询参数、响应字段或游标格式，也不影响 `/ready`。
+Timeline 页缓存默认关闭。开启后仅缓存带游标的后续页，保存轻量排序条目并保留探测记录；命中仍读取 MySQL 校验当前公开视频卡片。卡片缺失或排序字段变化时按原游标整页回源，Redis 未命中、载荷非法或故障也回源。缓存写失败不改变成功响应，作者与互动统计仍实时读取。开启时最多并发处理 32 个 Timeline 缓存读取请求；缓存操作最多并发 16 次，容量耗尽时跳过缓存回源。开关不改变查询参数、响应字段或游标格式，也不影响 `/ready`。
 
-基础卡片缓存同样默认关闭，仅 `FEED_PAGE_CACHE_ENABLED` 与 `FEED_CARD_CACHE_ENABLED` 同时开启时参与后续页的页缓存命中路径。读取前用完整公开规则批量验证 MySQL 当前状态；缓存 ID、作者 ID、发布时间必须匹配，缺失/坏值/缓存故障批量回源，MySQL 错误仍为 503。基础卡片不包含作者资料和互动统计，二者继续实时读取；首屏与页缓存未命中仍走原 MySQL 路径。卡片命中沿用本次 MySQL 时间表示，响应字段与游标不变；两个缓存共享上述容量，旧接口不受影响。历史完整工作树的真实依赖及浏览器兼容记录见开发计划第 5.8 节；2026-10-03 后端提交排除补测文件，本次仅验证编译与差异。
+基础卡片缓存同样默认关闭，仅 `FEED_PAGE_CACHE_ENABLED` 与 `FEED_CARD_CACHE_ENABLED` 同时开启时参与后续页的页缓存命中路径。读取前用完整公开规则批量验证 MySQL 当前状态；缓存 ID、作者 ID、发布时间必须匹配，缺失/坏值/缓存故障批量回源，MySQL 错误仍为 503。基础卡片不包含作者资料和互动统计，二者继续实时读取；首屏与页缓存未命中仍走原 MySQL 路径。卡片命中沿用本次 MySQL 时间表示，响应字段与游标不变；两个缓存共享上述容量，旧接口不受影响。补测已分模块提交并通过普通与 race 全量回归，实际依赖和专项跳过范围见开发计划第 5.11 节；历史浏览器记录见第 5.8 节。
 
 首页通过专用 `listTimelineFeed` 读取 `/api/feed?scene=timeline&limit=12`，后续页原样回传该接口的 `next_cursor`；首屏及重新加载不携带旧游标。作者主页仍通过 `listPublishedVideos` 读取 `/api/video?author_id=...`，其他既有视频及社交接口保持原路径。首页失败后不会自动切换到旧接口续页。新旧游标不得互换，切换或回滚入口后须重新加载页面清空分页状态。
 
