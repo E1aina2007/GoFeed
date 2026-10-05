@@ -2,6 +2,8 @@
 
 接口的当前路径、请求和响应以 [`API.md`](./API.md) 及 `backend/internal/router/router.go` 为准；开发、迁移、配置和提交约束见 [`AGENTS.md`](./AGENTS.md)。
 
+系统阅读项目可从 [`GoFeed 源码导读`](./docs/SOURCE_CODE_GUIDE.md) 开始，包含 Timeline/Following、页与卡片缓存、Outbox 发布与预热、故障恢复，以及向量推荐的当前边界和扩展位置。
+
 后续任务、Feed F0–F6 演进和待补验收统一维护在 [`docs/DEVELOPMENT_PLAN.md`](./docs/DEVELOPMENT_PLAN.md)。已完成事项只在本文简述，不再保留独立完成方案。
 
 ## 快速开始（Docker）
@@ -143,6 +145,14 @@ pnpm dev
 | Feed 基础卡片缓存 | `FEED_CARD_CACHE_ENABLED` | 默认 `false`，对应 `feed.card_cache_enabled`；仅页缓存同时开启时生效，非法非空布尔值关闭 |
 | 发布事件生产 | `FEED_PUBLISHED_EVENT_ENABLED` | 默认 `false`，对应 `feed.published_event_enabled`；worker 处理成功时同事务写发布事件，本进程须同时开启预热消费，只开生产而未开本进程预热消费时启动即拒绝 |
 | 卡片预热消费 | `FEED_CARD_WARMUP_ENABLED` | 默认 `false`，对应 `feed.card_warmup_enabled`；开启发布路由、预热消费者和完整重连拓扑，可在关闭生产后继续排空 |
+| 互动事实记录 | `INTERACTION_EVENTS_ENABLED` | 默认 `false`，对应 `interaction.events_enabled`；应用迁移 `000010` 后才可开启，四种互动的实际变更与事件同事务提交 |
+| 互动事件派发 | `INTERACTION_RELAY_ENABLED` | 默认 `false`，对应 `interaction.relay_enabled`；worker 独立派发已提交事实至 `feed.heat`，与 API 采集开关独立；开启时本进程必须同时开启热度消费 |
+| 热度消费 | `FEED_HEAT_CONSUMER_ENABLED` | 默认 `false`，对应 `feed.heat_consumer_enabled`；独立消费 `feed.heat`、派生分钟桶，不启用 Hot；可单独开启消费排空 |
+| 热度代际 | `FEED_HEAT_GENERATION` | 默认 `initial`；同一代际锁定规则指纹，修改规则或重建使用新代际 |
+| 热度窗口与保留宽限 | `FEED_HEAT_WINDOW_MINUTES`、`FEED_HEAT_RETENTION_GRACE_MINUTES` | 默认 `60`、`10` 分钟；桶到期由原创建分钟计算，重复投递不延长窗口 |
+| 热度去重保留 | `FEED_HEAT_DEDUPE_TTL_HOURS` | 默认 `24` 小时，必须至少覆盖窗口、保留宽限及额外一分钟 |
+| 热度权重 | `FEED_HEAT_LIKE_WEIGHT`、`FEED_HEAT_COMMENT_WEIGHT` | 默认 `3`、`5`；新增与撤销归属原互动创建分钟，保留中间负贡献；初始参数不代表效果验收 |
+| 分钟桶容量 | `FEED_HEAT_MAX_VIDEOS_PER_MINUTE`、`FEED_HEAT_MAX_EVENTS_PER_MINUTE` | 默认 `10000` 视频、`100000` 事件；超限重试/死信，不伪造计分成功 |
 | RabbitMQ 主机 | `RABBITMQ_HOST` | 本地默认 `localhost`；Docker 容器由 Compose 覆盖为 `rabbitmq` |
 | RabbitMQ 端口 | `RABBITMQ_PORT` | `5672` |
 | RabbitMQ 用户 | `RABBITMQ_DEFAULT_USER` | 默认 `gofeed`；覆盖 YAML 用户名并用于 Compose RabbitMQ 首次初始化 |
@@ -235,7 +245,13 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 首页 Timeline 接入与真实链路验收已完成，Feed 页缓存继续默认关闭。F2-B1 基础卡片缓存后端为 `98f9df2`，F2-B2 同事务发布事件、预热消费、重试/DLQ 与重连装配后端为 `0c68c82`。补测经审查后分为 `5a87830`（卡片读取）与 `719e873`（发布预热），修复了测试清空固定 MQ 队列的问题，改用每用例随机拓扑，并在真实 ACK 后停止消费循环。配置校验提取保留既有 worker 启动行为。构建、vet、普通和 race 全量回归通过，真实 MySQL/RabbitMQ/Redis 参与；6 个专项开关用例跳过，不算通过。F3-A 后端/API `3a85681`、F3-B 页面 `c8e88df`、真实浏览器与脱敏测试 `5e545c9` 已分别提交；最新独立副本验证、真实联调及证据边界见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 5.15 节，生产开关仍默认关闭。
 
-下一步建议先建立 Feed 指标与容量基线，再依据收益推进 Following 混合推拉，随后实施互动事实事件、分钟热榜与 Hot、曝光及规则推荐；分步范围与验收见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 3.5 节。每次只实施一个可独立 review 的模块，完成后先等待 review，明确指令后提交。
+F4-A1 互动事实存储已提交为 `82c01d5`，F4-A2 可靠派发已提交为 `65cebf6`。`INTERACTION_EVENTS_ENABLED` / `interaction.events_enabled` 默认关闭，关闭时沿用原互动处理器；开启后，点赞、取消点赞、创建评论和删除评论通过 HTTP、应用、领域、持久化四层提交业务行与 `interaction_outbox_events`。只有真实变更写事件，事件插入失败使同一事务失败；提交后读取统计或作者资料失败仍可能返回错误，不撤销已经提交的事实。接口与认证沿用现有契约。
+
+启用事件记录或派发前需核对目标库并应用迁移 `000010_interaction_outbox`；本文本轮只核对源码，未检查实时数据库，2026-10-04 的版本 9 记录仅是历史证据。worker 的独立互动 Relay 通过 `INTERACTION_RELAY_ENABLED` / `interaction.relay_enabled` 控制，读取持久载荷，沿用租约、attempt 围栏、退避、publisher confirm 与 mandatory/Return 检查。F4-B1 后端已提交为 `26a3f95`，实现默认关闭的独立热度消费，复用 `feed.heat` 及 `1s/5s/30s` 重试/DLQ、重连和关闭生命周期；派发开启时要求本进程同时开启消费，消费可在派发关闭时排空存量。真实依赖验收仍待补齐，所有新开关继续默认关闭。
+
+热度新增与撤销都计入原互动创建分钟。Lua 在状态 Hash 中同时记录 event_id 收据与绝对分数，再写分钟 ZSET；重复投递可修复未完成的 ZSET 写入而不再次累加，负贡献不在写入时截断。分钟桶按原始时间到期，过期桶不重建；同一代际锁定权重/时间/容量规则，覆盖标记始终为 `unverified`。没有 MySQL 热榜快照、自动重建或完整消费水位，`scene=hot` 仍为 501，派发完成也不表示热榜完整。
+
+现有指标配置与 Feed 请求回调已单独提交为 `2ff0364`，采集器/监听出口仍未装配，容量工具继续暂缓。F4-B1 本轮不碰前端、测试或单元测试代码，只做生产编译与静态检查；下一模块在 review 及专项验收后推进 F4-B2 事实重建与 MySQL 快照，再接 F4-C Hot。Following 混合推拉仍需容量收益证据。详细范围与待补验收见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 3.5–3.7、5.18 节。每次只实施一个可独立 review 的模块，完成后先等待 review，明确指令后提交。
 
 F3-A 后端支持 `GET /api/feed?scene=following`：复用 JWT/session 与活动观看者校验，在 MySQL 内关联当前关注关系、活动作者和完整公开视频，使用绑定观看者的独立 keyset 游标，并批量读取作者与当前统计。Following 响应为私有且不使用 Timeline 缓存；Timeline 保持匿名，Hot/Recommend 保持 501。真实 MySQL 用例验证非空页 6 次 SQL、空页 3 次，0/1/32/128 个关注作者下已执行 EXPLAIN ANALYZE；样本不代表生产容量或 p95。已提交的 F3-B 页面支持场景切换、独立分页、`/?scene=following` 与登录回跳；接口见 [API](./API.md)，历史验证、本轮提交和剩余范围见开发计划第 5.12、5.15、3.4 节。
 
