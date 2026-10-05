@@ -59,7 +59,10 @@ func main() {
 	log.Println("Database connected successfully")
 
 	// 装配服务
-	routerOptions := router.Options{RateLimitCache: rateLimitCache}
+	routerOptions := router.Options{
+		RateLimitCache:           rateLimitCache,
+		InteractionEventsEnabled: cfg.Interaction.EventsEnabled,
+	}
 	var feedCacheRuntime *cache.Runtime
 	if cfg.Feed.PageCacheEnabled {
 		feedCacheRuntime = cache.NewRuntime(cfg.Redis)

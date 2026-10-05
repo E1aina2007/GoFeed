@@ -10,13 +10,14 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig    `yaml:"server"`
-	DB        DatabaseConfig  `yaml:"database"`
-	Redis     RedisConfig     `yaml:"redis"`
-	Feed      FeedConfig      `yaml:"feed"`
-	RabbitMQ  RabbitMQConfig  `yaml:"rabbitmq"`
-	Retention RetentionConfig `yaml:"retention"`
-	Sweeper   SweeperConfig   `yaml:"sweeper"`
+	Server      ServerConfig      `yaml:"server"`
+	DB          DatabaseConfig    `yaml:"database"`
+	Redis       RedisConfig       `yaml:"redis"`
+	Feed        FeedConfig        `yaml:"feed"`
+	Interaction InteractionConfig `yaml:"interaction"`
+	RabbitMQ    RabbitMQConfig    `yaml:"rabbitmq"`
+	Retention   RetentionConfig   `yaml:"retention"`
+	Sweeper     SweeperConfig     `yaml:"sweeper"`
 
 	// Dev is controlled by MODE and is intentionally not loaded from YAML.
 	Dev bool `yaml:"-"`
@@ -56,6 +57,11 @@ type FeedConfig struct {
 	CardCacheEnabled      bool `yaml:"card_cache_enabled"`
 	PublishedEventEnabled bool `yaml:"published_event_enabled"`
 	CardWarmupEnabled     bool `yaml:"card_warmup_enabled"`
+}
+
+type InteractionConfig struct {
+	// EventsEnabled 开启四种互动写入的同事务事实记录；默认关闭
+	EventsEnabled bool `yaml:"events_enabled"`
 }
 
 // ErrPublishedWithoutCardWarmup 表示开启了发布事件却没有让本进程承担预热消费
@@ -181,6 +187,10 @@ func OverrideWithEnv(cfg *Config) {
 	if v := os.Getenv("FEED_CARD_WARMUP_ENABLED"); v != "" {
 		enabled, err := strconv.ParseBool(v)
 		cfg.Feed.CardWarmupEnabled = err == nil && enabled
+	}
+	if v := os.Getenv("INTERACTION_EVENTS_ENABLED"); v != "" {
+		enabled, err := strconv.ParseBool(v)
+		cfg.Interaction.EventsEnabled = err == nil && enabled
 	}
 
 	// 读取 RabbitMQ 配置

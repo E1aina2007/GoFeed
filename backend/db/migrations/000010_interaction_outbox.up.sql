@@ -1,0 +1,27 @@
+-- 同事务保存互动事实及派发状态，历史事实不随原互动或视频级联删除
+CREATE TABLE interaction_outbox_events (
+    id                        BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    event_id                  CHAR(36)        NOT NULL,
+    schema_version            INT UNSIGNED    NOT NULL,
+    event_type                VARCHAR(64)     NOT NULL,
+    video_id                  BIGINT UNSIGNED NOT NULL,
+    kind                      VARCHAR(32)     NOT NULL,
+    interaction_id            BIGINT UNSIGNED NOT NULL,
+    delta                     TINYINT         NOT NULL,
+    occurred_at_ms            BIGINT          NOT NULL,
+    interaction_created_at_ms BIGINT          NOT NULL,
+    status                    VARCHAR(16)     NOT NULL DEFAULT 'pending',
+    attempt                   INT             NOT NULL DEFAULT 0,
+    next_attempt_at           DATETIME(3)     DEFAULT NULL,
+    locked_until              DATETIME(3)     DEFAULT NULL,
+    last_attempt_at           DATETIME(3)     DEFAULT NULL,
+    last_error                VARCHAR(255)    NOT NULL DEFAULT '',
+    created_at                DATETIME(3)     NOT NULL,
+    dispatched_at             DATETIME(3)     DEFAULT NULL,
+    UNIQUE KEY uq_interaction_outbox_event_id (event_id),
+    UNIQUE KEY uq_interaction_outbox_change (kind, interaction_id),
+    KEY idx_interaction_outbox_claim (status, next_attempt_at, id),
+    KEY idx_interaction_outbox_lease (status, locked_until, id),
+    KEY idx_interaction_outbox_replay (occurred_at_ms, id),
+    KEY idx_interaction_outbox_video (video_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

@@ -4,9 +4,12 @@ import (
 	"log"
 
 	applicationfeed "gofeed/internal/application/feed"
+	applicationinteraction "gofeed/internal/application/interaction"
 	"gofeed/internal/auth"
 	infrafeed "gofeed/internal/infra/persistence/feed"
+	infrainteraction "gofeed/internal/infra/persistence/interaction"
 	interfaceshttpfeed "gofeed/internal/interfaces/http/feed"
+	interfaceshttpinteraction "gofeed/internal/interfaces/http/interaction"
 	"gofeed/internal/middleware/jwt"
 	"gofeed/internal/middleware/ratelimit"
 	"gofeed/internal/observability"
@@ -32,6 +35,8 @@ type Options struct {
 	RateLimitCache ratelimit.Cache
 	FeedPageCache  applicationfeed.PageCache
 	FeedCardCache  applicationfeed.CardCache
+	// InteractionEventsEnabled 切换四种互动写入的同事务事实记录，默认关闭
+	InteractionEventsEnabled bool
 }
 
 func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
@@ -75,6 +80,15 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	videoRepo := video.NewRepository(db)
 	socialRepo := social.NewRepository(db)
 	socialCtl := social.NewController(social.NewService(socialRepo))
+	createLike, removeLike := socialCtl.CreateLike, socialCtl.RemoveLike
+	createComment, deleteComment := socialCtl.CreateComment, socialCtl.DeleteComment
+	if opts.InteractionEventsEnabled {
+		// 同一适配器提供读取和原子写入；认证由现有路由中间件完成
+		interactionRepo := infrainteraction.New(db, true)
+		interactionHandler := interfaceshttpinteraction.New(applicationinteraction.New(interactionRepo, interactionRepo))
+		createLike, removeLike = interactionHandler.CreateLike, interactionHandler.RemoveLike
+		createComment, deleteComment = interactionHandler.CreateComment, interactionHandler.DeleteComment
+	}
 	mediaStorage := video.NewLocalStorage(uploadDir)
 	userCtl := user.NewController(user.NewService(userRepo, videoRepo, socialRepo), sessionService, mediaStorage)
 
@@ -136,10 +150,10 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		protectedVideos.GET("/mine", videoCtl.GetMyVideoList)
 		protectedVideos.GET("/:id/status", videoCtl.GetVideoStatus)
 		protectedVideos.GET("/:id/like", socialCtl.GetLikeState)
-		protectedVideos.PUT("/:id/like", socialCtl.CreateLike)
-		protectedVideos.DELETE("/:id/like", socialCtl.RemoveLike)
-		protectedVideos.POST("/:id/comments", socialCtl.CreateComment)
-		protectedVideos.DELETE("/:id/comments/:commentID", socialCtl.DeleteComment)
+		protectedVideos.PUT("/:id/like", createLike)
+		protectedVideos.DELETE("/:id/like", removeLike)
+		protectedVideos.POST("/:id/comments", createComment)
+		protectedVideos.DELETE("/:id/comments/:commentID", deleteComment)
 		protectedVideos.DELETE("/:id", videoCtl.DeleteVideo)
 	}
 
