@@ -55,18 +55,18 @@ type RabbitMQConfig struct {
 
 type FeedConfig struct {
 	PageCacheEnabled      bool       `yaml:"page_cache_enabled"`
-	CardCacheEnabled      bool       `yaml:"card_cache_enabled"`
+	CardCacheEnabled      bool       `yaml:"card_cache_enabled"` // 仅页缓存开启时装配
 	PublishedEventEnabled bool       `yaml:"published_event_enabled"`
 	CardWarmupEnabled     bool       `yaml:"card_warmup_enabled"`
-	HeatConsumerEnabled   bool       `yaml:"heat_consumer_enabled"`
+	HeatConsumerEnabled   bool       `yaml:"heat_consumer_enabled"` // 互动 Relay 开启时必须同时开启
 	Heat                  HeatConfig `yaml:"heat"`
 }
 
 type HeatConfig struct {
-	Generation            string `yaml:"generation"`
+	Generation            string `yaml:"generation"` // 修改规则或重建时使用新代际
 	WindowMinutes         int    `yaml:"window_minutes"`
-	RetentionGraceMinutes int    `yaml:"retention_grace_minutes"`
-	DedupeTTLHours        int    `yaml:"dedupe_ttl_hours"`
+	RetentionGraceMinutes int    `yaml:"retention_grace_minutes"` // 热窗口结束后的分钟桶保留时长
+	DedupeTTLHours        int    `yaml:"dedupe_ttl_hours"`        // 须覆盖窗口、宽限及一整分钟桶
 	LikeWeight            int    `yaml:"like_weight"`
 	CommentWeight         int    `yaml:"comment_weight"`
 	MaxVideosPerMinute    int    `yaml:"max_videos_per_minute"`

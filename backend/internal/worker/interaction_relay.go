@@ -12,15 +12,15 @@ import (
 )
 
 type InteractionChangedMessage struct {
-	EventID              string                 `json:"event_id"`
+	EventID              string                 `json:"event_id"` // 同一事件重投使用此 ID 去重
 	SchemaVersion        int                    `json:"schema_version"`
 	EventType            string                 `json:"event_type"`
 	VideoID              uint                   `json:"video_id"`
 	Kind                 domaininteraction.Kind `json:"kind"`
 	InteractionID        uint                   `json:"interaction_id"`
-	Delta                int                    `json:"delta"`
-	OccurredAt           time.Time              `json:"occurred_at"`
-	InteractionCreatedAt time.Time              `json:"interaction_created_at"`
+	Delta                int                    `json:"delta"`                  // 新增为 1，撤销为 -1
+	OccurredAt           time.Time              `json:"occurred_at"`            // 本次变更时间，用于时钟校验
+	InteractionCreatedAt time.Time              `json:"interaction_created_at"` // 原互动创建时间，撤销仍归入原分钟桶
 }
 
 type interactionPublisher struct {

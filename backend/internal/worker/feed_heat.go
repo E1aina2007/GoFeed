@@ -24,7 +24,7 @@ type HeatHandler interface {
 
 type HeatConsumer struct {
 	handler   HeatHandler
-	publisher EventPublisher
+	publisher EventPublisher // 重试或死信发布确认后才 ACK 原消息
 	spec      mq.ConsumerSpec
 }
 

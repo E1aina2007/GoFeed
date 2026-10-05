@@ -37,12 +37,12 @@ const (
 
 type HeatPolicy struct {
 	Window             time.Duration
-	RetentionGrace     time.Duration
-	DedupeTTL          time.Duration
+	RetentionGrace     time.Duration // 热窗口结束后的分钟桶保留时长
+	DedupeTTL          time.Duration // 去重收据保留时长
 	LikeWeight         int64
 	CommentWeight      int64
 	MaxVideosPerMinute int64
-	MaxEventsPerMinute int64
+	MaxEventsPerMinute int64 // 单分钟桶的去重收据容量上限
 }
 
 func (p HeatPolicy) Validate() error {
@@ -80,13 +80,13 @@ func (p HeatPolicy) Fingerprint() string {
 }
 
 type HeatMutation struct {
-	EventID              string
+	EventID              string // 同一事件重投使用此 ID 去重
 	VideoID              uint
 	InteractionID        uint
 	Kind                 HeatKind
-	Delta                int
-	OccurredAt           time.Time
-	InteractionCreatedAt time.Time
+	Delta                int       // 新增为 1，撤销为 -1
+	OccurredAt           time.Time // 本次变更时间，用于时钟校验
+	InteractionCreatedAt time.Time // 原互动创建时间，撤销仍归入原分钟桶
 }
 
 func (m HeatMutation) Validate() error {

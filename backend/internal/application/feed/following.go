@@ -22,10 +22,10 @@ func WithFollowingReader(reader domainfeed.FollowingReader) Option {
 type followingCursor struct {
 	Version     int       `json:"version"`
 	Scene       string    `json:"scene"`
-	SortVersion int       `json:"sort_version"`
-	ViewerID    uint      `json:"viewer_id"`
-	PublishedAt time.Time `json:"published_at"`
-	VideoID     uint      `json:"video_id"`
+	SortVersion int       `json:"sort_version"` // 发布时间与视频 ID 倒序的规则版本
+	ViewerID    uint      `json:"viewer_id"`    // 与当前用户校验，拒绝跨用户复用
+	PublishedAt time.Time `json:"published_at"` // 上一页末条视频的发布时间
+	VideoID     uint      `json:"video_id"`     // 同发布时间下的分页定位 ID
 }
 
 // decodeFollowingCursor 校验游标属于当前观看者的关注流并还原分页位置

@@ -13,13 +13,13 @@ import (
 
 type pagePayload struct {
 	Version     int               `json:"version"`
-	SortVersion int               `json:"sort_version"`
+	SortVersion int               `json:"sort_version"` // 必须与当前游标排序规则一致
 	Items       []pagePayloadItem `json:"items"`
 }
 
 type pagePayloadItem struct {
 	VideoID     uint      `json:"video_id"`
-	AuthorID    *uint     `json:"author_id"`
+	AuthorID    *uint     `json:"author_id"` // 区分字段缺失与作者 ID 为 0
 	PublishedAt time.Time `json:"published_at"`
 }
 

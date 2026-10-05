@@ -10,7 +10,7 @@ const defaultFeedLimit = 20
 
 type Service struct {
 	repo            domainfeed.Repository
-	timelineCache   *timelineCache
+	timelineCache   *timelineCache // nil 时直接读取 MySQL
 	followingReader domainfeed.FollowingReader
 }
 
@@ -25,10 +25,10 @@ func New(repo domainfeed.Repository, options ...Option) *Service {
 }
 
 type FeedRequest struct {
-	ViewerID uint
+	ViewerID uint // 关注流需认证用户，匿名时间线可为 0
 	Scene    domainfeed.Scene
 	Cursor   string
-	Limit    int
+	Limit    int // 0 使用默认页大小
 }
 
 type FeedResult struct {

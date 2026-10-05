@@ -23,7 +23,7 @@ type PageCacheQuery struct {
 }
 
 type CachedPage struct {
-	Items []domainfeed.FeedPageItem
+	Items []domainfeed.FeedPageItem // 可包含一条下一页探测记录
 }
 
 type PageCache interface {

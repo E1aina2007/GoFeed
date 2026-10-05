@@ -18,11 +18,11 @@ const (
 
 // timelineCursor 独立绑定 Feed 场景及排序版本，不能与旧视频游标混用
 type timelineCursor struct {
-	Version     int       `json:"version"`      // 游标载荷结构版本
-	Scene       string    `json:"scene"`        // 游标所属 Feed 场景，当前为 timeline
-	SortVersion int       `json:"sort_version"` // 排序规则版本，当前为发布时间与视频 ID 倒序
-	PublishedAt time.Time `json:"published_at"` // 上一页最后一条视频的发布时间
-	VideoID     uint      `json:"video_id"`     // 上一页最后一条视频的 ID，用于相同发布时间下的分页定位
+	Version     int       `json:"version"`
+	Scene       string    `json:"scene"`
+	SortVersion int       `json:"sort_version"` // 发布时间与视频 ID 倒序的规则版本
+	PublishedAt time.Time `json:"published_at"` // 上一页末条视频的发布时间
+	VideoID     uint      `json:"video_id"`     // 同发布时间下的分页定位 ID
 }
 
 func decodeTimelineCursor(encoded string) (*domainfeed.TimelineCursor, error) {

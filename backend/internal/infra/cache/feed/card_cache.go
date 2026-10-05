@@ -51,7 +51,7 @@ type cardPayload struct {
 
 type cachedCard struct {
 	domainfeed.FeedCard
-	AuthorID *uint `json:"AuthorID"`
+	AuthorID *uint `json:"AuthorID"` // 区分字段缺失与作者 ID 为 0
 }
 
 var _ applicationfeed.CardCache = (*CardCache)(nil)

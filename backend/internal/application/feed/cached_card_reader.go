@@ -17,11 +17,11 @@ type CardCacheObservation struct {
 type CardCacheObserver func(CardCacheObservation)
 
 type CachedCardReader struct {
-	source   domainfeed.CardReader
-	states   domainfeed.PublicCardStateReader
+	source   domainfeed.CardReader            // 卡片未命中时批量回源
+	states   domainfeed.PublicCardStateReader // 缓存命中也须校验当前公开状态
 	cache    CardCache
 	observer CardCacheObserver
-	slots    chan struct{}
+	slots    chan struct{} // 缓存操作并发名额，可与页缓存共享
 }
 
 var _ domainfeed.CardReader = (*CachedCardReader)(nil)

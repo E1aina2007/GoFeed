@@ -70,7 +70,7 @@ if receipt then return 2 end
 return 1`
 
 type HeatIndexOptions struct {
-	Generation       string
+	Generation       string // 修改规则或重建时切换代际
 	KeyPrefix        string
 	OperationTimeout time.Duration
 	Policy           domainfeed.HeatPolicy

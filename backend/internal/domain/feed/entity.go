@@ -19,14 +19,14 @@ const (
 
 // TimelineCursor 是时间线的结构化读取位置，不包含 HTTP 编码格式
 type TimelineCursor struct {
-	PublishedAt time.Time
-	VideoID     uint
+	PublishedAt time.Time // 上一页末条视频的发布时间
+	VideoID     uint      // 同发布时间下的分页定位 ID
 }
 
 // FollowingCursor 只定位关注流，观看者身份由读取请求单独传入
 type FollowingCursor struct {
-	PublishedAt time.Time
-	VideoID     uint
+	PublishedAt time.Time // 上一页末条视频的发布时间
+	VideoID     uint      // 同发布时间下的分页定位 ID
 }
 
 // FeedPageItem 保存排序与后续批量组装需要的轻量页条目
@@ -72,5 +72,5 @@ type FeedItem struct {
 // 是否有下一页及最终截断由应用层决定，仓储不生成外部游标
 type TimelinePage struct {
 	Items []FeedPageItem
-	Cards map[uint]FeedCard
+	Cards map[uint]FeedCard // 页查询附带的卡片，避免重复读取视频
 }

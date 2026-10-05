@@ -27,8 +27,8 @@ type timelineCache struct {
 	cache      PageCache
 	cards      domainfeed.CardReader
 	observer   CacheObserver
-	readSlots  chan struct{}
-	cacheSlots chan struct{}
+	readSlots  chan struct{} // 缓存链路请求的并发名额
+	cacheSlots chan struct{} // 页与卡片缓存共享的操作名额
 }
 
 // WithPageCache 接入可选页缓存和当前公开卡片读取
