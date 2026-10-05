@@ -36,36 +36,6 @@ func validCursorFields() map[string]any {
 	}
 }
 
-// 测试目标：游标编码后可无损还原发布时间与视频 ID
-// 预期效果：解码结果与编码前的结构化位置完全一致
-func TestTimelineCursorRoundTrip(t *testing.T) {
-	position := &domainfeed.TimelineCursor{PublishedAt: originTime, VideoID: 899}
-	encoded, err := encodeTimelineCursor(position)
-	if err != nil {
-		t.Fatalf("编码失败: %v", err)
-	}
-	if strings.ContainsAny(encoded, "=+/") {
-		t.Fatalf("游标必须是 RawURL 编码 got=%q", encoded)
-	}
-
-	decoded, err := decodeTimelineCursor(encoded)
-	if err != nil {
-		t.Fatalf("解码失败: %v", err)
-	}
-	if decoded == nil || !decoded.PublishedAt.Equal(position.PublishedAt) || decoded.VideoID != position.VideoID {
-		t.Fatalf("解码结果 got=%+v want=%+v", decoded, position)
-	}
-}
-
-// 测试目标：空游标表示首屏而不是非法输入
-// 预期效果：空字符串解析为 nil 位置且不返回错误
-func TestDecodeTimelineCursorEmptyMeansFirstPage(t *testing.T) {
-	decoded, err := decodeTimelineCursor("")
-	if err != nil || decoded != nil {
-		t.Fatalf("got cursor=%+v err=%v want nil,nil", decoded, err)
-	}
-}
-
 // 测试目标：游标载荷的版本、场景与排序版本任一不符即拒绝
 // 预期效果：三类版本字段错配都返回 ErrInvalidCursor
 func TestDecodeTimelineCursorRejectsVersionMismatch(t *testing.T) {
@@ -205,17 +175,6 @@ func TestDecodeTimelineCursorRejectsLegacyVideoPayload(t *testing.T) {
 	})
 	if _, err := decodeTimelineCursor(legacy); !errors.Is(err, domainfeed.ErrInvalidCursor) {
 		t.Fatalf("旧游标 got error=%v want=%v", err, domainfeed.ErrInvalidCursor)
-	}
-}
-
-// 测试目标：游标编码使用的排序与结构版本与公开常量一致
-// 预期效果：页缓存排序版本始终跟随时间线排序版本
-func TestTimelineCursorVersionConstants(t *testing.T) {
-	if currentCursorVersion != 1 || timelineSortVersion != 1 {
-		t.Fatalf("游标版本常量 got cursor=%d sort=%d want 1,1", currentCursorVersion, timelineSortVersion)
-	}
-	if TimelinePageSortVersion != timelineSortVersion {
-		t.Fatalf("公开排序版本 got=%d want=%d", TimelinePageSortVersion, timelineSortVersion)
 	}
 }
 

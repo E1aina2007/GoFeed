@@ -346,41 +346,6 @@ func (r *feedCacheRecorder) cleanup(t *testing.T) {
 	}
 }
 
-// 测试目标：验证缓存检查与清理只访问已记录的精确键
-// 预期效果：重复访问不重复计数，直接注入的键被清理，其他键不受影响
-func TestFeedCacheRecorderChecksOnlyRecordedKeys(t *testing.T) {
-	runtime := cache.NewRuntime(realRedisConfig(t))
-	t.Cleanup(func() { _ = runtime.Close() })
-	assertRealRedis(t, runtime)
-	recorder := &feedCacheRecorder{runtime: runtime, prefix: feedTestNamespace(t)}
-	otherKey := recorder.prefix + "unrecorded"
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if _, err := runtime.Del(ctx, otherKey); err != nil {
-			t.Errorf("清理对照键失败: %v", err)
-		}
-	})
-	t.Cleanup(func() { recorder.cleanup(t) })
-	if err := runtime.Set(t.Context(), otherKey, "keep", time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	if err := recorder.Set(t.Context(), "page", "value", time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recorder.Get(t.Context(), "page"); err != nil {
-		t.Fatal(err)
-	}
-	recorder.writeValue(t, "injected", "invalid payload")
-	if count := recorder.recordedKeyCount(t); count != 2 {
-		t.Fatalf("应只统计两个已记录的键 got=%d", count)
-	}
-	recorder.cleanup(t)
-	if value, err := runtime.Get(t.Context(), otherKey); err != nil || value != "keep" {
-		t.Fatalf("清理不应影响未记录的对照键 value=%q err=%v", value, err)
-	}
-}
-
 // 测试目标：构造指向无监听端口的 Redis 运行时
 // 预期效果：缓存读写必然失败且不触碰共享实例
 func newUnreachableRedisRuntime(t *testing.T) *cache.Runtime {

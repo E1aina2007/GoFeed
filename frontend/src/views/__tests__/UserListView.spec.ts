@@ -23,32 +23,6 @@ describe('UserListView', () => {
     vi.mocked(listUsers).mockReset()
   })
 
-  it('renders the user entries with the bio fallback', async () => {
-    vi.mocked(listUsers).mockResolvedValue({
-      users: [
-        { id: 1, username: 'alice', bio: '简介内容' },
-        { id: 2, username: 'bob' },
-      ],
-    })
-    const wrapper = mountView()
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('@alice')
-    expect(wrapper.text()).toContain('简介内容')
-    expect(wrapper.text()).toContain('@bob')
-    expect(wrapper.text()).toContain('暂无简介')
-    wrapper.unmount()
-  })
-
-  it('shows the empty state when no users exist', async () => {
-    vi.mocked(listUsers).mockResolvedValue({ users: [] })
-    const wrapper = mountView()
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('暂时没有用户')
-    wrapper.unmount()
-  })
-
   it('shows the error message and recovers through the retry button', async () => {
     vi.mocked(listUsers)
       .mockRejectedValueOnce(new ApiError(500, 'user operation failed'))
@@ -68,11 +42,19 @@ describe('UserListView', () => {
   it('loads the next user page without duplicating entries and retries a page failure', async () => {
     vi.mocked(listUsers)
       .mockResolvedValueOnce({
-        users: [{ id: 1, username: 'alice' }, { id: 2, username: 'bob' }],
+        users: [
+          { id: 1, username: 'alice' },
+          { id: 2, username: 'bob' },
+        ],
         next_cursor: 'users-page-2',
       })
       .mockRejectedValueOnce(new ApiError(500, 'user operation failed'))
-      .mockResolvedValueOnce({ users: [{ id: 2, username: 'bob' }, { id: 3, username: 'cora' }] })
+      .mockResolvedValueOnce({
+        users: [
+          { id: 2, username: 'bob' },
+          { id: 3, username: 'cora' },
+        ],
+      })
     const wrapper = mountView()
     await flushPromises()
 

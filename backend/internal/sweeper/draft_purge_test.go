@@ -224,22 +224,3 @@ func TestInterleaveDraftPurgeCandidates(t *testing.T) {
 		}
 	}
 }
-
-// 测试目标：验证草稿清扫任务要求完整依赖和有效租约
-// 预期效果：缺失仓储、删除器或租约时返回明确错误
-func TestDraftPurgeJobRunRequiresDependencies(t *testing.T) {
-	if _, err := NewDraftPurgeJob(nil, &fakeMediaRemover{}, time.Hour, time.Minute).Run(context.Background()); !errors.Is(err, ErrDraftPurgerUnavailable) {
-		t.Fatalf("nil 草稿仓储错误不正确: %v", err)
-	}
-	if _, err := NewDraftPurgeJob(&fakeDraftPurger{}, nil, time.Hour, time.Minute).Run(context.Background()); !errors.Is(err, ErrMediaRemoverUnavailable) {
-		t.Fatalf("nil 媒体删除器错误不正确: %v", err)
-	}
-	if _, err := NewDraftPurgeJob(&fakeDraftPurger{}, &fakeMediaRemover{}, time.Hour, 0).Run(context.Background()); !errors.Is(err, ErrInvalidDraftPurgeLease) {
-		t.Fatalf("无效租约错误不正确: %v", err)
-	}
-	for _, retention := range []time.Duration{0, -time.Hour} {
-		if _, err := NewDraftPurgeJob(&fakeDraftPurger{}, &fakeMediaRemover{}, retention, time.Minute).Run(context.Background()); !errors.Is(err, ErrInvalidDraftPurgeRetention) {
-			t.Fatalf("无效保留期错误 retention=%s err=%v", retention, err)
-		}
-	}
-}

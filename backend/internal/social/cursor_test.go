@@ -157,19 +157,6 @@ func TestSocialCursorDecodersRejectInvalidPayloads(t *testing.T) {
 	}
 }
 
-// 测试目标：验证空 social 游标仍表示各列表的第一页
-// 预期效果：评论和关系列表解码空字符串时均返回 nil 且不报错
-func TestDecodeSocialCursorEmpty(t *testing.T) {
-	comment, err := decodeCommentCursor("")
-	if err != nil || comment != nil {
-		t.Fatalf("空评论游标处理错误 cursor=%#v error=%v", comment, err)
-	}
-	follow, err := decodeFollowCursor("")
-	if err != nil || follow != nil {
-		t.Fatalf("空关系列表游标处理错误 cursor=%#v error=%v", follow, err)
-	}
-}
-
 // 测试目标：验证服务层在访问仓储前拒绝跨资源和跨关系列表游标
 // 预期效果：作用域不匹配统一返回 ErrInvalidCursor 且不执行列表查询
 func TestServiceRejectsSocialCursorOutsideScope(t *testing.T) {

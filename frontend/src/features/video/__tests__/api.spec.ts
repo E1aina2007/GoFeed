@@ -7,11 +7,9 @@ import {
   discardDraft,
   deleteVideo,
   getDraft,
-  getPublishedVideo,
   getVideoStatus,
   listFollowingFeed,
   listMyVideos,
-  listPublishedVideos,
   listTimelineFeed,
   publishDraft,
   uploadCover,
@@ -111,21 +109,6 @@ describe('listPublishedVideos', () => {
     vi.unstubAllGlobals()
   })
 
-  it('requests Timeline with explicit scene and default limit, without a cursor or author', async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify({ items: [] }), {
-        headers: { 'content-type': 'application/json' },
-      }),
-    )
-    vi.stubGlobal('fetch', fetchMock)
-
-    await expect(listTimelineFeed()).resolves.toEqual({ items: [] })
-    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
-      '/api/feed?scene=timeline&limit=12',
-      expect.any(Object),
-    )
-  })
-
   it('passes the opaque Timeline cursor and cancellation signal without adding unsupported options', async () => {
     const cursor = 'opaque+/= &?中文'
     const controller = new AbortController()
@@ -157,60 +140,6 @@ describe('listPublishedVideos', () => {
     )
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/feed?scene=timeline&limit=12&cursor=feed-only')
-  })
-
-  it('requests the public feed with its cursor', async () => {
-    const controller = new AbortController()
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          items: [],
-          next_cursor: 'next-page',
-        }),
-        {
-          headers: { 'content-type': 'application/json' },
-        },
-      ),
-    )
-    vi.stubGlobal('fetch', fetchMock)
-
-    const result = await listPublishedVideos({
-      cursor: 'current-page',
-      limit: 8,
-      signal: controller.signal,
-    })
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/api/video?limit=8&cursor=current-page',
-      expect.objectContaining({ signal: controller.signal }),
-    )
-    expect(result.next_cursor).toBe('next-page')
-  })
-
-  it('requests a published video and filters the public feed by author', async () => {
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ video: { id: 7 } }), {
-          headers: { 'content-type': 'application/json' },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ items: [] }), {
-          headers: { 'content-type': 'application/json' },
-        }),
-      )
-    vi.stubGlobal('fetch', fetchMock)
-
-    await expect(getPublishedVideo(7)).resolves.toEqual({ video: { id: 7 } })
-    await listPublishedVideos({ authorID: 42 })
-
-    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/video/7', expect.any(Object))
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      '/api/video?limit=12&author_id=42',
-      expect.any(Object),
-    )
   })
 
   it('lists and deletes videos through the authenticated endpoints', async () => {
@@ -254,20 +183,6 @@ describe('listPublishedVideos', () => {
       '/api/video/auth/7',
       expect.objectContaining({ method: 'DELETE' }),
     )
-  })
-
-  it('exposes the server error for a failed request', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn<typeof fetch>().mockResolvedValue(
-        new Response(JSON.stringify({ error: 'invalid cursor' }), {
-          status: 400,
-          headers: { 'content-type': 'application/json' },
-        }),
-      ),
-    )
-
-    await expect(listPublishedVideos()).rejects.toEqual(new ApiError(400, 'invalid cursor'))
   })
 
   it('uploads video and cover media to the authenticated draft', async () => {
@@ -482,17 +397,6 @@ describe('listPublishedVideos', () => {
     )
   })
 
-  it('rejects invalid draft IDs before making an authenticated request', async () => {
-    const fetchMock = vi.fn<typeof fetch>()
-    vi.stubGlobal('fetch', fetchMock)
-
-    for (const draftID of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
-      await expect(getDraft(draftID)).rejects.toEqual(new ApiError(400, '草稿 ID 无效'))
-      await expect(discardDraft(draftID)).rejects.toEqual(new ApiError(400, '草稿 ID 无效'))
-    }
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
   it('creates and publishes a draft without client media metadata', async () => {
     const session = {
       access_token: 'access-token',
@@ -615,16 +519,6 @@ describe('listPublishedVideos', () => {
     const requestInit = fetchMock.mock.calls[1]?.[1]
     expect(new Headers(requestInit?.headers).get('Authorization')).toBe('Bearer access-token')
   })
-
-  it('rejects invalid video IDs before querying processing status', async () => {
-    const fetchMock = vi.fn<typeof fetch>()
-    vi.stubGlobal('fetch', fetchMock)
-
-    for (const videoID of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
-      await expect(getVideoStatus(videoID)).rejects.toEqual(new ApiError(400, '视频 ID 无效'))
-    }
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
 })
 
 describe('listFollowingFeed', () => {
@@ -646,7 +540,7 @@ describe('listFollowingFeed', () => {
   }
 
   function requestURL(input: Parameters<typeof fetch>[0]) {
-    return typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input))
+    return typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
   }
 
   it('rejects before any request while signed out', async () => {

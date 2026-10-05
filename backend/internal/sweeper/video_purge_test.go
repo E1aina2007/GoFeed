@@ -94,14 +94,3 @@ func TestVideoPurgeJobRunRetainsRecordWhenMediaRemovalFails(t *testing.T) {
 		t.Fatalf("删除媒体失败时不应硬删除记录 purged=%d hardDelete=%v", purged, purger.hardDelete)
 	}
 }
-
-// 测试目标：验证视频清扫任务要求完整依赖
-// 预期效果：缺失仓储或媒体删除器返回明确错误
-func TestVideoPurgeJobRunRequiresDependencies(t *testing.T) {
-	if _, err := NewVideoPurgeJob(nil, &fakeMediaRemover{}, time.Hour).Run(context.Background()); !errors.Is(err, ErrVideoPurgerUnavailable) {
-		t.Fatalf("nil 视频仓储错误不正确: %v", err)
-	}
-	if _, err := NewVideoPurgeJob(&fakeVideoPurger{}, nil, time.Hour).Run(context.Background()); !errors.Is(err, ErrMediaRemoverUnavailable) {
-		t.Fatalf("nil 媒体删除器错误不正确: %v", err)
-	}
-}

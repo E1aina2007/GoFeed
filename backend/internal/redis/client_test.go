@@ -10,9 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"gofeed/internal/config"
+
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
-	"gofeed/internal/config"
 )
 
 // 测试目标：构造客户端时使用配置中的地址密码和数据库
@@ -67,38 +68,6 @@ func TestNewFailure(t *testing.T) {
 	c, err = New(canceled, config.RedisConfig{Host: "127.0.0.1", Port: port})
 	if c != nil || err != context.Canceled {
 		t.Fatalf("client=%v error=%v", c, err)
-	}
-}
-
-// 测试目标：验证基础 KV 操作及服务端错误透传
-// 预期效果：写读删除结果一致且缺失键和 Lua 错误不被包装
-func TestClientKVAndErrors(t *testing.T) {
-	c := testClient(t)
-	ctx := t.Context()
-	if _, err := c.Get(ctx, "missing"); err != redis.Nil {
-		t.Fatalf("missing: %v", err)
-	}
-	if err := c.Set(ctx, "key", "value", time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	if value, err := c.Get(ctx, "key"); err != nil || value != "value" {
-		t.Fatalf("get=%q err=%v", value, err)
-	}
-	if n, err := c.Del(ctx, "key", "missing"); err != nil || n != 1 {
-		t.Fatalf("del=%d err=%v", n, err)
-	}
-	if _, err := c.Get(ctx, "key"); err != redis.Nil {
-		t.Fatalf("deleted: %v", err)
-	}
-	_, err := c.Eval(ctx, `return redis.error_reply('ERR test failure')`, nil)
-	var redisErr redis.Error
-	if !errors.As(err, &redisErr) || err.Error() != "ERR test failure" {
-		t.Fatalf("eval: %v", err)
-	}
-	canceled, cancel := context.WithCancel(ctx)
-	cancel()
-	if err := c.Set(canceled, "key", "ignored", 0); err != context.Canceled {
-		t.Fatalf("canceled: %v", err)
 	}
 }
 

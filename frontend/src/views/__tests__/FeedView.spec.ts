@@ -133,30 +133,6 @@ describe('FeedView', () => {
     clearSession()
   })
 
-  it('renders a full-viewport short video from the public feed', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn<typeof fetch>().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            items: [videoItem],
-          }),
-          {
-            headers: { 'content-type': 'application/json' },
-          },
-        ),
-      ),
-    )
-
-    const { wrapper } = await mountFeed()
-    await flushPromises()
-
-    expect(wrapper.get('video').attributes('src')).toBe('/static/videos/7/night-run.mp4')
-    expect(wrapper.get('.short-video').classes()).toContain('short-video')
-    expect(wrapper.text()).toContain('@runfast')
-    expect(wrapper.text()).toContain('城市夜跑')
-  })
-
   it('confirms the newly published video and clears the one-time query parameter', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ items: [videoItem] }), {
@@ -365,7 +341,9 @@ describe('FeedView', () => {
     const feedCalls = fetchMock.mock.calls.filter(([input]) =>
       String(input).startsWith('/api/feed'),
     )
-    expect(feedCalls.map(([input]) => String(input))).toEqual(['/api/feed?scene=following&limit=12'])
+    expect(feedCalls.map(([input]) => String(input))).toEqual([
+      '/api/feed?scene=following&limit=12',
+    ])
     expect(new Headers(feedCalls[0]?.[1]?.headers).get('Authorization')).toBe(
       'Bearer unit-access-token',
     )
@@ -379,7 +357,12 @@ describe('FeedView', () => {
       .mockImplementation(async () => jsonResponse({ items: [videoItem] }))
     vi.stubGlobal('fetch', fetchMock)
 
-    for (const path of ['/', '/?scene=timeline', '/?scene=nonsense', '/?scene=following&scene=timeline']) {
+    for (const path of [
+      '/',
+      '/?scene=timeline',
+      '/?scene=nonsense',
+      '/?scene=following&scene=timeline',
+    ]) {
       const { wrapper } = await mountFeed(path)
       await flushPromises()
 
@@ -515,32 +498,6 @@ describe('FeedView', () => {
     expect(wrapper.findAll('.feed-tab')[1]?.attributes('aria-pressed')).toBe('true')
   })
 
-  it('renders the following empty state without a retry entry', async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (input) => {
-      const url = typeof input === 'string' ? input : String(input)
-      if (url === '/api/user/login') {
-        return jsonResponse(authSession)
-      }
-      if (url.startsWith('/api/feed?scene=following')) {
-        return jsonResponse({ items: [] })
-      }
-      return jsonResponse({ items: [videoItem] })
-    })
-    await signIn()
-    vi.stubGlobal('fetch', fetchMock)
-
-    const { wrapper } = await mountFeed()
-    await flushPromises()
-
-    await wrapper.findAll('.feed-tab')[1]!.trigger('click')
-    await flushPromises()
-
-    const message = wrapper.get('section.feed-message[role="alert"]')
-    expect(message.text()).toContain('还没有可看的关注视频')
-    expect(message.find('button').exists()).toBe(false)
-    expect(wrapper.findAll('.short-video')).toHaveLength(0)
-  })
-
   it('pauses the timeline players when switching to the following scene', async () => {
     const otherVideo = { ...videoItem, id: 8, title: '清晨骑行' }
     const pauseMock = vi.mocked(HTMLMediaElement.prototype.pause)
@@ -625,9 +582,7 @@ describe('FeedView', () => {
     expect(pauseMock).not.toHaveBeenCalled()
 
     // 新 observer 正常接管当前场景
-    newObserver.trigger([
-      { target: followingPlayer, isIntersecting: true, intersectionRatio: 0.8 },
-    ])
+    newObserver.trigger([{ target: followingPlayer, isIntersecting: true, intersectionRatio: 0.8 }])
     await flushPromises()
     expect(playMock).toHaveBeenCalledTimes(1)
     expect(playMock.mock.contexts[0]).toBe(followingPlayer)

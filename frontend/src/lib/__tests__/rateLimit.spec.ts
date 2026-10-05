@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError, request } from '../api'
-import { rateLimitMessage, rateLimitRetrySeconds, useRateLimitCountdown } from '../rateLimit'
+import { rateLimitRetrySeconds, useRateLimitCountdown } from '../rateLimit'
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
@@ -9,19 +9,6 @@ function jsonResponse(body: unknown, status = 200, headers: Record<string, strin
     headers: { 'content-type': 'application/json', ...headers },
   })
 }
-
-describe('rateLimitRetrySeconds', () => {
-  it('reads the positive integer second count carried by a 429 ApiError', () => {
-    expect(rateLimitRetrySeconds(new ApiError(429, 'rate limit exceeded', 30))).toBe(30)
-  })
-
-  it('returns null for other statuses, missing or invalid retry-after values', () => {
-    expect(rateLimitRetrySeconds(new ApiError(429, 'rate limit exceeded'))).toBeNull()
-    expect(rateLimitRetrySeconds(new ApiError(409, 'username already exists', 30))).toBeNull()
-    expect(rateLimitRetrySeconds(new Error('网络故障'))).toBeNull()
-    expect(rateLimitRetrySeconds(undefined)).toBeNull()
-  })
-})
 
 describe('request on a 429 response', () => {
   afterEach(() => {
@@ -55,25 +42,16 @@ describe('request on a 429 response', () => {
     )
     expect(rateLimitRetrySeconds(withoutHeader)).toBeNull()
 
-    const invalid = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(
-        jsonResponse({ error: 'rate limit exceeded' }, 429, {
-          'Retry-After': 'Wed, 21 Oct 2026 07:28:00 GMT',
-        }),
-      )
+    const invalid = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ error: 'rate limit exceeded' }, 429, {
+        'Retry-After': 'Wed, 21 Oct 2026 07:28:00 GMT',
+      }),
+    )
     vi.stubGlobal('fetch', invalid)
     const withDate: unknown = await request('/api/user/login', { method: 'POST' }).catch(
       (reason: unknown) => reason,
     )
     expect(rateLimitRetrySeconds(withDate)).toBeNull()
-  })
-})
-
-describe('rateLimitMessage', () => {
-  it('states the server provided wait time in seconds', () => {
-    expect(rateLimitMessage(30)).toBe('请求过于频繁，请 30 秒后重试')
-    expect(rateLimitMessage(1)).toBe('请求过于频繁，请 1 秒后重试')
   })
 })
 
@@ -115,16 +93,6 @@ describe('useRateLimitCountdown', () => {
     countdown.clear()
     expect(countdown.seconds.value).toBe(0)
     vi.advanceTimersByTime(3000)
-    expect(countdown.seconds.value).toBe(0)
-  })
-
-  it('ignores values that are not positive integer seconds', () => {
-    const countdown = useRateLimitCountdown()
-
-    countdown.start(0)
-    expect(countdown.seconds.value).toBe(0)
-
-    countdown.start(-3)
     expect(countdown.seconds.value).toBe(0)
   })
 

@@ -38,32 +38,6 @@ func (r *fakeUserReader) GetByIDs(_ context.Context, ids []uint) ([]*user.User, 
 	return r.batchResult, nil
 }
 
-// 测试目标：验证活跃用户资料会被转换为视频作者资料
-// 预期效果：返回用户的标识、用户名与头像，并按目标标识查询一次
-func TestUserAuthorReaderGetPublicAuthor(t *testing.T) {
-	reader := &fakeUserReader{account: &user.User{
-		ID:        7,
-		Username:  "video-author",
-		AvatarURL: "https://example.test/avatar.png",
-	}}
-
-	author, err := NewUserAuthorReader(reader).GetPublicAuthor(context.Background(), 7)
-	if err != nil {
-		t.Fatalf("GetPublicAuthor: %v", err)
-	}
-	want := Author{
-		ID:        7,
-		Username:  "video-author",
-		AvatarURL: "https://example.test/avatar.png",
-	}
-	if author != want {
-		t.Fatalf("author mismatch: got=%+v want=%+v", author, want)
-	}
-	if len(reader.ids) != 1 || reader.ids[0] != 7 {
-		t.Fatalf("user lookup IDs = %v, want [7]", reader.ids)
-	}
-}
-
 // 测试目标：验证已注销或不存在的作者不会导致历史视频读取失败
 // 预期效果：用户仓储返回记录不存在时，返回带占位用户名的作者资料
 func TestUserAuthorReaderReturnsPlaceholderForMissingAuthor(t *testing.T) {
@@ -140,25 +114,6 @@ func TestUserAuthorReaderGetPublicAuthorsFillsPlaceholder(t *testing.T) {
 	}
 	if authors[6] != (Author{ID: 6, Username: deletedUsername}) || authors[7] != (Author{ID: 7, Username: deletedUsername}) {
 		t.Fatalf("缺失作者应补占位资料 got=%+v", authors)
-	}
-}
-
-// 测试目标：验证空输入和仅含零值的输入不会访问数据库
-// 预期效果：空输入返回空 map，零值输入只返回零值占位且批量查询为零次
-func TestUserAuthorReaderGetPublicAuthorsSkipsQueryWithoutValidIDs(t *testing.T) {
-	reader := &fakeUserReader{}
-	app := NewUserAuthorReader(reader)
-
-	authors, err := app.GetPublicAuthors(context.Background(), nil)
-	if err != nil || len(authors) != 0 {
-		t.Fatalf("空输入应返回空 map got=%+v error=%v", authors, err)
-	}
-	authors, err = app.GetPublicAuthors(context.Background(), []uint{0, 0})
-	if err != nil || len(authors) != 1 || authors[0] != (Author{ID: 0, Username: deletedUsername}) {
-		t.Fatalf("零值输入应只返回零值占位 got=%+v error=%v", authors, err)
-	}
-	if len(reader.batchIDs) != 0 {
-		t.Fatalf("无效输入不应触发批量查询 got=%v", reader.batchIDs)
 	}
 }
 

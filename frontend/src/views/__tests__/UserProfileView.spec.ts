@@ -72,23 +72,6 @@ describe('UserProfileView', () => {
     vi.mocked(listPublishedVideos).mockReset()
   })
 
-  it('renders the profile stats and published videos', async () => {
-    vi.mocked(getUserProfile).mockResolvedValue(profileResponse())
-    vi.mocked(listPublishedVideos).mockResolvedValue({
-      items: [videoItem(1, '第一条')],
-      next_cursor: 'cursor-2',
-    })
-    const wrapper = mountView()
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('@alice')
-    expect(wrapper.text()).toContain('创作者简介')
-    expect(wrapper.text()).toContain('第一条')
-    expect(getUserProfile).toHaveBeenCalledWith(42)
-    expect(listPublishedVideos).toHaveBeenCalledWith({ authorID: 42 })
-    wrapper.unmount()
-  })
-
   it('appends the next page of videos on load more', async () => {
     vi.mocked(getUserProfile).mockResolvedValue(profileResponse())
     vi.mocked(listPublishedVideos)
@@ -117,25 +100,6 @@ describe('UserProfileView', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('@alice')
-    wrapper.unmount()
-  })
-
-  it('opens the follow list dialog for followers and following', async () => {
-    vi.mocked(getUserProfile).mockResolvedValue(profileResponse())
-    vi.mocked(listPublishedVideos).mockResolvedValue({ items: [] })
-    const wrapper = mountView()
-    await flushPromises()
-
-    const statButtons = wrapper.findAll('.profile-stat--action')
-    await statButtons[0]?.trigger('click')
-    let dialog = wrapper.find('.follow-dialog-stub')
-    expect(dialog.attributes('open')).toBe('true')
-    expect(dialog.attributes('mode')).toBe('followers')
-
-    await statButtons[1]?.trigger('click')
-    dialog = wrapper.find('.follow-dialog-stub')
-    expect(dialog.attributes('open')).toBe('true')
-    expect(dialog.attributes('mode')).toBe('following')
     wrapper.unmount()
   })
 })

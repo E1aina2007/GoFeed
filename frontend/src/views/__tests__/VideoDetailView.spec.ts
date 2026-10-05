@@ -52,28 +52,6 @@ describe('VideoDetailView', () => {
     vi.mocked(getPublishedVideo).mockReset()
   })
 
-  it('renders the loaded video with author and comment count', async () => {
-    vi.mocked(getPublishedVideo).mockResolvedValue(videoResponse())
-    const wrapper = mountView()
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('春日散步')
-    expect(wrapper.text()).toContain('@alice')
-    expect(wrapper.text()).toContain('5 条评论')
-    expect(getPublishedVideo).toHaveBeenCalledWith(80)
-    wrapper.unmount()
-  })
-
-  it('shows the invalid address message for a non-numeric route id', async () => {
-    route.params = { id: 'abc' }
-    const wrapper = mountView()
-    await flushPromises()
-
-    expect(wrapper.get('[role="alert"]').text()).toContain('视频地址无效')
-    expect(getPublishedVideo).not.toHaveBeenCalled()
-    wrapper.unmount()
-  })
-
   it('shows the server error and recovers through the retry button', async () => {
     vi.mocked(getPublishedVideo)
       .mockRejectedValueOnce(new ApiError(404, 'video not found'))

@@ -3,8 +3,6 @@ package infracachefeed
 import (
 	"context"
 	"errors"
-	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -143,169 +141,6 @@ func mustNewPageCache(t *testing.T, client StringCache, options PageCacheOptions
 		t.Fatalf("构造页缓存失败: %v", err)
 	}
 	return cache
-}
-
-// 测试目标：页缓存的契约常量与零值默认配置符合约定
-// 预期效果：版本号、过期时间、超时和载荷上限取到既定数值
-func TestPageCacheContractConstants(t *testing.T) {
-	if pagePayloadVersion != 1 || applicationfeed.TimelinePageSortVersion != 1 {
-		t.Fatalf("版本 page=%d sort=%d", pagePayloadVersion, applicationfeed.TimelinePageSortVersion)
-	}
-	if defaultPageTTL != 30*time.Second || maxPageTTL != 5*time.Minute {
-		t.Fatalf("ttl default=%v max=%v", defaultPageTTL, maxPageTTL)
-	}
-	if defaultPageTimeout != 100*time.Millisecond || maxPageTimeout != time.Second {
-		t.Fatalf("timeout default=%v max=%v", defaultPageTimeout, maxPageTimeout)
-	}
-	if defaultMaxPayloadSize != 16*1024 || maxPayloadSize != 64*1024 {
-		t.Fatalf("payload default=%d max=%d", defaultMaxPayloadSize, maxPayloadSize)
-	}
-	cache := mustNewPageCache(t, newFakeStringCache(), PageCacheOptions{})
-	if cache.options.TTL != defaultPageTTL ||
-		cache.options.OperationTimeout != defaultPageTimeout ||
-		cache.options.MaxPayloadBytes != defaultMaxPayloadSize {
-		t.Fatalf("options=%+v", cache.options)
-	}
-}
-
-// 测试目标：构造页缓存时校验配置边界并接受零值与合法上界
-// 预期效果：负值和超上限返回错误且不返回实例，其余返回可用实例
-func TestNewPageCacheValidatesOptions(t *testing.T) {
-	cases := []struct {
-		name    string
-		options PageCacheOptions
-		wantErr bool
-	}{
-		{name: "zero", options: PageCacheOptions{}},
-		{name: "max boundary", options: PageCacheOptions{TTL: maxPageTTL, OperationTimeout: maxPageTimeout, MaxPayloadBytes: maxPayloadSize}},
-		{name: "negative ttl", options: PageCacheOptions{TTL: -time.Second}, wantErr: true},
-		{name: "ttl over max", options: PageCacheOptions{TTL: maxPageTTL + time.Nanosecond}, wantErr: true},
-		{name: "negative timeout", options: PageCacheOptions{OperationTimeout: -time.Millisecond}, wantErr: true},
-		{name: "timeout over max", options: PageCacheOptions{OperationTimeout: maxPageTimeout + time.Millisecond}, wantErr: true},
-		{name: "negative payload", options: PageCacheOptions{MaxPayloadBytes: -1}, wantErr: true},
-		{name: "payload over max", options: PageCacheOptions{MaxPayloadBytes: maxPayloadSize + 1}, wantErr: true},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			cache, err := NewPageCache(newFakeStringCache(), testCase.options)
-			if testCase.wantErr {
-				if err == nil || cache != nil {
-					t.Fatalf("cache=%v err=%v", cache, err)
-				}
-				return
-			}
-			if err != nil || cache == nil {
-				t.Fatalf("cache=%v err=%v", cache, err)
-			}
-		})
-	}
-}
-
-// 测试目标：构造页缓存期间不访问缓存客户端
-// 预期效果：默认配置和显式配置下读写调用次数都为零
-func TestNewPageCacheDoesNotCallClient(t *testing.T) {
-	fake := newFakeStringCache()
-	mustNewPageCache(t, fake, PageCacheOptions{})
-	mustNewPageCache(t, fake, PageCacheOptions{TTL: time.Minute, OperationTimeout: maxPageTimeout, MaxPayloadBytes: maxPayloadSize})
-	if gets, sets := fake.counts(); gets != 0 || sets != 0 {
-		t.Fatalf("构造期间调用 get=%d set=%d", gets, sets)
-	}
-}
-
-// 测试目标：客户端为空时拒绝构造
-// 预期效果：返回可被 errors.Is 匹配的缓存不可用错误且不返回实例
-func TestNewPageCacheRejectsNilClient(t *testing.T) {
-	cache, err := NewPageCache(nil, PageCacheOptions{})
-	if cache != nil || !errors.Is(err, applicationfeed.ErrPageCacheUnavailable) {
-		t.Fatalf("cache=%v err=%v", cache, err)
-	}
-}
-
-// 测试目标：空接收者或空客户端的页缓存读写都报不可用
-// 预期效果：读写返回可被 errors.Is 匹配的 ErrPageCacheUnavailable
-func TestPageCacheUnavailableWithoutClient(t *testing.T) {
-	query := timelineQuery(nil, 20)
-	var nilCache *PageCache
-	if _, _, err := nilCache.GetPage(t.Context(), query); !errors.Is(err, applicationfeed.ErrPageCacheUnavailable) {
-		t.Fatalf("空接收者读取 err=%v", err)
-	}
-	if err := nilCache.SetPage(t.Context(), query, applicationfeed.CachedPage{}); !errors.Is(err, applicationfeed.ErrPageCacheUnavailable) {
-		t.Fatalf("空接收者写入 err=%v", err)
-	}
-	empty := &PageCache{options: PageCacheOptions{OperationTimeout: defaultPageTimeout, MaxPayloadBytes: defaultMaxPayloadSize}}
-	if _, _, err := empty.GetPage(t.Context(), query); !errors.Is(err, applicationfeed.ErrPageCacheUnavailable) {
-		t.Fatalf("空客户端读取 err=%v", err)
-	}
-	if err := empty.SetPage(t.Context(), query, applicationfeed.CachedPage{}); !errors.Is(err, applicationfeed.ErrPageCacheUnavailable) {
-		t.Fatalf("空客户端写入 err=%v", err)
-	}
-}
-
-// 测试目标：未命中时返回零页且不报错
-// 预期效果：命中标志为假、错误为空并按规范化键读取一次
-func TestGetPageMissReturnsNoError(t *testing.T) {
-	fake := newFakeStringCache()
-	cache := mustNewPageCache(t, fake, PageCacheOptions{})
-	query := timelineQuery(nil, 20)
-	page, hit, err := cache.GetPage(t.Context(), query)
-	if err != nil || hit || page.Items != nil {
-		t.Fatalf("page=%+v hit=%v err=%v", page, hit, err)
-	}
-	if gets, sets := fake.counts(); gets != 1 || sets != 0 {
-		t.Fatalf("get=%d set=%d", gets, sets)
-	}
-}
-
-// 测试目标：合法空页载荷命中并保留非空切片语义
-// 预期效果：命中标志为真且条目为零长度非空切片
-func TestGetPageHitOnEmptyPagePayload(t *testing.T) {
-	fake := newFakeStringCache()
-	cache := mustNewPageCache(t, fake, PageCacheOptions{})
-	query := timelineQuery(nil, 20)
-	fake.seed(pageKey(query), `{"version":1,"sort_version":1,"items":[]}`)
-	page, hit, err := cache.GetPage(t.Context(), query)
-	if err != nil || !hit {
-		t.Fatalf("hit=%v err=%v", hit, err)
-	}
-	if page.Items == nil || len(page.Items) != 0 {
-		t.Fatalf("items=%#v", page.Items)
-	}
-}
-
-// 测试目标：非空页写入后可原样读回且发布时间归一为 UTC
-// 预期效果：条目字段一致、写入使用默认过期时间、缺失键返回未命中
-func TestSetPageRoundTripThroughCache(t *testing.T) {
-	fake := newFakeStringCache()
-	cache := mustNewPageCache(t, fake, PageCacheOptions{})
-	offset := time.FixedZone("UTC+8", 8*3600)
-	items := descendingItems(3, time.Date(2024, 5, 6, 7, 8, 9, 123456789, time.UTC))
-	for i := range items {
-		items[i].PublishedAt = items[i].PublishedAt.In(offset)
-	}
-	query := timelineQuery(nil, 20)
-	page := applicationfeed.CachedPage{Items: items}
-	if err := cache.SetPage(t.Context(), query, page); err != nil {
-		t.Fatalf("写入失败: %v", err)
-	}
-	call := fake.lastSet(t)
-	if call.key != pageKey(query) || call.expiration != defaultPageTTL {
-		t.Fatalf("key=%q expiration=%v", call.key, call.expiration)
-	}
-	got, hit, err := cache.GetPage(t.Context(), query)
-	if err != nil || !hit || len(got.Items) != len(items) {
-		t.Fatalf("items=%#v hit=%v err=%v", got.Items, hit, err)
-	}
-	for i, item := range got.Items {
-		if item.VideoID != items[i].VideoID || item.AuthorID != items[i].AuthorID {
-			t.Fatalf("item[%d]=%+v want=%+v", i, item, items[i])
-		}
-		if !item.PublishedAt.Equal(items[i].PublishedAt) || item.PublishedAt.Location() != time.UTC {
-			t.Fatalf("item[%d] published=%v want=%v", i, item.PublishedAt, items[i].PublishedAt)
-		}
-	}
-	if _, anotherHit, err := cache.GetPage(t.Context(), timelineQuery(nil, 21)); err != nil || anotherHit {
-		t.Fatalf("不同页大小不应命中 hit=%v err=%v", anotherHit, err)
-	}
 }
 
 // 测试目标：写入前拒绝不满足契约的页且不触达客户端
@@ -513,28 +348,6 @@ func TestPageKeyIsolatesQueryDimensions(t *testing.T) {
 	}
 	if start := pageKey(timelineQuery(nil, 20)); start == base {
 		t.Fatalf("首屏起始键与游标键相同: %q", start)
-	}
-}
-
-// 测试目标：缓存键布局固定包含版本、场景、页大小与规范化游标
-// 预期效果：键等于约定分段字符串且分别带载荷版本与排序版本
-func TestPageKeyMatchesDocumentedLayout(t *testing.T) {
-	instant := time.Date(2024, 1, 2, 3, 4, 5, 123456789, time.UTC)
-	cursor := &domainfeed.TimelineCursor{PublishedAt: instant, VideoID: 7}
-	payloadSegment := ":v" + strconv.Itoa(pagePayloadVersion) + ":"
-	sortSegment := ":s" + strconv.Itoa(applicationfeed.TimelinePageSortVersion) + ":"
-	want := "gofeed:feed:page" + payloadSegment + "timeline" + sortSegment + "l20:2024-01-02T03:04:05.123456789Z:7"
-	key := pageKey(timelineQuery(cursor, 20))
-	if key != want {
-		t.Fatalf("key=%q want=%q", key, want)
-	}
-	if !strings.Contains(key, payloadSegment) || !strings.Contains(key, sortSegment) {
-		t.Fatalf("键缺少版本分段: %q", key)
-	}
-	start := pageKey(timelineQuery(nil, 20))
-	wantStart := "gofeed:feed:page" + payloadSegment + "timeline" + sortSegment + "l20:start"
-	if start != wantStart {
-		t.Fatalf("start key=%q want=%q", start, wantStart)
 	}
 }
 

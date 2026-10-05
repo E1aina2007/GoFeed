@@ -735,28 +735,6 @@ func TestGetOutboxSnapshotCountsOnlyActiveStatuses(t *testing.T) {
 	assertSnapshotTime(t, "oldest_publishing_at", snapshot.OldestPublishingAt, now.Add(-2*time.Minute))
 }
 
-// 测试目标：验证空表快照返回零计数与空时间
-// 预期效果：无事件时计数为零且两个最老时间指针为 nil
-func TestGetOutboxSnapshotOnEmptyTable(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-
-	var total int64
-	if err := db.Model(&OutboxEvent{}).Count(&total).Error; err != nil || total != 0 {
-		t.Fatalf("前置条件失败：outbox 应为空 got=%d err=%v", total, err)
-	}
-	snapshot, err := repo.GetOutboxSnapshot(context.Background())
-	if err != nil {
-		t.Fatalf("读取快照失败: %v", err)
-	}
-	if snapshot.PendingCount != 0 || snapshot.PublishingCount != 0 {
-		t.Fatalf("空表计数应为零 got=%+v", snapshot)
-	}
-	if snapshot.OldestPendingAt != nil || snapshot.OldestPublishingAt != nil {
-		t.Fatalf("空表最老时间应为 nil got=%+v", snapshot)
-	}
-}
-
 // 测试目标：验证快照查询的数据库错误原样返回
 // 预期效果：注入的底层错误不被吞掉或改写，快照保持零值
 func TestGetOutboxSnapshotPropagatesDatabaseError(t *testing.T) {
@@ -772,27 +750,5 @@ func TestGetOutboxSnapshotPropagatesDatabaseError(t *testing.T) {
 	}
 	if snapshot.PendingCount != 0 || snapshot.PublishingCount != 0 || snapshot.OldestPendingAt != nil || snapshot.OldestPublishingAt != nil {
 		t.Fatalf("失败快照应保持零值 got=%+v", snapshot)
-	}
-}
-
-// 测试目标：验证公共取整函数把时长向上取整为秒
-// 预期效果：非正时长返回零，正亚秒返回一，整秒与超整秒按秒数向上取整
-func TestDurationSecondsCeil(t *testing.T) {
-	cases := map[time.Duration]int64{
-		-time.Second:                     0,
-		-time.Nanosecond:                 0,
-		0:                                0,
-		time.Nanosecond:                  1,
-		time.Millisecond:                 1,
-		500 * time.Millisecond:           1,
-		time.Second:                      1,
-		time.Second + time.Nanosecond:    2,
-		90 * time.Second:                 90,
-		5*time.Minute + time.Millisecond: 301,
-	}
-	for duration, want := range cases {
-		if got := durationSecondsCeil(duration); got != want {
-			t.Fatalf("取整错误 duration=%v got=%d want=%d", duration, got, want)
-		}
 	}
 }

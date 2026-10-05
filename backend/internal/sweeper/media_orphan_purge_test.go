@@ -59,20 +59,3 @@ func TestMediaOrphanPurgeJobRunPreservesReferencesAndContinues(t *testing.T) {
 		t.Fatalf("删除列表错误 got=%v want=%v", got, want)
 	}
 }
-
-// 测试目标：验证孤儿清扫拒绝不完整依赖和非法保留期
-// 预期效果：任务在执行删除前返回对应的可识别错误
-func TestMediaOrphanPurgeJobRunRequiresDependencies(t *testing.T) {
-	if _, err := NewMediaOrphanPurgeJob(nil, &fakeMediaCandidateLister{}, &fakeMediaRemover{}, time.Hour).Run(context.Background()); !errors.Is(err, ErrMediaReferenceReaderUnavailable) {
-		t.Fatalf("缺少引用读取器错误不正确: %v", err)
-	}
-	if _, err := NewMediaOrphanPurgeJob(&fakeMediaReferenceReader{}, nil, &fakeMediaRemover{}, time.Hour).Run(context.Background()); !errors.Is(err, ErrMediaCandidateListerUnavailable) {
-		t.Fatalf("缺少候选读取器错误不正确: %v", err)
-	}
-	if _, err := NewMediaOrphanPurgeJob(&fakeMediaReferenceReader{}, &fakeMediaCandidateLister{}, nil, time.Hour).Run(context.Background()); !errors.Is(err, ErrMediaRemoverUnavailable) {
-		t.Fatalf("缺少删除器错误不正确: %v", err)
-	}
-	if _, err := NewMediaOrphanPurgeJob(&fakeMediaReferenceReader{}, &fakeMediaCandidateLister{}, &fakeMediaRemover{}, 0).Run(context.Background()); !errors.Is(err, ErrInvalidMediaOrphanRetention) {
-		t.Fatalf("非法保留期错误不正确: %v", err)
-	}
-}

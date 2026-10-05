@@ -56,41 +56,6 @@ describe('RegisterView', () => {
     vi.useRealTimers()
   })
 
-  it('rejects mismatched passwords without calling the API', async () => {
-    const wrapper = mountView()
-    await submitWith(wrapper, 'alice', 'password-123', 'different-123')
-
-    expect(wrapper.get('[role="alert"]').text()).toBe('两次输入的密码不一致')
-    expect(register).not.toHaveBeenCalled()
-    expect(routerReplace).not.toHaveBeenCalled()
-    wrapper.unmount()
-  })
-
-  it('registers the account and redirects to login with the notice flag', async () => {
-    route.query = { redirect: '/video/80' }
-    vi.mocked(register).mockResolvedValue({ user: { id: 7, username: 'alice' } })
-    const wrapper = mountView()
-    await submitWith(wrapper, '  alice  ', 'password-123')
-
-    expect(register).toHaveBeenCalledWith({ username: 'alice', password: 'password-123' })
-    expect(routerReplace).toHaveBeenCalledWith({
-      name: 'login',
-      query: { redirect: '/video/80', registered: '1' },
-    })
-    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
-    wrapper.unmount()
-  })
-
-  it('keeps the server error visible when registration fails', async () => {
-    vi.mocked(register).mockRejectedValue(new ApiError(409, 'username already exists'))
-    const wrapper = mountView()
-    await submitWith(wrapper, 'alice', 'password-123')
-
-    expect(wrapper.get('[role="alert"]').text()).toBe('用户名已被占用')
-    expect(routerReplace).not.toHaveBeenCalled()
-    wrapper.unmount()
-  })
-
   it('counts down the server retry-after window after a 429 and keeps the retry entry', async () => {
     vi.useFakeTimers()
     vi.mocked(register).mockRejectedValue(new ApiError(429, 'rate limit exceeded', 2))

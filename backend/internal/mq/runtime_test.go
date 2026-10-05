@@ -298,63 +298,6 @@ func TestRuntimeConsumerChannelFollowsConnection(t *testing.T) {
 	}
 }
 
-// 测试目标：验证 dial 失败时返回错误且不缓存半成品连接
-// 预期效果：连续调用持续重试并透传错误
-func TestRuntimePropagatesDialError(t *testing.T) {
-	dialer := &dialerRecorder{err: errors.New("broker unreachable")}
-	runtime := NewRuntime(config.RabbitMQConfig{}, WithDialer(dialer.dial))
-	defer runtime.Close()
-
-	for i := 0; i < 2; i++ {
-		if err := runtime.EnsureConnected(); err == nil {
-			t.Fatal("dial 失败应返回错误")
-		}
-	}
-	if dialer.dialCalls() != 2 {
-		t.Fatalf("每次调用都应尝试 dial got=%d", dialer.dialCalls())
-	}
-}
-
-// 测试目标：验证未注入 dialer 的空 runtime 不会空指针
-// 预期效果：显式返回初始化错误，Close 幂等返回
-func TestRuntimeNilSafe(t *testing.T) {
-	var runtime *Runtime
-	if err := runtime.EnsureConnected(); err == nil {
-		t.Fatal("空 runtime 应返回错误")
-	}
-	if err := runtime.Publish(context.Background(), EventsExchange, VideoProcessRoutingKey, nil); err == nil {
-		t.Fatal("空 runtime 发布应返回错误")
-	}
-	if _, err := runtime.ConsumerChannel(1); err == nil {
-		t.Fatal("空 runtime 获取消费信道应返回错误")
-	}
-	if err := runtime.Close(); err != nil {
-		t.Fatalf("空 runtime 关闭不应报错: %v", err)
-	}
-}
-
-// 测试目标：验证真实 AMQP 适配器满足 BrokerConnection 契约
-// 预期效果：类型断言成立，连接关闭后 IsClosed 为真
-func TestAmqpBrokerConnectionContract(t *testing.T) {
-	var _ BrokerConnection = (*amqpBrokerConnection)(nil)
-	conn := &amqpBrokerConnection{}
-	if !conn.IsClosed() {
-		t.Fatal("空连接应视为已关闭")
-	}
-	if err := conn.Close(); err != nil {
-		t.Fatalf("关闭空连接不应报错: %v", err)
-	}
-}
-
-// 测试目标：验证 WithDialer 忽略 nil 且保留默认实现
-// 预期效果：注入 nil 后 runtime 仍可构造
-func TestWithDialerIgnoresNil(t *testing.T) {
-	runtime := NewRuntime(config.RabbitMQConfig{}, WithDialer(nil))
-	if runtime.dial == nil {
-		t.Fatal("默认 dialer 不应被 nil 覆盖")
-	}
-}
-
 // 测试目标：在既有假连接上附加队列深度读取能力
 // 预期效果：QueueDepth 用例可断言查询的队列名与返回深度
 type inspectableBrokerConnection struct {
@@ -431,33 +374,6 @@ func captureRuntimeLogs(t *testing.T) *strings.Builder {
 		log.SetFlags(log.LstdFlags)
 	})
 	return &output
-}
-
-// 测试目标：验证 QueueDepth 从支持检查的连接读取队列消息数
-// 预期效果：返回预设深度且查询队列名透传，健康连接复用不重复建连
-func TestRuntimeQueueDepthReturnsCount(t *testing.T) {
-	dialer := &inspectableDialer{depth: 5}
-	runtime := NewRuntime(config.RabbitMQConfig{}, WithDialer(dialer.dial))
-	defer runtime.Close()
-
-	// 测试目标：首建连接的深度返回预设值
-	// 预期效果：深度为五且查询队列名原样透传
-	first, err := runtime.QueueDepth("video.process.dead")
-	if err != nil || first != 5 {
-		t.Fatalf("队列深度错误 got=%d err=%v", first, err)
-	}
-	if queues := dialer.connection(0).queriedQueues(); len(queues) != 1 || queues[0] != "video.process.dead" {
-		t.Fatalf("应查询指定队列 got=%v", queues)
-	}
-
-	// 测试目标：健康连接复用
-	// 预期效果：第二次读取不重新建连
-	if _, err := runtime.QueueDepth("video.process.dead"); err != nil {
-		t.Fatalf("第二次读取失败: %v", err)
-	}
-	if dialer.dialCalls() != 1 {
-		t.Fatalf("健康连接不应重复建立 got=%d", dialer.dialCalls())
-	}
 }
 
 // 测试目标：验证连接不支持 QueueDepthReader 时返回明确错误

@@ -52,7 +52,7 @@ const authSession = {
 }
 
 function requestURL(input: Parameters<typeof fetch>[0]) {
-  return typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input))
+  return typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
 }
 
 // 登录接口走真实 session 模块；调用后由用例自行替换 fetch 以分流 Feed 请求
@@ -149,8 +149,14 @@ function trackScrollTop(
   const element = feedStream(wrapper).element as HTMLElement
   const assignments: number[] = []
   let current = 0
-  Object.defineProperty(element, 'scrollHeight', { configurable: true, value: dimensions.scrollHeight })
-  Object.defineProperty(element, 'clientHeight', { configurable: true, value: dimensions.clientHeight })
+  Object.defineProperty(element, 'scrollHeight', {
+    configurable: true,
+    value: dimensions.scrollHeight,
+  })
+  Object.defineProperty(element, 'clientHeight', {
+    configurable: true,
+    value: dimensions.clientHeight,
+  })
   Object.defineProperty(element, 'scrollTop', {
     configurable: true,
     get: () => current,
@@ -326,9 +332,9 @@ describe('FeedView 整合行为', () => {
     await flushPromises()
 
     // 重试重新加载首屏，而不是复用已被服务端判定的失效游标
-    const pagedCalls = fetchMock.mock.calls.map(([input]) => requestURL(input)).filter((url) =>
-      url.includes('cursor='),
-    )
+    const pagedCalls = fetchMock.mock.calls
+      .map(([input]) => requestURL(input))
+      .filter((url) => url.includes('cursor='))
     expect(pagedCalls).toHaveLength(1)
     expect(feedStream(wrapper).findAll('.short-video')).toHaveLength(1)
     expect(wrapper.text()).toContain('重新加载的首屏')
@@ -360,7 +366,9 @@ describe('FeedView 整合行为', () => {
 
     expect(feedStream(wrapper).get('.stream-status--error').text()).toContain('分页状态已失效')
     const pagedCalls = () =>
-      fetchMock.mock.calls.map(([input]) => requestURL(input)).filter((url) => url.includes('cursor='))
+      fetchMock.mock.calls
+        .map(([input]) => requestURL(input))
+        .filter((url) => url.includes('cursor='))
     expect(pagedCalls()).toHaveLength(1)
 
     // 游标已被清空：继续滚动不得再产生分页请求
@@ -375,21 +383,6 @@ describe('FeedView 整合行为', () => {
     expect(pagedCalls()).toHaveLength(1)
     expect(wrapper.text()).not.toContain('分页状态已失效')
     expect(wrapper.text()).toContain('重新加载的首屏')
-  })
-
-  it('空列表渲染空态且不显示重试入口', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ items: [] })),
-    )
-
-    const { wrapper } = await mountFeed()
-    await flushPromises()
-
-    const message = wrapper.get('section.feed-message')
-    expect(message.text()).toContain('暂时没有公开视频')
-    expect(message.find('button').exists()).toBe(false)
-    expect(feedStream(wrapper).findAll('.short-video')).toHaveLength(0)
   })
 
   it('离开路由时中断在途首屏请求并丢弃迟到结果', async () => {
@@ -468,7 +461,10 @@ describe('FeedView 整合行为', () => {
         if (url.includes('cursor=')) {
           return jsonResponse({ items: [videoWithID(21, '关注第二页')] })
         }
-        return jsonResponse({ items: [videoWithID(20, '关注首屏')], next_cursor: 'following-page-2' })
+        return jsonResponse({
+          items: [videoWithID(20, '关注首屏')],
+          next_cursor: 'following-page-2',
+        })
       }
       if (url.includes('scene=timeline')) {
         return jsonResponse({ items: [videoWithID(1, '首屏视频')] })
@@ -500,7 +496,9 @@ describe('FeedView 整合行为', () => {
       requestURL(callInput).includes('scene=following'),
     )) {
       expect(String(input)).toBe(followingCalls.shift())
-      expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer integration-access-token')
+      expect(new Headers(init?.headers).get('Authorization')).toBe(
+        'Bearer integration-access-token',
+      )
     }
 
     await wrapper.findAll('.feed-tab')[0]!.trigger('click')

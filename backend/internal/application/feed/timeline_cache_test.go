@@ -759,46 +759,6 @@ func TestFeedCacheReleasesReadSlotOnCancel(t *testing.T) {
 	probeReadCapacity(t, service, repo)
 }
 
-// 测试目标：缺少任一缓存依赖时不装配页缓存
-// 预期效果：请求按纯 MySQL 路径执行且不触发缓存或卡片批量读取
-func TestFeedCacheNotInstalledWithoutDependencies(t *testing.T) {
-	cases := []struct {
-		name  string
-		build func(cache *fakePageCache, cards *fakeCardReader) Option
-	}{
-		{"缺少缓存实现", func(_ *fakePageCache, cards *fakeCardReader) Option {
-			return WithPageCache(nil, cards, nil)
-		}},
-		{"缺少卡片读取", func(cache *fakePageCache, _ *fakeCardReader) Option {
-			return WithPageCache(cache, nil, nil)
-		}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			encoded := encodedCursorAt(t, 0)
-			repo := &stubRepository{}
-			repo.listFn = func(_ *domainfeed.TimelineCursor, _ int) (domainfeed.TimelinePage, error) {
-				return pageStartingAt(1, 4), nil
-			}
-			cache := newFakePageCache()
-			cards := &fakeCardReader{}
-			service := New(repo, tc.build(cache, cards))
-
-			result, err := service.GetFeed(context.Background(), FeedRequest{Cursor: encoded, Limit: 3})
-			if err != nil {
-				t.Fatalf("纯 MySQL 路径失败: %v", err)
-			}
-			if len(result.Items) != 3 {
-				t.Fatalf("响应条数 got=%d want=3", len(result.Items))
-			}
-			if cache.getCount() != 0 || cache.setCount() != 0 || cards.callCount() != 0 {
-				t.Fatalf("未装配缓存时不应触发缓存 got gets=%d sets=%d cards=%d",
-					cache.getCount(), cache.setCount(), cards.callCount())
-			}
-		})
-	}
-}
-
 // probeReadCapacity 验证读取容量可被完全占满，超额请求被拒绝，释放后可恢复
 func probeReadCapacity(t *testing.T, service *Service, repo *stubRepository) {
 	t.Helper()

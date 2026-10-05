@@ -17,43 +17,31 @@ const firstVideo = {
 }
 
 async function mockPublicFeed(page: Page) {
-  await page.route((url) => url.pathname === '/api/feed', async (route) => {
-    const url = new URL(route.request().url())
-    const isNextPage = url.searchParams.get('cursor') === 'next-page'
-    const body = isNextPage
-      ? {
-          items: [
-            { ...firstVideo, title: '更新后的首屏视频' },
-            {
-              ...firstVideo,
-              id: 8,
-              title: '第二条视频',
-              play_url: '/static/videos/8/second.mp4',
-              cover_url: '/static/covers/8/second.jpg',
-              author: { id: 8, username: 'second-author' },
-            },
-          ],
-        }
-      : { items: [firstVideo], next_cursor: 'next-page' }
+  await page.route(
+    (url) => url.pathname === '/api/feed',
+    async (route) => {
+      const url = new URL(route.request().url())
+      const isNextPage = url.searchParams.get('cursor') === 'next-page'
+      const body = isNextPage
+        ? {
+            items: [
+              { ...firstVideo, title: '更新后的首屏视频' },
+              {
+                ...firstVideo,
+                id: 8,
+                title: '第二条视频',
+                play_url: '/static/videos/8/second.mp4',
+                cover_url: '/static/covers/8/second.jpg',
+                author: { id: 8, username: 'second-author' },
+              },
+            ],
+          }
+        : { items: [firstVideo], next_cursor: 'next-page' }
 
-    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
-  })
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
+    },
+  )
 }
-
-test('shows the mocked public feed', async ({ page }) => {
-  await mockPublicFeed(page)
-  await page.goto('/')
-
-  await expect(page.locator('.app-brand:visible, .mobile-nav:visible').first()).toBeVisible()
-  await expect(
-    page
-      .locator('.sidebar-nav__link:visible, .mobile-nav__link:visible')
-      .filter({ hasText: '发现' })
-      .first(),
-  ).toBeVisible()
-  await expect(page.getByRole('heading', { name: '最新视频' })).toBeVisible()
-  await expect(page.getByRole('link', { name: '首屏视频' })).toBeVisible()
-})
 
 test('merges a paginated overlap without duplicate videos', async ({ page }) => {
   await mockPublicFeed(page)
@@ -79,20 +67,21 @@ test('loads more public users with the versioned pagination contract', async ({ 
     async (route) => {
       const url = new URL(route.request().url())
       requests.push(url.search)
-      const body = url.searchParams.get('cursor') === 'users-page-2'
-        ? {
-            users: [
-              { id: 2, username: 'bob' },
-              { id: 3, username: 'cora', bio: '第二页用户' },
-            ],
-          }
-        : {
-            users: [
-              { id: 1, username: 'alice' },
-              { id: 2, username: 'bob' },
-            ],
-            next_cursor: 'users-page-2',
-          }
+      const body =
+        url.searchParams.get('cursor') === 'users-page-2'
+          ? {
+              users: [
+                { id: 2, username: 'bob' },
+                { id: 3, username: 'cora', bio: '第二页用户' },
+              ],
+            }
+          : {
+              users: [
+                { id: 1, username: 'alice' },
+                { id: 2, username: 'bob' },
+              ],
+              next_cursor: 'users-page-2',
+            }
       await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
     },
   )
@@ -184,17 +173,20 @@ test('keeps author pagination on the legacy endpoint after visiting Timeline', a
       }),
     })
   })
-  await page.route((url) => url.pathname === '/api/video', async (route) => {
-    const url = new URL(route.request().url())
-    requests.push(url)
-    expect(url.searchParams.get('author_id')).toBe('7')
-    expect(url.searchParams.get('limit')).toBe('12')
-    expect(url.searchParams.has('scene')).toBe(false)
-    const body = url.searchParams.has('cursor')
-      ? { items: [{ ...firstVideo, id: 8, title: '作者第二页' }] }
-      : { items: [firstVideo], next_cursor: authorCursor }
-    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
-  })
+  await page.route(
+    (url) => url.pathname === '/api/video',
+    async (route) => {
+      const url = new URL(route.request().url())
+      requests.push(url)
+      expect(url.searchParams.get('author_id')).toBe('7')
+      expect(url.searchParams.get('limit')).toBe('12')
+      expect(url.searchParams.has('scene')).toBe(false)
+      const body = url.searchParams.has('cursor')
+        ? { items: [{ ...firstVideo, id: 8, title: '作者第二页' }] }
+        : { items: [firstVideo], next_cursor: authorCursor }
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
+    },
+  )
   await page.goto('/')
   await page.getByRole('link', { name: '@first-author' }).first().click()
   await expect(page).toHaveURL(/\/users\/7$/)

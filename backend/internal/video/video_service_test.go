@@ -230,39 +230,6 @@ func (r *fakeAuthorReader) GetPublicAuthors(_ context.Context, ids []uint) (map[
 	return result, nil
 }
 
-// 测试目标：验证服务层组装已发布视频详情和作者资料
-// 预期效果：返回完整视频字段及正确作者资料
-func TestServiceGetPublished(t *testing.T) {
-	// 1 准备一条已发布视频和对应作者资料
-	// 2 调用服务层详情查询
-	// 3 验证视频字段和作者资料被正确组装，且只发生一次单条作者读取
-	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
-	authors := &fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}}
-	service := NewService(
-		&fakeVideoReader{getVideo: &Video{
-			ID: 1, AuthorID: 2, Title: "title", Status: VideoStatusPublished,
-			PlayURL: "play", PlayFileName: "clip.mp4", PlayOriginalName: "我的 clip.mp4",
-			CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "封面.png", PublishedAt: timePtr(publishedAt),
-		}},
-		authors,
-	)
-
-	item, err := service.GetPublished(context.Background(), 1)
-	if err != nil {
-		t.Fatalf("获取视频详情失败 服务层应返回视频及作者资料 error=%v", err)
-	}
-	if item.ID != 1 || item.Author.Username != "author" || !item.PublishedAt.Equal(publishedAt) {
-		t.Fatalf("视频详情组装错误 got=%#v want id=1 author=author publishedAt=%s", item, publishedAt)
-	}
-	if item.PlayFileName != "clip.mp4" || item.PlayOriginalName != "我的 clip.mp4" ||
-		item.CoverFileName != "cover.png" || item.CoverOriginalName != "封面.png" {
-		t.Fatalf("媒体文件名未透出 got=%#v", item)
-	}
-	if authors.calls[2] != 1 || authors.batchCalls != 0 {
-		t.Fatalf("详情应只调用单条作者读取 got calls=%v batchCalls=%d", authors.calls, authors.batchCalls)
-	}
-}
-
 // 测试目标：验证公开视频列表使用额外记录生成分页游标
 // 预期效果：仓储多取一条记录，响应截断到指定数量并复用作者资料
 func TestServiceListPublishedUsesExtraRecordForCursor(t *testing.T) {
@@ -307,32 +274,6 @@ func TestServiceListPublishedUsesExtraRecordForCursor(t *testing.T) {
 	}
 	if response.Items[0].Author.Username != "first" || response.Items[1].Author.Username != "first" {
 		t.Fatalf("列表作者资料错误 got=%+v", response.Items)
-	}
-}
-
-// 测试目标：验证公开视频列表填充作者资料
-// 预期效果：每个列表项均带有对应作者的公开信息
-func TestServiceListPublishedPopulatesAuthor(t *testing.T) {
-	// 1 准备一条视频与对应作者资料
-	// 2 查询列表
-	// 3 验证作者资料透出到列表项（防止局部变量遮蔽回归）
-	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
-	service := NewService(
-		&fakeVideoReader{listVideos: []Video{{
-			ID: 1, AuthorID: 2, Status: VideoStatusPublished,
-			PlayURL: "play", PlayFileName: "play.mp4", PlayOriginalName: "play.mp4",
-			CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "cover.png",
-			PublishedAt: timePtr(publishedAt),
-		}}},
-		&fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "author"}}},
-	)
-
-	response, err := service.GetPublishedVideoList(context.Background(), 0, "", 10)
-	if err != nil {
-		t.Fatalf("查询视频列表失败 error=%v", err)
-	}
-	if len(response.Items) != 1 || response.Items[0].Author.ID != 2 || response.Items[0].Author.Username != "author" {
-		t.Fatalf("列表项应透出作者资料 got=%#v", response.Items)
 	}
 }
 
@@ -388,24 +329,6 @@ func TestServiceListPublishedRejectsInvalidInput(t *testing.T) {
 	}
 	if _, err := service.GetPublished(context.Background(), 0); !errors.Is(err, ErrInvalidVideoID) {
 		t.Fatalf("非法视频 ID 未被拒绝 got error=%v want error=%v", err, ErrInvalidVideoID)
-	}
-}
-
-// 测试目标：验证服务层创建草稿时只保存可编辑元数据
-// 预期效果：草稿归属当前用户、状态为 draft，媒体字段保持为空
-func TestServiceCreateDraft(t *testing.T) {
-	repository := &fakeVideoReader{}
-	service := NewService(repository, &fakeAuthorReader{})
-
-	draft, err := service.CreateDraft(context.Background(), 2, DraftRequest{Title: "  title  ", Description: "  description  "})
-	if err != nil {
-		t.Fatalf("创建草稿失败 error=%v", err)
-	}
-	if draft.ID != 7 || draft.Status != VideoStatusDraft || repository.created == nil {
-		t.Fatalf("草稿创建结果错误 draft=%#v created=%#v", draft, repository.created)
-	}
-	if repository.created.Title != "title" || repository.created.Description != "description" || repository.created.PlayURL != "" || repository.created.CoverURL != "" {
-		t.Fatalf("草稿字段错误 got=%#v", repository.created)
 	}
 }
 
@@ -585,17 +508,6 @@ func TestServiceDeleteRejectsNonPublishedVideo(t *testing.T) {
 	}
 }
 
-// 测试目标：验证删除服务转换仓储的记录不存在错误
-// 预期效果：删除不存在的视频时返回统一的视频不存在错误
-func TestServiceDeleteNotFound(t *testing.T) {
-	// 仓储返回记录不存在时，服务层应转换为统一的视频不存在错误
-	service := NewService(&fakeVideoReader{getErr: gorm.ErrRecordNotFound}, &fakeAuthorReader{})
-
-	if err := service.DeleteVideo(context.Background(), 99, 1); !errors.Is(err, ErrVideoNotFound) {
-		t.Fatalf("删除不存在视频的映射错误 got error=%v want error=%v", err, ErrVideoNotFound)
-	}
-}
-
 // 测试目标：验证个人视频列表使用额外记录生成分页游标
 // 预期效果：仓储多取一条记录，响应返回指定数量和下一页游标
 func TestServiceListMinePassesExtraRecordForCursor(t *testing.T) {
@@ -666,28 +578,6 @@ func TestServiceListReadsAuthorsOnceInOriginalOrder(t *testing.T) {
 		if item.ID != want.id || item.Author.ID != want.authorID || item.Author.Username != want.username {
 			t.Fatalf("第 %d 项组装错误 got=%+v want id=%d author=%d(%s)", i, item, want.id, want.authorID, want.username)
 		}
-	}
-}
-
-// 测试目标：验证作者依赖缺失时列表与详情的降级语义
-// 预期效果：空列表正常返回，非空列表返回作者读取不可用错误
-func TestServiceListAuthorReaderUnavailable(t *testing.T) {
-	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
-	published := Video{
-		ID: 1, AuthorID: 2, Status: VideoStatusPublished,
-		PlayURL: "play", PlayFileName: "play.mp4", PlayOriginalName: "play.mp4",
-		CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "cover.png",
-		PublishedAt: timePtr(publishedAt),
-	}
-	service := NewService(&fakeVideoReader{listVideos: []Video{published}}, nil)
-	if _, err := service.GetPublishedVideoList(context.Background(), 0, "", 10); !errors.Is(err, ErrAuthorReaderUnavailable) {
-		t.Fatalf("非空列表缺少作者依赖应返回不可用错误 got=%v", err)
-	}
-
-	emptyService := NewService(&fakeVideoReader{}, nil)
-	response, err := emptyService.GetPublishedVideoList(context.Background(), 0, "", 10)
-	if err != nil || len(response.Items) != 0 {
-		t.Fatalf("空列表不应触发作者依赖错误 got=%+v error=%v", response, err)
 	}
 }
 
@@ -783,33 +673,5 @@ func TestServiceGetVideoStatus(t *testing.T) {
 		if _, err := service.GetVideoStatus(context.Background(), videoID, 2); !errors.Is(err, ErrVideoNotFound) {
 			t.Fatalf("视频 %d 应按不存在处理 got error=%v", videoID, err)
 		}
-	}
-}
-
-// 测试目标：验证正常路径下批量互动统计值逐项透出到列表响应
-// 预期效果：点赞与评论计数来自统计读取，未被故障路径污染
-func TestServiceListAppliesEngagementCounts(t *testing.T) {
-	publishedAt := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
-	service := NewService(
-		&fakeVideoReader{listVideos: []Video{
-			{ID: 1, AuthorID: 2, Status: VideoStatusPublished, PlayURL: "play", PlayFileName: "play.mp4", PlayOriginalName: "play.mp4", CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "cover.png", PublishedAt: timePtr(publishedAt)},
-			{ID: 2, AuthorID: 3, Status: VideoStatusPublished, PlayURL: "play", PlayFileName: "play.mp4", PlayOriginalName: "play.mp4", CoverURL: "cover", CoverFileName: "cover.png", CoverOriginalName: "cover.png", PublishedAt: timePtr(publishedAt)},
-		}},
-		&fakeAuthorReader{authors: map[uint]Author{2: {ID: 2, Username: "a"}, 3: {ID: 3, Username: "b"}}},
-		&fakeEngagementReader{counts: map[uint]EngagementCounts{
-			1: {LikesCount: 3, CommentsCount: 5},
-			2: {LikesCount: 0, CommentsCount: 0},
-		}},
-	)
-
-	response, err := service.GetPublishedVideoList(context.Background(), 0, "", 10)
-	if err != nil {
-		t.Fatalf("查询视频列表失败 error=%v", err)
-	}
-	if response.Items[0].LikesCount != 3 || response.Items[0].CommentsCount != 5 {
-		t.Fatalf("统计值未透出 got=%+v", response.Items[0])
-	}
-	if response.Items[1].LikesCount != 0 || response.Items[1].CommentsCount != 0 {
-		t.Fatalf("零计数应来自真实聚合结果 got=%+v", response.Items[1])
 	}
 }

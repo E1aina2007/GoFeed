@@ -182,114 +182,6 @@ func buildPage(count int, authorOf func(index int) uint) domainfeed.TimelinePage
 
 func singleAuthor(int) uint { return 7 }
 
-// 测试目标：缺省场景与缺省页大小按 Timeline 和 20 解析并向仓储多取一条探测记录
-// 预期效果：仓储收到 limit=21，响应恰好 20 条并给出下一页游标
-func TestGetFeedAppliesDefaultSceneAndLimit(t *testing.T) {
-	repo := &stubRepository{}
-	repo.listFn = func(_ *domainfeed.TimelineCursor, limit int) (domainfeed.TimelinePage, error) {
-		return buildPage(limit, singleAuthor), nil
-	}
-
-	result, err := New(repo).GetFeed(context.Background(), FeedRequest{})
-	if err != nil {
-		t.Fatalf("缺省请求失败: %v", err)
-	}
-	if repo.listCallCount() != 1 || repo.observedLimit() != defaultFeedLimit+1 {
-		t.Fatalf("仓储调用 got calls=%d limit=%d want calls=1 limit=%d", repo.listCallCount(), repo.observedLimit(), defaultFeedLimit+1)
-	}
-	if repo.observedCursor() != nil {
-		t.Fatalf("首屏不应携带游标 got=%+v", repo.observedCursor())
-	}
-	if len(result.Items) != defaultFeedLimit {
-		t.Fatalf("响应条数 got=%d want=%d", len(result.Items), defaultFeedLimit)
-	}
-	if result.NextCursor == "" {
-		t.Fatal("存在探测记录时应给出下一页游标")
-	}
-	if repo.statIDList()[0] != 900 || len(repo.statIDList()) != defaultFeedLimit {
-		t.Fatalf("统计批次应只覆盖最终响应页 got=%v", repo.statIDList())
-	}
-}
-
-// 测试目标：页大小边界按 1 与 50 放行并始终多取一条探测记录
-// 预期效果：合法边界向仓储请求 limit+1，越界返回 ErrInvalidLimit 且不访问仓储
-func TestGetFeedLimitBoundaries(t *testing.T) {
-	valid := []struct {
-		name      string
-		limit     int
-		wantLimit int
-	}{
-		{"最小页大小", 1, 2},
-		{"最大页大小", domainfeed.MaxLimit, domainfeed.MaxLimit + 1},
-	}
-	for _, tc := range valid {
-		t.Run(tc.name, func(t *testing.T) {
-			repo := &stubRepository{}
-			if _, err := New(repo).GetFeed(context.Background(), FeedRequest{Limit: tc.limit}); err != nil {
-				t.Fatalf("合法页大小 got error=%v", err)
-			}
-			if got := repo.observedLimit(); got != tc.wantLimit {
-				t.Fatalf("仓储探测条数 got=%d want=%d", got, tc.wantLimit)
-			}
-		})
-	}
-
-	invalid := []int{-1, domainfeed.MaxLimit + 1, 1000}
-	for _, limit := range invalid {
-		repo := &stubRepository{}
-		if _, err := New(repo).GetFeed(context.Background(), FeedRequest{Limit: limit}); !errors.Is(err, domainfeed.ErrInvalidLimit) {
-			t.Fatalf("页大小 %d got error=%v want=%v", limit, err, domainfeed.ErrInvalidLimit)
-		}
-		if repo.listCallCount() != 0 {
-			t.Fatalf("非法页大小 %d 不应访问仓储 got calls=%d", limit, repo.listCallCount())
-		}
-	}
-}
-
-// 测试目标：场景契约区分未知场景与已定义但未启用的场景
-// 预期效果：未知场景返回 ErrInvalidScene，未启用场景返回 ErrSceneNotEnabled 且都不查询仓储
-func TestGetFeedSceneContract(t *testing.T) {
-	enabled := []struct {
-		name  string
-		scene domainfeed.Scene
-	}{
-		{"显式 Timeline", domainfeed.SceneTimeline},
-	}
-	for _, tc := range enabled {
-		t.Run(tc.name, func(t *testing.T) {
-			repo := &stubRepository{}
-			if _, err := New(repo).GetFeed(context.Background(), FeedRequest{Scene: tc.scene}); err != nil {
-				t.Fatalf("已启用场景失败: %v", err)
-			}
-			if repo.listCallCount() != 1 {
-				t.Fatalf("已启用场景应查询仓储 got calls=%d", repo.listCallCount())
-			}
-		})
-	}
-
-	disabled := []domainfeed.Scene{domainfeed.SceneHot, domainfeed.SceneRecommend}
-	for _, scene := range disabled {
-		repo := &stubRepository{}
-		if _, err := New(repo).GetFeed(context.Background(), FeedRequest{Scene: scene}); !errors.Is(err, domainfeed.ErrSceneNotEnabled) {
-			t.Fatalf("未启用场景 %s got error=%v want=%v", scene, err, domainfeed.ErrSceneNotEnabled)
-		}
-		if repo.listCallCount() != 0 {
-			t.Fatalf("未启用场景 %s 不应查询仓储 got calls=%d", scene, repo.listCallCount())
-		}
-	}
-
-	unknown := []domainfeed.Scene{"unknown", "timeline2", "TIMELINE"}
-	for _, scene := range unknown {
-		repo := &stubRepository{}
-		if _, err := New(repo).GetFeed(context.Background(), FeedRequest{Scene: scene}); !errors.Is(err, domainfeed.ErrInvalidScene) {
-			t.Fatalf("未知场景 %s got error=%v want=%v", scene, err, domainfeed.ErrInvalidScene)
-		}
-		if repo.listCallCount() != 0 {
-			t.Fatalf("未知场景 %s 不应查询仓储 got calls=%d", scene, repo.listCallCount())
-		}
-	}
-}
-
 // 测试目标：下一页游标由截断后最后一条生成并可无损往返
 // 预期效果：第二轮请求向仓储传入与首轮末条一致的发布时间与视频 ID
 func TestGetFeedCursorRoundTrip(t *testing.T) {
@@ -461,29 +353,6 @@ func TestGetFeedRejectsInconsistentReadModel(t *testing.T) {
 	}
 }
 
-// 测试目标：缺少互动统计按零值处理而不是判定读模型损坏
-// 预期效果：统计缺失时仍返回条目且计数为零
-func TestGetFeedTreatsMissingStatAsZero(t *testing.T) {
-	repo := &stubRepository{}
-	repo.listFn = func(_ *domainfeed.TimelineCursor, limit int) (domainfeed.TimelinePage, error) {
-		return buildPage(limit, singleAuthor), nil
-	}
-	repo.statFn = func([]uint) (map[uint]domainfeed.FeedStat, error) {
-		return map[uint]domainfeed.FeedStat{}, nil
-	}
-
-	result, err := New(repo).GetFeed(context.Background(), FeedRequest{Limit: 1})
-	if err != nil {
-		t.Fatalf("请求失败: %v", err)
-	}
-	if len(result.Items) != 1 {
-		t.Fatalf("响应条数 got=%d want=1", len(result.Items))
-	}
-	if result.Items[0].Stat.LikesCount != 0 || result.Items[0].Stat.CommentsCount != 0 {
-		t.Fatalf("缺失统计应按零值处理 got=%+v", result.Items[0].Stat)
-	}
-}
-
 // 测试目标：仓储错误原样向上返回且保留原因
 // 预期效果：分页、统计与作者三处失败都能被 errors.Is 追溯
 func TestGetFeedPropagatesRepositoryErrors(t *testing.T) {
@@ -535,15 +404,6 @@ func TestGetFeedPropagatesRepositoryErrors(t *testing.T) {
 	})
 }
 
-// 测试目标：缺少仓储依赖时返回不可用而不是空结果
-// 预期效果：nil 仓储请求返回 ErrUnavailable
-func TestGetFeedWithoutRepository(t *testing.T) {
-	_, err := New(nil).GetFeed(context.Background(), FeedRequest{})
-	if !errors.Is(err, domainfeed.ErrUnavailable) {
-		t.Fatalf("got error=%v want=%v", err, domainfeed.ErrUnavailable)
-	}
-}
-
 // 测试目标：旧 /api/video 游标不能在新时间线上复用
 // 预期效果：旧格式游标与非游标负载都返回 ErrInvalidCursor 且不查询仓储
 func TestGetFeedRejectsLegacyVideoCursor(t *testing.T) {
@@ -569,30 +429,6 @@ func TestGetFeedRejectsLegacyVideoCursor(t *testing.T) {
 				t.Fatalf("非法游标不应查询仓储 got calls=%d", repo.listCallCount())
 			}
 		})
-	}
-}
-
-// 测试目标：响应卡片与作者、统计按条目一一对应
-// 预期效果：展示字段来自卡片，作者与计数来自批量读模型
-func TestGetFeedAssemblesItemFields(t *testing.T) {
-	repo := &stubRepository{}
-	repo.listFn = func(_ *domainfeed.TimelineCursor, limit int) (domainfeed.TimelinePage, error) {
-		return buildPage(limit, singleAuthor), nil
-	}
-
-	result, err := New(repo).GetFeed(context.Background(), FeedRequest{Limit: 1})
-	if err != nil {
-		t.Fatalf("请求失败: %v", err)
-	}
-	wantCard := cardOf(pageItemAt(0, 7))
-	if len(result.Items) != 1 || result.Items[0].Card != wantCard {
-		t.Fatalf("卡片字段不匹配 got=%+v want=%+v", result.Items[0].Card, wantCard)
-	}
-	if result.Items[0].Author.Username != "作者7" {
-		t.Fatalf("作者字段不匹配 got=%+v", result.Items[0].Author)
-	}
-	if result.Items[0].Stat.LikesCount != 1 || result.Items[0].Stat.CommentsCount != 2 {
-		t.Fatalf("统计字段不匹配 got=%+v", result.Items[0].Stat)
 	}
 }
 

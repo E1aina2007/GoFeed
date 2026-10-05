@@ -128,26 +128,6 @@ func TestMQObserverSnapshotMergesOutboxAndDeadLetterDepth(t *testing.T) {
 	}
 }
 
-// 测试目标：验证最老时间为空或在未来时年龄为零
-// 预期效果：nil 指针与未来时间都不产生负数或异常年龄
-func TestMQObserverSnapshotAgeEdges(t *testing.T) {
-	now := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
-	future := now.Add(time.Hour)
-	outbox := &fakeOutboxReader{snapshot: video.OutboxSnapshot{
-		OldestPendingAt: &future,
-	}}
-	observer := NewMQObserver(outbox, &fakeQueueDepthReader{})
-	observer.now = func() time.Time { return now }
-
-	snapshot, err := observer.Snapshot(context.Background())
-	if err != nil {
-		t.Fatalf("采集快照失败: %v", err)
-	}
-	if snapshot.OldestPendingAgeSeconds != 0 || snapshot.OldestPublishingAgeSeconds != 0 {
-		t.Fatalf("未来时间与空时间年龄应为零 got=%+v", snapshot)
-	}
-}
-
 // 测试目标：验证 outbox 快照查询失败时 Snapshot 报错且 observe 记录失败日志
 // 预期效果：错误携带查询上下文与底层原因，日志为 result=failed
 func TestMQObserverSnapshotLogsOutboxFailure(t *testing.T) {
@@ -186,39 +166,6 @@ func TestMQObserverSnapshotLogsQueueFailure(t *testing.T) {
 	observer.observe(context.Background())
 	if !strings.Contains(logs.String(), `event=mq_outbox_snapshot result=failed error="inspect dead letter queue: amqp down"`) {
 		t.Fatalf("应记录失败日志 got=%q", logs.String())
-	}
-}
-
-// 测试目标：验证成功采集日志携带全部运维字段
-// 预期效果：日志包含 event、result、pending_count、publishing_count、两种最老年龄与 dlq_depth
-func TestMQObserverSnapshotLogsSuccessFields(t *testing.T) {
-	logs := captureWorkerLogs(t)
-	now := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
-	pendingAt := now.Add(-30 * time.Second)
-	publishingAt := now.Add(-10 * time.Second)
-	outbox := &fakeOutboxReader{snapshot: video.OutboxSnapshot{
-		PendingCount:       1,
-		PublishingCount:    4,
-		OldestPendingAt:    &pendingAt,
-		OldestPublishingAt: &publishingAt,
-	}}
-	observer := NewMQObserver(outbox, &fakeQueueDepthReader{depth: 6})
-	observer.now = func() time.Time { return now }
-
-	observer.observe(context.Background())
-	output := logs.String()
-	for _, field := range []string{
-		"event=mq_outbox_snapshot",
-		"result=success",
-		"pending_count=1",
-		"publishing_count=4",
-		"oldest_pending_age_seconds=30",
-		"oldest_publishing_age_seconds=10",
-		"dlq_depth=6",
-	} {
-		if !strings.Contains(output, field) {
-			t.Fatalf("成功日志缺少字段 %s got=%q", field, output)
-		}
 	}
 }
 

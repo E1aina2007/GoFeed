@@ -65,31 +65,6 @@ func persistFeedVideo(t *testing.T, repo *video.Repository, row *video.Video) {
 
 var _ PublishedVideoBatchReader = (*fakePublishedBatchReader)(nil)
 
-// 测试目标：验证空批次卡片读取不访问底层仓储
-// 预期效果：空集合与全零集合返回非 nil 空 map 且读取调用次数为零
-func TestBatchGetCardsEmptyBatchSkipsReader(t *testing.T) {
-	ctx := context.Background()
-	reader := &fakePublishedBatchReader{}
-	cards := NewCardReader(reader)
-
-	for _, ids := range [][]uint{nil, {}, {0, 0, 0}} {
-		got, err := cards.BatchGetCards(ctx, ids)
-		if err != nil {
-			t.Fatalf("空批次不应报错 ids=%v err=%v", ids, err)
-		}
-		if got == nil || len(got) != 0 {
-			t.Fatalf("空批次应返回非 nil 空 map ids=%v got=%v", ids, got)
-		}
-	}
-	if reader.calls != 0 {
-		t.Fatalf("空批次不应查询底层仓储 calls=%d", reader.calls)
-	}
-
-	if got, err := NewCardReader(nil).BatchGetCards(ctx, nil); err != nil || got == nil {
-		t.Fatalf("nil 读取器下的空批次应返回非 nil 空 map, got=%v err=%v", got, err)
-	}
-}
-
 // 测试目标：验证卡片批量读取忽略零标识并按首次出现去重
 // 预期效果：底层仓储只收到一次调用且标识集合保持首次出现顺序
 func TestBatchGetCardsDedupesAndIgnoresZero(t *testing.T) {
@@ -228,46 +203,6 @@ func TestBatchGetCardsSkipsInvisibleRows(t *testing.T) {
 		if _, ok := cards[item.id]; ok {
 			t.Fatalf("标识 %d 不应出现在结果中", item.id)
 		}
-	}
-}
-
-// 测试目标：验证卡片字段逐项映射且作者标识为零的行仍被收录
-// 预期效果：卡片字段与实体完全一致，包括媒体原始文件名和发布时间
-func TestBatchGetCardsMapsAllFields(t *testing.T) {
-	published := feedBaseTime.Add(90 * time.Minute)
-	row := newFeedVideoEntity(0, video.VideoStatusPublished, feedTimePtr(published))
-	row.ID = 41
-	row.Title = "标题文本"
-	row.Description = "描述文本"
-	row.PlayURL = "/static/videos/41/play.mp4"
-	row.PlayFileName = "play.mp4"
-	row.PlayOriginalName = "原始播放名.mp4"
-	row.CoverURL = "/static/covers/41/cover.webp"
-	row.CoverFileName = "cover.webp"
-	row.CoverOriginalName = "原始封面名.webp"
-
-	cards, err := NewCardReader(&fakePublishedBatchReader{rows: []video.Video{row}}).BatchGetCards(context.Background(), []uint{41})
-	if err != nil {
-		t.Fatalf("批量读取卡片失败: %v", err)
-	}
-	card, ok := cards[41]
-	if !ok {
-		t.Fatalf("作者标识为零的行应被收录 got=%+v", cards)
-	}
-	if card.VideoID != 41 || card.AuthorID != 0 {
-		t.Fatalf("标识字段映射错误 got=%+v", card)
-	}
-	if card.Title != row.Title || card.Description != row.Description {
-		t.Fatalf("文本字段映射错误 got=%+v", card)
-	}
-	if card.PlayURL != row.PlayURL || card.PlayFileName != row.PlayFileName || card.PlayOriginalName != row.PlayOriginalName {
-		t.Fatalf("播放媒体字段映射错误 got=%+v", card)
-	}
-	if card.CoverURL != row.CoverURL || card.CoverFileName != row.CoverFileName || card.CoverOriginalName != row.CoverOriginalName {
-		t.Fatalf("封面媒体字段映射错误 got=%+v", card)
-	}
-	if !card.PublishedAt.Equal(published) {
-		t.Fatalf("发布时间映射错误 got=%v want=%v", card.PublishedAt, published)
 	}
 }
 

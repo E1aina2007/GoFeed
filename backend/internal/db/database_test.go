@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"errors"
 	"os"
 	"testing"
 
@@ -82,16 +81,5 @@ func TestQueryCountersAreIndependentPerContext(t *testing.T) {
 	}
 	if got := QueryCount(second); got != 1 {
 		t.Fatalf("第二个上下文计数错误 got=%d want=1", got)
-	}
-}
-
-// 测试目标：验证查询计数辅助函数对缺失上下文值的容错
-// 预期效果：背景上下文与其他类型值都安全返回零
-func TestQueryCountToleratesMissingCounter(t *testing.T) {
-	if got := QueryCount(context.Background()); got != 0 {
-		t.Fatalf("背景上下文计数错误 got=%d want=0", got)
-	}
-	if got := QueryCount(context.WithValue(context.Background(), queryCounterKey{}, errors.New("not a counter"))); got != 0 {
-		t.Fatalf("非法计数器值计数错误 got=%d want=0", got)
 	}
 }

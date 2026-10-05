@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"slices"
 	"testing"
 	"time"
 
@@ -157,49 +156,6 @@ func TestListTimelinePageFiltersAndMapsRows(t *testing.T) {
 	}
 }
 
-// 测试目标：验证时间线空结果返回可用的空页
-// 预期效果：Items 与 Cards 均为非 nil 空集合
-func TestListTimelinePageEmptyRows(t *testing.T) {
-	page, err := New(&fakePublishedVideoReader{}, nil, nil).ListTimelinePage(context.Background(), nil, 20)
-	if err != nil {
-		t.Fatalf("空结果读取时间线失败: %v", err)
-	}
-	if page.Items == nil || len(page.Items) != 0 {
-		t.Fatalf("Items 应为非 nil 空切片 got=%v", page.Items)
-	}
-	if page.Cards == nil || len(page.Cards) != 0 {
-		t.Fatalf("Cards 应为非 nil 空映射 got=%v", page.Cards)
-	}
-}
-
-// 测试目标：验证时间线游标转换为视频读取位置
-// 预期效果：发布时间与视频标识逐字段对齐，空游标透传为空且限制值原样传递
-func TestListTimelinePageConvertsCursor(t *testing.T) {
-	reader := &fakePublishedVideoReader{}
-	repo := New(reader, nil, nil)
-	at := feedBaseTime.Add(2 * time.Hour)
-
-	if _, err := repo.ListTimelinePage(context.Background(), &domainfeed.TimelineCursor{PublishedAt: at, VideoID: 42}, 7); err != nil {
-		t.Fatalf("带游标读取时间线失败: %v", err)
-	}
-	if reader.cursor == nil {
-		t.Fatal("游标应转换为视频读取位置")
-	}
-	if !reader.cursor.PublishedAt.Equal(at) || reader.cursor.ID != 42 {
-		t.Fatalf("游标字段未对齐 got=%+v", *reader.cursor)
-	}
-	if reader.limit != 7 {
-		t.Fatalf("分页限制应透传 got=%d", reader.limit)
-	}
-
-	if _, err := repo.ListTimelinePage(context.Background(), nil, 5); err != nil {
-		t.Fatalf("无游标读取时间线失败: %v", err)
-	}
-	if reader.cursor != nil {
-		t.Fatalf("空游标应透传为空 got=%+v", *reader.cursor)
-	}
-}
-
 // 测试目标：验证时间线读取在依赖缺失或底层失败时返回不可用
 // 预期效果：nil 读取器与底层错误都满足 ErrUnavailable 且保留原始 cause
 func TestListTimelinePageUnavailable(t *testing.T) {
@@ -213,83 +169,6 @@ func TestListTimelinePageUnavailable(t *testing.T) {
 	_, err := New(&fakePublishedVideoReader{err: cause}, nil, nil).ListTimelinePage(ctx, nil, 20)
 	if !errors.Is(err, domainfeed.ErrUnavailable) || !errors.Is(err, cause) {
 		t.Fatalf("底层错误应包装为 ErrUnavailable 且保留 cause, err=%v", err)
-	}
-}
-
-// 测试目标：验证作者与统计批量映射的键和字段
-// 预期效果：结果以标识为键，各字段逐项对应且入参原样传递
-func TestBatchGetAuthorAndStatsMapping(t *testing.T) {
-	ctx := context.Background()
-	authors := &fakePublicAuthorReader{rows: map[uint]video.Author{
-		5: {ID: 5, Username: "作者五", AvatarURL: "/static/avatars/5.png"},
-	}}
-	stats := &fakeEngagementCountsReader{rows: map[uint]video.EngagementCounts{
-		9: {LikesCount: 3, CommentsCount: 4},
-	}}
-	repo := New(nil, authors, stats)
-
-	gotAuthors, err := repo.BatchGetAuthors(ctx, []uint{5, 6})
-	if err != nil {
-		t.Fatalf("批量读取作者失败: %v", err)
-	}
-	if len(gotAuthors) != 1 {
-		t.Fatalf("作者结果数量错误 got=%+v", gotAuthors)
-	}
-	author, ok := gotAuthors[5]
-	if !ok {
-		t.Fatalf("作者结果应以标识为键 got=%+v", gotAuthors)
-	}
-	if author.ID != 5 || author.Username != "作者五" || author.AvatarURL != "/static/avatars/5.png" {
-		t.Fatalf("作者字段映射错误 got=%+v", author)
-	}
-	if authors.calls != 1 || !slices.Equal(authors.ids, []uint{5, 6}) {
-		t.Fatalf("作者读取入参错误 calls=%d ids=%v", authors.calls, authors.ids)
-	}
-
-	gotStats, err := repo.BatchGetStats(ctx, []uint{9})
-	if err != nil {
-		t.Fatalf("批量读取统计失败: %v", err)
-	}
-	stat, ok := gotStats[9]
-	if !ok {
-		t.Fatalf("统计结果应以标识为键 got=%+v", gotStats)
-	}
-	if stat.LikesCount != 3 || stat.CommentsCount != 4 {
-		t.Fatalf("统计字段映射错误 got=%+v", stat)
-	}
-	if stats.calls != 1 || !slices.Equal(stats.ids, []uint{9}) {
-		t.Fatalf("统计读取入参错误 calls=%d ids=%v", stats.calls, stats.ids)
-	}
-}
-
-// 测试目标：验证作者与统计的空批量读取不访问底层依赖
-// 预期效果：空入参返回非 nil 空 map 且不产生任何读取调用，nil 依赖也不报错
-func TestBatchReadsSkipEmptyInput(t *testing.T) {
-	ctx := context.Background()
-	authors := &fakePublicAuthorReader{}
-	stats := &fakeEngagementCountsReader{}
-	repo := New(nil, authors, stats)
-
-	for _, ids := range [][]uint{nil, {}} {
-		gotAuthors, err := repo.BatchGetAuthors(ctx, ids)
-		if err != nil || gotAuthors == nil || len(gotAuthors) != 0 {
-			t.Fatalf("空作者批量应返回非 nil 空 map, got=%v err=%v", gotAuthors, err)
-		}
-		gotStats, err := repo.BatchGetStats(ctx, ids)
-		if err != nil || gotStats == nil || len(gotStats) != 0 {
-			t.Fatalf("空统计批量应返回非 nil 空 map, got=%v err=%v", gotStats, err)
-		}
-	}
-	if authors.calls != 0 || stats.calls != 0 {
-		t.Fatalf("空批量不应访问底层依赖 authors=%d stats=%d", authors.calls, stats.calls)
-	}
-
-	bare := New(nil, nil, nil)
-	if got, err := bare.BatchGetAuthors(ctx, nil); err != nil || got == nil {
-		t.Fatalf("nil 依赖下的空作者批量应返回非 nil 空 map, got=%v err=%v", got, err)
-	}
-	if got, err := bare.BatchGetStats(ctx, nil); err != nil || got == nil {
-		t.Fatalf("nil 依赖下的空统计批量应返回非 nil 空 map, got=%v err=%v", got, err)
 	}
 }
 

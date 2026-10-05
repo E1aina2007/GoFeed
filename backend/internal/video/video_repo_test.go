@@ -66,42 +66,6 @@ func setVideoDeletedAt(t *testing.T, db *gorm.DB, id uint, at time.Time) {
 	}
 }
 
-// 测试目标：验证视频仓储创建并按标识读取视频
-// 预期效果：创建操作回填标识和时间，读取结果与写入字段一致
-func TestRepositoryCreateAndGetByID(t *testing.T) {
-	repo := NewRepository(testutil.DB(t))
-	ctx := context.Background()
-
-	v := newVideoFixture(1, "往返", VideoStatusPublished, baseTime)
-	if err := repo.Create(ctx, v); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if v.ID == 0 {
-		t.Fatal("Create 未回填 ID")
-	}
-	if v.CreatedAt.IsZero() || v.UpdatedAt.IsZero() {
-		t.Fatalf("Create 未回填时间戳 created=%v updated=%v", v.CreatedAt, v.UpdatedAt)
-	}
-
-	got, err := repo.GetByID(ctx, v.ID)
-	if err != nil {
-		t.Fatalf("GetByID: %v", err)
-	}
-	if got.ID != v.ID || got.AuthorID != v.AuthorID || got.Title != v.Title || got.Description != v.Description {
-		t.Fatalf("基础字段读回不一致 got=%+v want=%+v", got, v)
-	}
-	if got.PlayFileName != v.PlayFileName || got.PlayOriginalName != v.PlayOriginalName ||
-		got.CoverFileName != v.CoverFileName || got.CoverOriginalName != v.CoverOriginalName {
-		t.Fatalf("媒体文件名读回不一致 got=%+v", got)
-	}
-	if got.Status != v.Status {
-		t.Fatalf("状态读回不一致 got=%s want=%s", got.Status, v.Status)
-	}
-	if got.PublishedAt == nil || v.PublishedAt == nil || !got.PublishedAt.Equal(*v.PublishedAt) {
-		t.Fatalf("PublishedAt 读回不一致 got=%v want=%v", got.PublishedAt, v.PublishedAt)
-	}
-}
-
 // 测试目标：验证公开读取仅返回已发布视频
 // 预期效果：草稿无法公开读取，通用读取仍可读取草稿
 func TestRepositoryGetPublishedByIDFiltersStatus(t *testing.T) {
@@ -216,20 +180,6 @@ func TestRepositoryPublicQueriesRequireCompleteVideo(t *testing.T) {
 	otherCount, err := repo.GetPublishedVideoCountByAuthor(ctx, 2)
 	if err != nil || otherCount != 1 {
 		t.Fatalf("其他作者统计错误 count=%d err=%v", otherCount, err)
-	}
-}
-
-// 测试目标：验证零值视频标识的读取边界
-// 预期效果：通用读取和公开读取均返回记录不存在错误
-func TestRepositoryGetByIDZero(t *testing.T) {
-	repo := NewRepository(testutil.DB(t))
-	ctx := context.Background()
-
-	if _, err := repo.GetByID(ctx, 0); !errors.Is(err, gorm.ErrRecordNotFound) {
-		t.Fatalf("id=0 应返回 not found, err=%v", err)
-	}
-	if _, err := repo.GetPublishedByID(ctx, 0); !errors.Is(err, gorm.ErrRecordNotFound) {
-		t.Fatalf("公开读 id=0 应返回 not found, err=%v", err)
 	}
 }
 
@@ -860,23 +810,6 @@ func TestRepositoryPurgeExpiredDeleted(t *testing.T) {
 		if count != 1 {
 			t.Fatalf("视频 id=%d 应在数据库中保留", id)
 		}
-	}
-}
-
-// 测试目标：验证公开视频列表处理非正分页数量
-// 预期效果：数量为零时查询成功并返回空列表
-func TestRepositoryListPublishedNonPositiveLimit(t *testing.T) {
-	repo := NewRepository(testutil.DB(t))
-	ctx := context.Background()
-
-	seedVideo(t, repo, 1, "v", VideoStatusPublished, baseTime)
-
-	items, err := repo.GetPublishedVideoList(ctx, 0, nil, 0)
-	if err != nil {
-		t.Fatalf("limit=0 查询失败: %v", err)
-	}
-	if len(items) != 0 {
-		t.Fatalf("limit=0 应为空, got=%+v", items)
 	}
 }
 

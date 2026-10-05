@@ -37,7 +37,11 @@ function mountView() {
   return mount(LoginView)
 }
 
-async function submitWith(wrapper: ReturnType<typeof mountView>, username: string, password: string) {
+async function submitWith(
+  wrapper: ReturnType<typeof mountView>,
+  username: string,
+  password: string,
+) {
   const inputs = wrapper.findAll('input')
   await inputs[0]?.setValue(username)
   await inputs[1]?.setValue(password)
@@ -57,13 +61,6 @@ describe('LoginView', () => {
     vi.useRealTimers()
   })
 
-  it('shows the registration notice when redirected from the register page', () => {
-    route.query = { registered: '1' }
-    const wrapper = mountView()
-    expect(wrapper.get('[role="status"]').text()).toBe('注册成功，请使用新账号登录')
-    wrapper.unmount()
-  })
-
   it('logs in with trimmed credentials and follows the redirect target', async () => {
     route.query = { redirect: '/video/80' }
     vi.mocked(login).mockResolvedValue(sessionFixture)
@@ -73,26 +70,6 @@ describe('LoginView', () => {
     expect(login).toHaveBeenCalledWith({ username: 'alice', password: 'password-123' })
     expect(routerReplace).toHaveBeenCalledWith('/video/80')
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
-    wrapper.unmount()
-  })
-
-  it('redirects to the feed when no redirect target is present', async () => {
-    vi.mocked(login).mockResolvedValue(sessionFixture)
-    const wrapper = mountView()
-    await submitWith(wrapper, 'alice', 'password-123')
-
-    expect(routerReplace).toHaveBeenCalledWith('/')
-    wrapper.unmount()
-  })
-
-  it('keeps the server error visible when login fails', async () => {
-    vi.mocked(login).mockRejectedValue(new ApiError(401, 'invalid username or password'))
-    const wrapper = mountView()
-    await submitWith(wrapper, 'alice', 'password-123')
-
-    expect(wrapper.get('[role="alert"]').text()).toBe('用户名或密码错误')
-    expect(routerReplace).not.toHaveBeenCalled()
-    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })
 

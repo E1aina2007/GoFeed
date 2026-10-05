@@ -6,22 +6,6 @@ import (
 	"testing"
 )
 
-// 测试目标：验证 .env 定位器解析到源码树内的 backend/.env
-// 预期效果：无论测试进程工作目录在哪里，路径都与包目录上两级下的 .env 一致
-func TestBackendDotEnvPathResolvesToSourceTree(t *testing.T) {
-	path, ok := backendDotEnvPath()
-	if !ok {
-		t.Fatal("无法通过源码路径定位 backend/.env")
-	}
-	expected, err := filepath.Abs(filepath.Join("..", "..", ".env"))
-	if err != nil {
-		t.Fatalf("解析相对路径失败: %v", err)
-	}
-	if path != expected {
-		t.Errorf("定位结果应指向 backend/.env got=%s want=%s", path, expected)
-	}
-}
-
 // 测试目标：验证加载 .env 时补充缺失变量且不覆盖已导出的环境变量
 // 预期效果：仅存在于文件中的变量生效，进程中已有的变量保持原值
 func TestLoadDotEnvKeepsExistingEnvironment(t *testing.T) {

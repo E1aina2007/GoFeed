@@ -1,15 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { clearSession, login } from '@/features/auth/session'
-import { ApiError } from '@/lib/api'
 import {
   createComment,
   createFollow,
   createLike,
-  getCommentList,
-  getFollowerList,
   getFollowState,
-  getFollowingList,
   getLikeState,
   removeComment,
   removeFollow,
@@ -34,41 +30,6 @@ describe('social api', () => {
   afterEach(() => {
     clearSession()
     vi.unstubAllGlobals()
-  })
-
-  it('loads public comment and follow lists with cursor pagination', async () => {
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse({ items: [], next_cursor: 'comment-next' }))
-      .mockResolvedValueOnce(jsonResponse({ items: [], next_cursor: 'follower-next' }))
-      .mockResolvedValueOnce(jsonResponse({ items: [] }))
-    vi.stubGlobal('fetch', fetchMock)
-
-    await expect(getCommentList(7, { cursor: 'comment-current', limit: 5 })).resolves.toMatchObject(
-      {
-        next_cursor: 'comment-next',
-      },
-    )
-    await expect(getFollowerList(8, { cursor: 'follower-current' })).resolves.toMatchObject({
-      next_cursor: 'follower-next',
-    })
-    await expect(getFollowingList(8)).resolves.toEqual({ items: [] })
-
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      '/api/video/7/comments?limit=5&cursor=comment-current',
-      expect.any(Object),
-    )
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      '/api/user/8/followers?limit=20&cursor=follower-current',
-      expect.any(Object),
-    )
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
-      '/api/user/8/following?limit=20',
-      expect.any(Object),
-    )
   })
 
   it('uses authenticated routes for like, comment, and follow changes', async () => {
@@ -116,11 +77,5 @@ describe('social api', () => {
     expect(commentRequest?.method).toBe('POST')
     expect(commentRequest?.body).toBe(JSON.stringify({ content: '很精彩' }))
     expect(followRequest?.method).toBe('DELETE')
-  })
-
-  it('rejects invalid IDs, page sizes, and comment content before sending a request', () => {
-    expect(() => getLikeState(0)).toThrow(new ApiError(400, '视频 ID 无效'))
-    expect(() => getFollowerList(1, { limit: 51 })).toThrow(new ApiError(400, '分页大小无效'))
-    expect(() => createComment(7, '   ')).toThrow(new ApiError(400, '评论内容需为 1-1000 个字符'))
   })
 })

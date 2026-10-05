@@ -14,7 +14,7 @@ import (
 )
 
 // expectedHighestMigrationVersion 是源码迁移目录必须达到的最高版本号
-const expectedHighestMigrationVersion = 9
+const expectedHighestMigrationVersion = 10
 
 // migrationFileNamePattern 约束迁移文件使用六位补零版本号与方向后缀
 var migrationFileNamePattern = regexp.MustCompile(`^(\d{6})_([a-z0-9_]+)\.(up|down)\.sql$`)
@@ -43,7 +43,7 @@ var migrationInverseStatement = map[string][]string{
 
 // expectedMigrationTables 是全部 up 迁移应当创建的业务表集合
 var expectedMigrationTables = []string{
-	"auth_sessions", "user_follows", "users", "video_comments",
+	"auth_sessions", "interaction_outbox_events", "user_follows", "users", "video_comments",
 	"video_likes", "video_outbox_events", "videos",
 }
 
@@ -84,7 +84,7 @@ func stringPtr(value string) *string {
 }
 
 // 测试目标：验证迁移版本号连续成对且最高版本等于源码声明值
-// 预期效果：九个版本各自提供 up 与 down，无缺号无重复，最高版本为 000009_outbox_publishing_lease
+// 预期效果：十个版本各自提供 up 与 down，无缺号无重复，最高版本为 000010_interaction_outbox
 func TestMigrationFilesArePairedAndContiguous(t *testing.T) {
 	files := readMigrationFiles(t)
 	pairs := groupMigrationFiles(files)
@@ -111,7 +111,7 @@ func TestMigrationFilesArePairedAndContiguous(t *testing.T) {
 	}
 
 	highest := pairs[expectedHighestMigrationVersion]
-	if highest.up.stem != "outbox_publishing_lease" || highest.down.stem != "outbox_publishing_lease" {
+	if highest.up.stem != "interaction_outbox" || highest.down.stem != "interaction_outbox" {
 		t.Errorf("最高版本名称错误 got up=%q down=%q", highest.up.stem, highest.down.stem)
 	}
 

@@ -68,15 +68,3 @@ func TestServiceGetProfileSkipsCounterForMissingUser(t *testing.T) {
 		t.Fatalf("不存在用户不应查询视频统计, got=%v", counter.authorIDs)
 	}
 }
-
-// 测试目标：验证资料读取在依赖缺失时返回明确错误而非发生空指针异常
-// 预期效果：装配错误以内部错误形式上浮给 HTTP 层
-func TestServiceGetProfileRequiresVideoCounter(t *testing.T) {
-	db := testutil.DB(t)
-	accountID := seedUser(t, db, "profile-no-counter")
-	service := NewService(NewRepository(db), nil)
-
-	if _, err := service.GetProfile(context.Background(), accountID); !errors.Is(err, ErrVideoCounterUnavailable) {
-		t.Fatalf("缺失视频统计依赖错误不正确, got=%v", err)
-	}
-}

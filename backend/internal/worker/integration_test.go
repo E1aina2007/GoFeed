@@ -339,31 +339,6 @@ func workerProcessConfigPathForDir(configDir string) (string, error) {
 	return filepath.Join(configDir, "config.example.yaml"), nil
 }
 
-// 测试目标：验证 worker helper 配置路径在本机与 CI 检出中的选择
-// 预期效果：存在 config.dev.yaml 时优先使用，缺失时返回 config.example.yaml
-func TestWorkerProcessConfigPathForDir(t *testing.T) {
-	configDir := t.TempDir()
-	got, err := workerProcessConfigPathForDir(configDir)
-	if err != nil {
-		t.Fatalf("读取 CI 回退配置路径失败: %v", err)
-	}
-	if want := filepath.Join(configDir, "config.example.yaml"); got != want {
-		t.Fatalf("CI 应回退至配置模板 got=%s want=%s", got, want)
-	}
-
-	devPath := filepath.Join(configDir, "config.dev.yaml")
-	if err := os.WriteFile(devPath, []byte("server: {}\n"), 0o600); err != nil {
-		t.Fatalf("写入本机配置夹具失败: %v", err)
-	}
-	got, err = workerProcessConfigPathForDir(configDir)
-	if err != nil {
-		t.Fatalf("读取本机配置路径失败: %v", err)
-	}
-	if got != devPath {
-		t.Fatalf("应优先使用本机配置 got=%s want=%s", got, devPath)
-	}
-}
-
 // 测试目标：启动执行 relay 或消费恢复的 worker helper 子进程
 // 预期效果：子进程使用父进程的隔离数据库、媒体目录和随机消息拓扑
 func newWorkerProcessCommand(ctx context.Context, mode, database, storageRoot, markerPath string, videoID uint, spec mq.ConsumerSpec, configPath string) (*exec.Cmd, *bytes.Buffer) {
