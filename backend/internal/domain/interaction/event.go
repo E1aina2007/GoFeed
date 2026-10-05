@@ -39,8 +39,13 @@ func NewChangedEvent(eventID string, videoID uint, kind Kind, interactionID uint
 		return ChangedEvent{}, ErrInvalidEvent
 	}
 	event := ChangedEvent{
-		EventID: eventID, SchemaVersion: SchemaVersion, EventType: EventType,
-		VideoID: videoID, Kind: kind, InteractionID: interactionID, Delta: delta,
+		EventID:              eventID,
+		SchemaVersion:        SchemaVersion,
+		EventType:            EventType,
+		VideoID:              videoID,
+		Kind:                 kind,
+		InteractionID:        interactionID,
+		Delta:                delta,
 		OccurredAt:           occurredAt.UTC().Truncate(time.Millisecond),
 		InteractionCreatedAt: createdAt.UTC().Truncate(time.Millisecond),
 	}

@@ -17,7 +17,10 @@ type CommentResult struct {
 }
 
 func New(reader domaininteraction.Reader, writer domaininteraction.MutationWriter) *Service {
-	return &Service{reader: reader, writer: writer}
+	return &Service{
+		reader: reader,
+		writer: writer,
+	}
 }
 
 // CreateLike 编排幂等点赞写入并读取现有响应需要的实时统计
@@ -59,7 +62,10 @@ func (s *Service) CreateComment(ctx context.Context, videoID, authorID uint, con
 	if err != nil {
 		return CommentResult{}, err
 	}
-	return CommentResult{Comment: comment, Author: author}, nil
+	return CommentResult{
+		Comment: comment,
+		Author:  author,
+	}, nil
 }
 
 // DeleteComment 把评论归属校验与条件软删除交给原子写入端口，保留重复删除的不存在结果
@@ -114,5 +120,8 @@ func (s *Service) likeState(ctx context.Context, videoID uint, liked bool) (doma
 	if err != nil {
 		return domaininteraction.LikeState{}, err
 	}
-	return domaininteraction.LikeState{Liked: liked, LikesCount: count}, nil
+	return domaininteraction.LikeState{
+		Liked:      liked,
+		LikesCount: count,
+	}, nil
 }

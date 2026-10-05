@@ -14,6 +14,7 @@ import (
 	"gofeed/internal/db"
 	infracachefeed "gofeed/internal/infra/cache/feed"
 	infrafeed "gofeed/internal/infra/persistence/feed"
+	infrainteraction "gofeed/internal/infra/persistence/interaction"
 	"gofeed/internal/middleware/cache"
 	"gofeed/internal/mq"
 	"gofeed/internal/video"
@@ -90,6 +91,18 @@ func main() {
 	repo := video.NewRepository(dbConn, video.WithPublishedEvents(cfg.Feed.PublishedEventEnabled))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	var interactionBroker *mq.Runtime
+	var interactionRelay *worker.InteractionRelay
+	if cfg.Interaction.RelayEnabled {
+		// 独立连接声明互动拓扑，关闭采集后仍可排空已提交事实
+		interactionBroker = mq.NewRuntime(cfg.RabbitMQ,
+			mq.WithConsumerSpecs(mq.InteractionHeatSpec()), mq.WithMandatoryPublishing(true))
+		connectWithRetry("Interaction RabbitMQ", 10, interactionBroker.EnsureConnected)
+		interactionRelay, err = worker.NewInteractionRelay(infrainteraction.New(dbConn, false), interactionBroker)
+		if err != nil {
+			log.Fatal("Interaction relay configuration failed")
+		}
+	}
 
 	relay := worker.NewRelay(repo, broker)
 	var warmConsumer *worker.CardWarmConsumer
@@ -136,12 +149,26 @@ func main() {
 	}()
 	if warmConsumer != nil {
 		workers.Add(2)
-		go func() { defer workers.Done(); warmConsumer.Run(ctx, broker) }()
-		go func() { defer workers.Done(); warmObserver.Run(ctx) }()
+		go func() {
+			defer workers.Done()
+			warmConsumer.Run(ctx, broker)
+		}()
+		go func() {
+			defer workers.Done()
+			warmObserver.Run(ctx)
+		}()
+	}
+	if interactionRelay != nil {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			interactionRelay.Run(ctx)
+		}()
 	}
 
 	log.Println("Worker started - relay, consumer and MQ observer are running")
 	log.Printf("event=feed_card_warm_runtime consumer_enabled=%t published_event_enabled=%t", cfg.Feed.CardWarmupEnabled, cfg.Feed.PublishedEventEnabled)
+	log.Printf("event=interaction_relay_runtime relay_enabled=%t", cfg.Interaction.RelayEnabled)
 
 	<-ctx.Done()
 	log.Println("Received shutdown signal, draining...")
@@ -152,6 +179,11 @@ func main() {
 		}
 	}
 
+	if interactionBroker != nil {
+		if err := interactionBroker.Close(); err != nil {
+			log.Printf("Failed to close interaction RabbitMQ connection: %v", err)
+		}
+	}
 	if err := broker.Close(); err != nil {
 		log.Printf("Failed to close RabbitMQ connection: %v", err)
 	}

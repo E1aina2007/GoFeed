@@ -41,7 +41,12 @@ func (r *Repository) GetAuthor(ctx context.Context, userID uint) (domaininteract
 	if err != nil {
 		return domaininteraction.Author{}, notFoundAs(err, domaininteraction.ErrUserNotFound)
 	}
-	return domaininteraction.Author{ID: row.ID, Username: row.Username, AvatarURL: row.AvatarURL, Bio: row.Bio}, nil
+	return domaininteraction.Author{
+		ID:        row.ID,
+		Username:  row.Username,
+		AvatarURL: row.AvatarURL,
+		Bio:       row.Bio,
+	}, nil
 }
 
 func notFoundAs(err, missing error) error {

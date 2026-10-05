@@ -28,7 +28,10 @@ var (
 )
 
 func New(db *gorm.DB, eventsEnabled bool) *Repository {
-	return &Repository{db: db, eventsEnabled: eventsEnabled}
+	return &Repository{
+		db:            db,
+		eventsEnabled: eventsEnabled,
+	}
 }
 
 // CreateLike 仅在新建点赞关系时同事务记录正事件，唯一键重复保持幂等
@@ -41,7 +44,10 @@ func (r *Repository) CreateLike(ctx context.Context, videoID, userID uint) (bool
 		if err := lockMutationTargets(tx, videoID, userID); err != nil {
 			return err
 		}
-		like := social.VideoLike{VideoID: videoID, UserID: userID}
+		like := social.VideoLike{
+			VideoID: videoID,
+			UserID:  userID,
+		}
 		if err := tx.Create(&like).Error; err != nil {
 			if duplicateLike(err) {
 				return nil
@@ -71,7 +77,9 @@ func (r *Repository) RemoveLike(ctx context.Context, videoID, userID uint) (bool
 			return err
 		}
 		var like social.VideoLike
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		if err := tx.Clauses(clause.Locking{
+			Strength: "UPDATE",
+		}).
 			Where("video_id = ? AND user_id = ?", videoID, userID).Take(&like).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil
@@ -106,7 +114,11 @@ func (r *Repository) CreateComment(ctx context.Context, videoID, authorID uint, 
 	if err != nil {
 		return domaininteraction.Comment{}, err
 	}
-	comment := social.Comment{VideoID: videoID, AuthorID: authorID, Content: content}
+	comment := social.Comment{
+		VideoID:  videoID,
+		AuthorID: authorID,
+		Content:  content,
+	}
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := lockMutationTargets(tx, videoID, authorID); err != nil {
 			return err
@@ -119,7 +131,13 @@ func (r *Repository) CreateComment(ctx context.Context, videoID, authorID uint, 
 	if err != nil {
 		return domaininteraction.Comment{}, err
 	}
-	return domaininteraction.Comment{ID: comment.ID, VideoID: comment.VideoID, AuthorID: comment.AuthorID, Content: comment.Content, CreatedAt: comment.CreatedAt}, nil
+	return domaininteraction.Comment{
+		ID:        comment.ID,
+		VideoID:   comment.VideoID,
+		AuthorID:  comment.AuthorID,
+		Content:   comment.Content,
+		CreatedAt: comment.CreatedAt,
+	}, nil
 }
 
 // DeleteComment 在锁定的当前评论上检查归属，并将一次软删除与负事件一起提交
@@ -142,7 +160,9 @@ func (r *Repository) DeleteComment(ctx context.Context, videoID, commentID, auth
 			return err
 		}
 		var comment social.Comment
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&comment, commentID).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{
+			Strength: "UPDATE",
+		}).First(&comment, commentID).Error; err != nil {
 			return notFoundAs(err, domaininteraction.ErrCommentNotFound)
 		}
 		if comment.VideoID != videoID {
@@ -184,10 +204,16 @@ func (r *Repository) appendEvent(tx *gorm.DB, videoID uint, kind domaininteracti
 		return err
 	}
 	row := EventModel{
-		EventID: event.EventID, SchemaVersion: event.SchemaVersion, EventType: event.EventType,
-		VideoID: event.VideoID, Kind: string(event.Kind), InteractionID: event.InteractionID, Delta: event.Delta,
-		OccurredAtMs: event.OccurredAt.UnixMilli(), InteractionCreatedAtMs: event.InteractionCreatedAt.UnixMilli(),
-		Status: eventStatusPending,
+		EventID:                event.EventID,
+		SchemaVersion:          event.SchemaVersion,
+		EventType:              event.EventType,
+		VideoID:                event.VideoID,
+		Kind:                   string(event.Kind),
+		InteractionID:          event.InteractionID,
+		Delta:                  event.Delta,
+		OccurredAtMs:           event.OccurredAt.UnixMilli(),
+		InteractionCreatedAtMs: event.InteractionCreatedAt.UnixMilli(),
+		Status:                 eventStatusPending,
 	}
 	return tx.Create(&row).Error
 }
@@ -214,14 +240,30 @@ func lockMutationTargets(tx *gorm.DB, videoID, userID uint) error {
 	if err := lockActiveUser(tx, userID); err != nil {
 		return err
 	}
-	var row struct{ ID uint }
-	err := video.PublicVideoQuery(tx).Select("id").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", videoID).Take(&row).Error
+	var row struct {
+		ID uint
+	}
+	err := video.PublicVideoQuery(tx).
+		Select("id").
+		Clauses(clause.Locking{
+			Strength: "UPDATE",
+		}).
+		Where("id = ?", videoID).
+		Take(&row).Error
 	return notFoundAs(err, domaininteraction.ErrVideoNotFound)
 }
 
 func lockActiveUser(tx *gorm.DB, userID uint) error {
-	var row struct{ ID uint }
-	err := tx.Table("users").Select("id").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND deleted_at IS NULL", userID).Take(&row).Error
+	var row struct {
+		ID uint
+	}
+	err := tx.Table("users").
+		Select("id").
+		Clauses(clause.Locking{
+			Strength: "UPDATE",
+		}).
+		Where("id = ? AND deleted_at IS NULL", userID).
+		Take(&row).Error
 	return notFoundAs(err, domaininteraction.ErrUserNotFound)
 }
 

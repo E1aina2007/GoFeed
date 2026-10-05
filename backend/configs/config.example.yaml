@@ -46,6 +46,7 @@ feed:
 
 interaction:
   events_enabled: false # 可用 INTERACTION_EVENTS_ENABLED 覆盖；应用迁移 000010 后开启同事务事实记录
+  relay_enabled: false # 可用 INTERACTION_RELAY_ENABLED 覆盖；热度消费者就绪并验收后再开启
 
 rabbitmq:
   host: localhost  # 可用 RABBITMQ_HOST 覆盖

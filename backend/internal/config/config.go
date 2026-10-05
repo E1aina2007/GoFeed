@@ -62,6 +62,7 @@ type FeedConfig struct {
 type InteractionConfig struct {
 	// EventsEnabled 开启四种互动写入的同事务事实记录；默认关闭
 	EventsEnabled bool `yaml:"events_enabled"`
+	RelayEnabled  bool `yaml:"relay_enabled"`
 }
 
 // ErrPublishedWithoutCardWarmup 表示开启了发布事件却没有让本进程承担预热消费
@@ -191,6 +192,10 @@ func OverrideWithEnv(cfg *Config) {
 	if v := os.Getenv("INTERACTION_EVENTS_ENABLED"); v != "" {
 		enabled, err := strconv.ParseBool(v)
 		cfg.Interaction.EventsEnabled = err == nil && enabled
+	}
+	if v := os.Getenv("INTERACTION_RELAY_ENABLED"); v != "" {
+		enabled, err := strconv.ParseBool(v)
+		cfg.Interaction.RelayEnabled = err == nil && enabled
 	}
 
 	// 读取 RabbitMQ 配置

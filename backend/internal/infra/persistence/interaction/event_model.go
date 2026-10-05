@@ -2,7 +2,11 @@ package infrainteraction
 
 import "time"
 
-const eventStatusPending = "pending"
+const (
+	eventStatusPending    = "pending"
+	eventStatusPublishing = "publishing"
+	eventStatusDispatched = "dispatched"
+)
 
 type EventModel struct {
 	ID                     uint   `gorm:"primaryKey"`

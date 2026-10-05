@@ -17,7 +17,9 @@ type Handler struct {
 }
 
 func New(service *applicationinteraction.Service) *Handler {
-	return &Handler{service: service}
+	return &Handler{
+		service: service,
+	}
 }
 
 func (h *Handler) CreateLike(c *gin.Context) {
@@ -46,10 +48,20 @@ func (h *Handler) CreateComment(c *gin.Context) {
 	}
 	comment := result.Comment
 	author := result.Author
-	c.JSON(http.StatusCreated, gin.H{"comment": commentResponse{
-		ID: comment.ID, VideoID: comment.VideoID, Content: comment.Content, CreatedAt: comment.CreatedAt,
-		Author: authorResponse{ID: author.ID, Username: author.Username, AvatarURL: author.AvatarURL, Bio: author.Bio},
-	}})
+	c.JSON(http.StatusCreated, gin.H{
+		"comment": commentResponse{
+			ID:        comment.ID,
+			VideoID:   comment.VideoID,
+			Content:   comment.Content,
+			CreatedAt: comment.CreatedAt,
+			Author: authorResponse{
+				ID:        author.ID,
+				Username:  author.Username,
+				AvatarURL: author.AvatarURL,
+				Bio:       author.Bio,
+			},
+		},
+	})
 }
 
 func (h *Handler) DeleteComment(c *gin.Context) {
@@ -85,7 +97,10 @@ func (h *Handler) setLike(c *gin.Context, liked bool) {
 		writeError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, likeStateResponse{Liked: state.Liked, LikesCount: state.LikesCount})
+	c.JSON(http.StatusOK, likeStateResponse{
+		Liked:      state.Liked,
+		LikesCount: state.LikesCount,
+	})
 }
 
 func actorAndVideo(c *gin.Context) (uint, uint, bool) {
@@ -111,9 +126,30 @@ func pathID(raw string, invalid error) (uint, error) {
 }
 
 var errorRules = []apierror.Rule{
-	{Match: apierror.Is(domaininteraction.ErrInvalidUserID, domaininteraction.ErrInvalidVideoID, domaininteraction.ErrInvalidCommentID, domaininteraction.ErrInvalidCommentContent), Code: apierror.CodeInvalid, UseErrorText: true},
-	{Match: apierror.Is(domaininteraction.ErrUserNotFound, domaininteraction.ErrVideoNotFound, domaininteraction.ErrCommentNotFound), Code: apierror.CodeNotFound, UseErrorText: true},
-	{Match: apierror.Is(domaininteraction.ErrCommentNotAuthor), Code: apierror.CodeForbidden, UseErrorText: true},
+	{
+		Match: apierror.Is(
+			domaininteraction.ErrInvalidUserID,
+			domaininteraction.ErrInvalidVideoID,
+			domaininteraction.ErrInvalidCommentID,
+			domaininteraction.ErrInvalidCommentContent,
+		),
+		Code:         apierror.CodeInvalid,
+		UseErrorText: true,
+	},
+	{
+		Match: apierror.Is(
+			domaininteraction.ErrUserNotFound,
+			domaininteraction.ErrVideoNotFound,
+			domaininteraction.ErrCommentNotFound,
+		),
+		Code:         apierror.CodeNotFound,
+		UseErrorText: true,
+	},
+	{
+		Match:        apierror.Is(domaininteraction.ErrCommentNotAuthor),
+		Code:         apierror.CodeForbidden,
+		UseErrorText: true,
+	},
 }
 
 func writeError(c *gin.Context, err error) {
