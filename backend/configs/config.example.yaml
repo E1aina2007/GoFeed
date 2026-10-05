@@ -39,11 +39,6 @@ redis:
   db: 0            # 可用 REDIS_DB 覆盖；密码仅由 REDIS_PASSWORD 提供
 
 feed:
-  page_cache_enabled: false # 可用 FEED_PAGE_CACHE_ENABLED 覆盖；只作用于 /api/feed
-  card_cache_enabled: false # 可用 FEED_CARD_CACHE_ENABLED 覆盖；页缓存开启后才装配
-  published_event_enabled: false # 可用 FEED_PUBLISHED_EVENT_ENABLED 覆盖；仅 worker 生产事件
-  card_warmup_enabled: false # 可用 FEED_CARD_WARMUP_ENABLED 覆盖；独立预热消费和拓扑
-  heat_consumer_enabled: false # 可用 FEED_HEAT_CONSUMER_ENABLED 覆盖；只派生分钟桶，Hot 仍关闭
   heat:
     generation: initial
     window_minutes: 60
@@ -53,10 +48,6 @@ feed:
     comment_weight: 5
     max_videos_per_minute: 10000
     max_events_per_minute: 100000
-
-interaction:
-  events_enabled: false # 可用 INTERACTION_EVENTS_ENABLED 覆盖；应用迁移 000010 后开启同事务事实记录
-  relay_enabled: false # 可用 INTERACTION_RELAY_ENABLED 覆盖；需同时开启本 worker 热度消费，真实链路验收后启用
 
 rabbitmq:
   host: localhost  # 可用 RABBITMQ_HOST 覆盖

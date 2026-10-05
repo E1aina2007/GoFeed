@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"math"
 	"os"
 	"os/signal"
 	"sync"
@@ -61,13 +63,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-	if err := cfg.ValidateFeedRuntime(); err != nil {
-		log.Fatal(err)
-	}
-	if err := cfg.ValidateHeatRuntime(); err != nil {
-		log.Fatal(err)
-	}
-
 	var dbConn *gorm.DB
 	connectWithRetry("MySQL", 10, func() error {
 		var err error
@@ -79,11 +74,8 @@ func main() {
 	})
 
 	// 异步处理闭环依赖 RabbitMQ：runtime 负责启动期连接、拓扑声明与运行中重连
-	var brokerOptions []mq.RuntimeOption
-	if cfg.Feed.CardWarmupEnabled {
-		brokerOptions = append(brokerOptions, mq.WithConsumerSpecs(mq.VideoProcessSpec(), mq.FeedCardWarmSpec()), mq.WithMandatoryPublishing(true))
-	}
-	broker := mq.NewRuntime(cfg.RabbitMQ, brokerOptions...)
+	broker := mq.NewRuntime(cfg.RabbitMQ,
+		mq.WithConsumerSpecs(mq.VideoProcessSpec(), mq.FeedCardWarmSpec()), mq.WithMandatoryPublishing(true))
 	connectWithRetry("RabbitMQ", 10, func() error {
 		if err := broker.EnsureConnected(); err != nil {
 			log.Printf("Failed to connect to RabbitMQ: %v", err)
@@ -92,155 +84,21 @@ func main() {
 		return nil
 	})
 
-	repo := video.NewRepository(dbConn, video.WithPublishedEvents(cfg.Feed.PublishedEventEnabled))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	var interactionBroker *mq.Runtime
-	var interactionRelay *worker.InteractionRelay
-	var heatConsumer *worker.HeatConsumer
-	var heatObserver *worker.QueueObserver
-	var heatCacheRuntime *cache.Runtime
-	if cfg.Interaction.RelayEnabled || cfg.Feed.HeatConsumerEnabled {
-		// 独立连接声明互动拓扑，关闭采集后仍可排空已提交事实
-		interactionBroker = mq.NewRuntime(cfg.RabbitMQ,
-			mq.WithConsumerSpecs(mq.InteractionHeatSpec()), mq.WithMandatoryPublishing(true))
-		connectWithRetry("Interaction RabbitMQ", 10, interactionBroker.EnsureConnected)
-		if cfg.Interaction.RelayEnabled {
-			interactionRelay, err = worker.NewInteractionRelay(infrainteraction.New(dbConn, false), interactionBroker)
-			if err != nil {
-				log.Fatal("Interaction relay configuration failed")
-			}
-		}
-		if cfg.Feed.HeatConsumerEnabled {
-			settings := cfg.Feed.Heat
-			heatCacheRuntime = cache.NewRuntime(cfg.Redis)
-			index, err := infracachefeed.NewHeatIndex(heatCacheRuntime, infracachefeed.HeatIndexOptions{
-				Generation: settings.Generation,
-				Policy: domainfeed.HeatPolicy{
-					Window:             time.Duration(settings.WindowMinutes) * time.Minute,
-					RetentionGrace:     time.Duration(settings.RetentionGraceMinutes) * time.Minute,
-					DedupeTTL:          time.Duration(settings.DedupeTTLHours) * time.Hour,
-					LikeWeight:         int64(settings.LikeWeight),
-					CommentWeight:      int64(settings.CommentWeight),
-					MaxVideosPerMinute: int64(settings.MaxVideosPerMinute),
-					MaxEventsPerMinute: int64(settings.MaxEventsPerMinute),
-				},
-			})
-			if err != nil {
-				log.Fatal("Heat index configuration failed")
-			}
-			projector, err := applicationfeed.NewHeatProjector(index)
-			if err != nil {
-				log.Fatal("Heat projector configuration failed")
-			}
-			heatConsumer, err = worker.NewHeatConsumer(projector, interactionBroker)
-			if err != nil {
-				log.Fatal("Heat consumer configuration failed")
-			}
-			heatObserver, err = worker.NewQueueObserver(interactionBroker, mq.InteractionHeatSpec())
-			if err != nil {
-				log.Fatal("Heat queue observer configuration failed")
-			}
-		}
-	}
-
-	relay := worker.NewRelay(repo, broker)
-	var warmConsumer *worker.CardWarmConsumer
-	var warmObserver *worker.QueueObserver
-	var feedCacheRuntime *cache.Runtime
-	if cfg.Feed.CardWarmupEnabled {
-		relay, err = worker.NewRelayWithRoutes(repo, broker, worker.VideoProcessRoute(), worker.VideoPublishedRoute())
-		if err != nil {
-			log.Fatal("Feed relay configuration failed")
-		}
-		feedCacheRuntime = cache.NewRuntime(cfg.Redis)
-		cardCache, err := infracachefeed.NewCardCache(feedCacheRuntime, infracachefeed.CardCacheOptions{})
-		if err != nil {
-			log.Fatal("Feed card cache configuration failed")
-		}
-		warmer, err := applicationfeed.NewCardWarmer(infrafeed.NewCardReader(repo), cardCache)
-		if err != nil {
-			log.Fatal("Feed card warmer configuration failed")
-		}
-		warmConsumer, err = worker.NewCardWarmConsumer(warmer, broker)
-		if err != nil {
-			log.Fatal("Feed card consumer configuration failed")
-		}
-		warmObserver, err = worker.NewQueueObserver(broker, mq.FeedCardWarmSpec())
-		if err != nil {
-			log.Fatal("Feed queue observer configuration failed")
-		}
-	}
-	consumer := worker.NewConsumer(repo, broker, workerStorageRoot)
-	observer := worker.NewMQObserver(repo, broker)
-	var workers sync.WaitGroup
-	workers.Add(3)
-	go func() {
-		defer workers.Done()
-		relay.Run(ctx)
-	}()
-	go func() {
-		defer workers.Done()
-		consumer.Run(ctx, broker)
-	}()
-	go func() {
-		defer workers.Done()
-		observer.Run(ctx)
-	}()
-	if warmConsumer != nil {
-		workers.Add(2)
-		go func() {
-			defer workers.Done()
-			warmConsumer.Run(ctx, broker)
-		}()
-		go func() {
-			defer workers.Done()
-			warmObserver.Run(ctx)
-		}()
-	}
-	if interactionRelay != nil {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			interactionRelay.Run(ctx)
-		}()
-	}
-	if heatConsumer != nil {
-		workers.Add(2)
-		go func() {
-			defer workers.Done()
-			heatConsumer.Run(ctx, interactionBroker)
-		}()
-		go func() {
-			defer workers.Done()
-			heatObserver.Run(ctx)
-		}()
+	shutdownWorkers, err := startWorkers(ctx, cfg, dbConn, broker)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	log.Println("Worker started - relay, consumer and MQ observer are running")
-	log.Printf("event=feed_card_warm_runtime consumer_enabled=%t published_event_enabled=%t", cfg.Feed.CardWarmupEnabled, cfg.Feed.PublishedEventEnabled)
-	log.Printf("event=interaction_relay_runtime relay_enabled=%t", cfg.Interaction.RelayEnabled)
-	log.Printf("event=feed_heat_runtime consumer_enabled=%t generation=%q coverage=unverified", cfg.Feed.HeatConsumerEnabled, cfg.Feed.Heat.Generation)
+	log.Printf("event=feed_card_warm_runtime consumer_enabled=true published_event_enabled=true")
+	log.Printf("event=interaction_relay_runtime relay_enabled=true")
+	log.Printf("event=feed_heat_runtime consumer_enabled=true generation=%q coverage=unverified", cfg.Feed.Heat.Generation)
 
 	<-ctx.Done()
 	log.Println("Received shutdown signal, draining...")
-	workers.Wait()
-	if heatCacheRuntime != nil {
-		if err := heatCacheRuntime.Close(); err != nil {
-			log.Printf("Heat cache runtime close failed")
-		}
-	}
-	if feedCacheRuntime != nil {
-		if err := feedCacheRuntime.Close(); err != nil {
-			log.Printf("Feed cache runtime close failed")
-		}
-	}
-
-	if interactionBroker != nil {
-		if err := interactionBroker.Close(); err != nil {
-			log.Printf("Failed to close interaction RabbitMQ connection: %v", err)
-		}
-	}
+	shutdownWorkers()
 	if err := broker.Close(); err != nil {
 		log.Printf("Failed to close RabbitMQ connection: %v", err)
 	}
@@ -248,4 +106,124 @@ func main() {
 		log.Printf("Failed to close database: %v", err)
 	}
 	log.Println("Worker stopped")
+}
+
+// startWorkers 集中装配并启动处理链路，返回等待退出和释放资源的方法
+func startWorkers(ctx context.Context, cfg config.Config, dbConn *gorm.DB, broker *mq.Runtime) (shutdown func(), err error) {
+	heat := cfg.Feed.Heat
+	const (
+		minMinutes = math.MinInt64 / int64(time.Minute)
+		maxMinutes = math.MaxInt64 / int64(time.Minute)
+		minHours   = math.MinInt64 / int64(time.Hour)
+		maxHours   = math.MaxInt64 / int64(time.Hour)
+	)
+	// 只检查时间转换溢出，热度规则由 HeatPolicy.Validate 统一校验
+	if int64(heat.WindowMinutes) < minMinutes || int64(heat.WindowMinutes) > maxMinutes ||
+		int64(heat.RetentionGraceMinutes) < minMinutes || int64(heat.RetentionGraceMinutes) > maxMinutes ||
+		int64(heat.DedupeTTLHours) < minHours || int64(heat.DedupeTTLHours) > maxHours {
+		return nil, fmt.Errorf("heat duration conversion overflow: %w", domainfeed.ErrInvalidHeatPolicy)
+	}
+
+	interactionBroker := mq.NewRuntime(cfg.RabbitMQ,
+		mq.WithConsumerSpecs(mq.InteractionHeatSpec()), mq.WithMandatoryPublishing(true))
+	heatCacheRuntime := cache.NewRuntime(cfg.Redis)
+	feedCacheRuntime := cache.NewRuntime(cfg.Redis)
+	closeResources := func() {
+		if err := heatCacheRuntime.Close(); err != nil {
+			log.Printf("Heat cache runtime close failed")
+		}
+		if err := feedCacheRuntime.Close(); err != nil {
+			log.Printf("Feed cache runtime close failed")
+		}
+		if err := interactionBroker.Close(); err != nil {
+			log.Printf("Failed to close interaction RabbitMQ connection: %v", err)
+		}
+	}
+	defer func() {
+		if err != nil {
+			closeResources()
+		}
+	}()
+	connectWithRetry("Interaction RabbitMQ", 10, interactionBroker.EnsureConnected)
+
+	repo := video.NewRepository(dbConn, video.WithPublishedEvents(true))
+	relay, err := worker.NewRelayWithRoutes(repo, broker, worker.VideoProcessRoute(), worker.VideoPublishedRoute())
+	if err != nil {
+		return nil, fmt.Errorf("feed relay configuration failed: %w", err)
+	}
+	consumer := worker.NewConsumer(repo, broker, workerStorageRoot)
+	observer := worker.NewMQObserver(repo, broker)
+
+	cardCache, err := infracachefeed.NewCardCache(feedCacheRuntime, infracachefeed.CardCacheOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("feed card cache configuration failed: %w", err)
+	}
+	warmer, err := applicationfeed.NewCardWarmer(infrafeed.NewCardReader(repo), cardCache)
+	if err != nil {
+		return nil, fmt.Errorf("feed card warmer configuration failed: %w", err)
+	}
+	warmConsumer, err := worker.NewCardWarmConsumer(warmer, broker)
+	if err != nil {
+		return nil, fmt.Errorf("feed card consumer configuration failed: %w", err)
+	}
+	warmObserver, err := worker.NewQueueObserver(broker, mq.FeedCardWarmSpec())
+	if err != nil {
+		return nil, fmt.Errorf("feed queue observer configuration failed: %w", err)
+	}
+
+	interactionRelay, err := worker.NewInteractionRelay(infrainteraction.New(dbConn, false), interactionBroker)
+	if err != nil {
+		return nil, fmt.Errorf("interaction relay configuration failed: %w", err)
+	}
+	heatIndex, err := infracachefeed.NewHeatIndex(heatCacheRuntime, infracachefeed.HeatIndexOptions{
+		Generation: heat.Generation,
+		Policy: domainfeed.HeatPolicy{
+			Window:             time.Duration(heat.WindowMinutes) * time.Minute,
+			RetentionGrace:     time.Duration(heat.RetentionGraceMinutes) * time.Minute,
+			DedupeTTL:          time.Duration(heat.DedupeTTLHours) * time.Hour,
+			LikeWeight:         int64(heat.LikeWeight),
+			CommentWeight:      int64(heat.CommentWeight),
+			MaxVideosPerMinute: int64(heat.MaxVideosPerMinute),
+			MaxEventsPerMinute: int64(heat.MaxEventsPerMinute),
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("heat index configuration failed: %w", err)
+	}
+	projector, err := applicationfeed.NewHeatProjector(heatIndex)
+	if err != nil {
+		return nil, fmt.Errorf("heat projector configuration failed: %w", err)
+	}
+	heatConsumer, err := worker.NewHeatConsumer(projector, interactionBroker)
+	if err != nil {
+		return nil, fmt.Errorf("heat consumer configuration failed: %w", err)
+	}
+	heatObserver, err := worker.NewQueueObserver(interactionBroker, mq.InteractionHeatSpec())
+	if err != nil {
+		return nil, fmt.Errorf("heat queue observer configuration failed: %w", err)
+	}
+
+	var workers sync.WaitGroup
+	workerGroup := []func(context.Context){
+		relay.Run,
+		func(ctx context.Context) { consumer.Run(ctx, broker) },
+		observer.Run,
+		func(ctx context.Context) { warmConsumer.Run(ctx, broker) },
+		warmObserver.Run,
+		interactionRelay.Run,
+		func(ctx context.Context) { heatConsumer.Run(ctx, interactionBroker) },
+		heatObserver.Run,
+	}
+	for _, run := range workerGroup {
+		workers.Add(1)
+		go func(run func(context.Context)) {
+			defer workers.Done()
+			run(ctx)
+		}(run)
+	}
+
+	return func() {
+		workers.Wait()
+		closeResources()
+	}, nil
 }

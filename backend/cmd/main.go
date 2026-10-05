@@ -60,27 +60,21 @@ func main() {
 
 	// 装配服务
 	routerOptions := router.Options{
-		RateLimitCache:           rateLimitCache,
-		InteractionEventsEnabled: cfg.Interaction.EventsEnabled,
+		RateLimitCache: rateLimitCache,
 	}
-	var feedCacheRuntime *cache.Runtime
-	if cfg.Feed.PageCacheEnabled {
-		feedCacheRuntime = cache.NewRuntime(cfg.Redis)
-		pageCache, err := infracachefeed.NewPageCache(feedCacheRuntime, infracachefeed.PageCacheOptions{})
+	feedCacheRuntime := cache.NewRuntime(cfg.Redis)
+	pageCache, err := infracachefeed.NewPageCache(feedCacheRuntime, infracachefeed.PageCacheOptions{})
+	if err != nil {
+		log.Printf("event=feed_page_cache result=configuration_failed")
+		_ = feedCacheRuntime.Close()
+		feedCacheRuntime = nil
+	} else {
+		routerOptions.FeedPageCache = pageCache
+		cardCache, err := infracachefeed.NewCardCache(feedCacheRuntime, infracachefeed.CardCacheOptions{})
 		if err != nil {
-			log.Printf("event=feed_page_cache result=configuration_failed")
-			_ = feedCacheRuntime.Close()
-			feedCacheRuntime = nil
+			log.Printf("event=feed_card_cache result=configuration_failed")
 		} else {
-			routerOptions.FeedPageCache = pageCache
-			if cfg.Feed.CardCacheEnabled {
-				cardCache, err := infracachefeed.NewCardCache(feedCacheRuntime, infracachefeed.CardCacheOptions{})
-				if err != nil {
-					log.Printf("event=feed_card_cache result=configuration_failed")
-				} else {
-					routerOptions.FeedCardCache = cardCache
-				}
-			}
+			routerOptions.FeedCardCache = cardCache
 		}
 	}
 	r := router.New(DB, cfg.Dev, routerOptions)

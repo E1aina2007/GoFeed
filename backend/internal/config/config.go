@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -10,15 +9,14 @@ import (
 )
 
 type Config struct {
-	Server      ServerConfig      `yaml:"server"`
-	DB          DatabaseConfig    `yaml:"database"`
-	Redis       RedisConfig       `yaml:"redis"`
-	Feed        FeedConfig        `yaml:"feed"`
-	Interaction InteractionConfig `yaml:"interaction"`
-	RabbitMQ    RabbitMQConfig    `yaml:"rabbitmq"`
-	Retention   RetentionConfig   `yaml:"retention"`
-	Sweeper     SweeperConfig     `yaml:"sweeper"`
-	Observe     ObserveConfig     `yaml:"observe"`
+	Server    ServerConfig    `yaml:"server"`
+	DB        DatabaseConfig  `yaml:"database"`
+	Redis     RedisConfig     `yaml:"redis"`
+	Feed      FeedConfig      `yaml:"feed"`
+	RabbitMQ  RabbitMQConfig  `yaml:"rabbitmq"`
+	Retention RetentionConfig `yaml:"retention"`
+	Sweeper   SweeperConfig   `yaml:"sweeper"`
+	Observe   ObserveConfig   `yaml:"observe"`
 
 	// Dev is controlled by MODE and is intentionally not loaded from YAML.
 	Dev bool `yaml:"-"`
@@ -54,12 +52,7 @@ type RabbitMQConfig struct {
 }
 
 type FeedConfig struct {
-	PageCacheEnabled      bool       `yaml:"page_cache_enabled"`
-	CardCacheEnabled      bool       `yaml:"card_cache_enabled"` // 仅页缓存开启时装配
-	PublishedEventEnabled bool       `yaml:"published_event_enabled"`
-	CardWarmupEnabled     bool       `yaml:"card_warmup_enabled"`
-	HeatConsumerEnabled   bool       `yaml:"heat_consumer_enabled"` // 互动 Relay 开启时必须同时开启
-	Heat                  HeatConfig `yaml:"heat"`
+	Heat HeatConfig `yaml:"heat"`
 }
 
 type HeatConfig struct {
@@ -67,8 +60,8 @@ type HeatConfig struct {
 	WindowMinutes         int    `yaml:"window_minutes"`
 	RetentionGraceMinutes int    `yaml:"retention_grace_minutes"` // 热窗口结束后的分钟桶保留时长
 	DedupeTTLHours        int    `yaml:"dedupe_ttl_hours"`        // 须覆盖窗口、宽限及一整分钟桶
-	LikeWeight            int    `yaml:"like_weight"`
-	CommentWeight         int    `yaml:"comment_weight"`
+	LikeWeight            int    `yaml:"like_weight"`             // 点赞事件的热度分数
+	CommentWeight         int    `yaml:"comment_weight"`          // 评论事件的热度分数
 	MaxVideosPerMinute    int    `yaml:"max_videos_per_minute"`
 	MaxEventsPerMinute    int    `yaml:"max_events_per_minute"`
 }
@@ -86,12 +79,6 @@ func DefaultHeatConfig() HeatConfig {
 	}
 }
 
-type InteractionConfig struct {
-	// EventsEnabled 开启四种互动写入的同事务事实记录；默认关闭
-	EventsEnabled bool `yaml:"events_enabled"`
-	RelayEnabled  bool `yaml:"relay_enabled"`
-}
-
 type ObserveConfig struct {
 	// Metrics 控制指标出口；默认关闭，启用时只接受字面量回环地址
 	Metrics MetricsConfig `yaml:"metrics"`
@@ -102,35 +89,6 @@ type MetricsConfig struct {
 	Enabled bool `yaml:"enabled"`
 	// Addr 只接受 127.0.0.1 或 ::1 加端口，留空时使用默认回环地址
 	Addr string `yaml:"addr"`
-}
-
-// ErrPublishedWithoutCardWarmup 表示开启了发布事件却没有让本进程承担预热消费
-var ErrPublishedWithoutCardWarmup = errors.New("feed published events require card warmup consumption in this worker")
-
-// ValidateFeedRuntime 校验发布事件与本进程预热消费的开关组合
-func (c Config) ValidateFeedRuntime() error {
-	if c.Feed.PublishedEventEnabled && !c.Feed.CardWarmupEnabled {
-		return ErrPublishedWithoutCardWarmup
-	}
-	return nil
-}
-
-// ValidateHeatRuntime 防止本进程只派发互动事件而没有运行热度消费
-func (c Config) ValidateHeatRuntime() error {
-	if c.Interaction.RelayEnabled && !c.Feed.HeatConsumerEnabled {
-		return errors.New("interaction relay requires heat consumption in this worker")
-	}
-	if c.Feed.HeatConsumerEnabled {
-		h := c.Feed.Heat
-		if h.WindowMinutes < 1 || h.WindowMinutes > 1440 || h.RetentionGraceMinutes < 0 || h.RetentionGraceMinutes > 1440 ||
-			h.DedupeTTLHours < 1 || h.DedupeTTLHours > 168 || h.DedupeTTLHours*60 < h.WindowMinutes+h.RetentionGraceMinutes+1 ||
-			h.LikeWeight < 1 || h.LikeWeight > 1000 || h.CommentWeight < 1 || h.CommentWeight > 1000 ||
-			h.MaxVideosPerMinute < 1 || h.MaxVideosPerMinute > 100000 ||
-			h.MaxEventsPerMinute < h.MaxVideosPerMinute || h.MaxEventsPerMinute > 1000000 {
-			return errors.New("invalid feed heat configuration")
-		}
-	}
-	return nil
 }
 
 type RetentionConfig struct {
@@ -230,26 +188,6 @@ func OverrideWithEnv(cfg *Config) {
 	if v := os.Getenv("REDIS_PASSWORD"); v != "" {
 		cfg.Redis.Password = v
 	}
-	if v := os.Getenv("FEED_PAGE_CACHE_ENABLED"); v != "" {
-		enabled, err := strconv.ParseBool(v)
-		cfg.Feed.PageCacheEnabled = err == nil && enabled
-	}
-	if v := os.Getenv("FEED_CARD_CACHE_ENABLED"); v != "" {
-		enabled, err := strconv.ParseBool(v)
-		cfg.Feed.CardCacheEnabled = err == nil && enabled
-	}
-	if v := os.Getenv("FEED_PUBLISHED_EVENT_ENABLED"); v != "" {
-		enabled, err := strconv.ParseBool(v)
-		cfg.Feed.PublishedEventEnabled = err == nil && enabled
-	}
-	if v := os.Getenv("FEED_CARD_WARMUP_ENABLED"); v != "" {
-		enabled, err := strconv.ParseBool(v)
-		cfg.Feed.CardWarmupEnabled = err == nil && enabled
-	}
-	if v := os.Getenv("FEED_HEAT_CONSUMER_ENABLED"); v != "" {
-		enabled, err := strconv.ParseBool(v)
-		cfg.Feed.HeatConsumerEnabled = err == nil && enabled
-	}
 	if v := os.Getenv("FEED_HEAT_GENERATION"); v != "" {
 		cfg.Feed.Heat.Generation = v
 	}
@@ -269,14 +207,6 @@ func OverrideWithEnv(cfg *Config) {
 			}
 			*target = parsed
 		}
-	}
-	if v := os.Getenv("INTERACTION_EVENTS_ENABLED"); v != "" {
-		enabled, err := strconv.ParseBool(v)
-		cfg.Interaction.EventsEnabled = err == nil && enabled
-	}
-	if v := os.Getenv("INTERACTION_RELAY_ENABLED"); v != "" {
-		enabled, err := strconv.ParseBool(v)
-		cfg.Interaction.RelayEnabled = err == nil && enabled
 	}
 
 	// 读取观测出口配置；非法布尔值按关闭处理

@@ -35,8 +35,6 @@ type Options struct {
 	RateLimitCache ratelimit.Cache
 	FeedPageCache  applicationfeed.PageCache
 	FeedCardCache  applicationfeed.CardCache
-	// InteractionEventsEnabled 切换四种互动写入的同事务事实记录，默认关闭
-	InteractionEventsEnabled bool
 }
 
 func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
@@ -80,15 +78,8 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	videoRepo := video.NewRepository(db)
 	socialRepo := social.NewRepository(db)
 	socialCtl := social.NewController(social.NewService(socialRepo))
-	createLike, removeLike := socialCtl.CreateLike, socialCtl.RemoveLike
-	createComment, deleteComment := socialCtl.CreateComment, socialCtl.DeleteComment
-	if opts.InteractionEventsEnabled {
-		// 同一适配器提供读取和原子写入；认证由现有路由中间件完成
-		interactionRepo := infrainteraction.New(db, true)
-		interactionHandler := interfaceshttpinteraction.New(applicationinteraction.New(interactionRepo, interactionRepo))
-		createLike, removeLike = interactionHandler.CreateLike, interactionHandler.RemoveLike
-		createComment, deleteComment = interactionHandler.CreateComment, interactionHandler.DeleteComment
-	}
+	interactionRepo := infrainteraction.New(db, true)
+	interactionHandler := interfaceshttpinteraction.New(applicationinteraction.New(interactionRepo, interactionRepo))
 	mediaStorage := video.NewLocalStorage(uploadDir)
 	userCtl := user.NewController(user.NewService(userRepo, videoRepo, socialRepo), sessionService, mediaStorage)
 
@@ -150,10 +141,10 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		protectedVideos.GET("/mine", videoCtl.GetMyVideoList)
 		protectedVideos.GET("/:id/status", videoCtl.GetVideoStatus)
 		protectedVideos.GET("/:id/like", socialCtl.GetLikeState)
-		protectedVideos.PUT("/:id/like", createLike)
-		protectedVideos.DELETE("/:id/like", removeLike)
-		protectedVideos.POST("/:id/comments", createComment)
-		protectedVideos.DELETE("/:id/comments/:commentID", deleteComment)
+		protectedVideos.PUT("/:id/like", interactionHandler.CreateLike)
+		protectedVideos.DELETE("/:id/like", interactionHandler.RemoveLike)
+		protectedVideos.POST("/:id/comments", interactionHandler.CreateComment)
+		protectedVideos.DELETE("/:id/comments/:commentID", interactionHandler.DeleteComment)
 		protectedVideos.DELETE("/:id", videoCtl.DeleteVideo)
 	}
 
