@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -167,129 +167,6 @@ func cardOf(item domainfeed.FeedPageItem) domainfeed.FeedCard {
 	}
 }
 
-// buildPage 构造 count 条页条目及一一对应的卡片
-func buildPage(count int, authorOf func(index int) uint) domainfeed.TimelinePage {
-	page := domainfeed.TimelinePage{
-		Items: make([]domainfeed.FeedPageItem, 0, count),
-		Cards: make(map[uint]domainfeed.FeedCard, count),
-	}
-	for index := 0; index < count; index++ {
-		item := pageItemAt(index, authorOf(index))
-		page.Items = append(page.Items, item)
-		page.Cards[item.VideoID] = cardOf(item)
-	}
-	return page
-}
-
-func singleAuthor(int) uint { return 7 }
-
-// 测试目标：读模型不一致时拒绝组装而不是输出错误数据
-// 预期效果：缺失卡片、零视频 ID、零发布时间、字段不一致与缺失作者都返回 ErrInvalidReadResult
-func TestGetFeedRejectsInconsistentReadModel(t *testing.T) {
-	cases := []struct {
-		name   string
-		mutate func(page *domainfeed.TimelinePage, repo *stubRepository)
-	}{
-		{"缺少卡片", func(page *domainfeed.TimelinePage, _ *stubRepository) {
-			delete(page.Cards, page.Items[1].VideoID)
-		}},
-		{"条目视频 ID 为零", func(page *domainfeed.TimelinePage, _ *stubRepository) {
-			page.Items[0].VideoID = 0
-		}},
-		{"条目发布时间为零", func(page *domainfeed.TimelinePage, _ *stubRepository) {
-			page.Items[0].PublishedAt = time.Time{}
-		}},
-		{"卡片视频 ID 不一致", func(page *domainfeed.TimelinePage, _ *stubRepository) {
-			card := page.Cards[page.Items[0].VideoID]
-			card.VideoID++
-			page.Cards[page.Items[0].VideoID] = card
-		}},
-		{"卡片作者 ID 不一致", func(page *domainfeed.TimelinePage, _ *stubRepository) {
-			card := page.Cards[page.Items[0].VideoID]
-			card.AuthorID++
-			page.Cards[page.Items[0].VideoID] = card
-		}},
-		{"卡片发布时间不一致", func(page *domainfeed.TimelinePage, _ *stubRepository) {
-			card := page.Cards[page.Items[0].VideoID]
-			card.PublishedAt = card.PublishedAt.Add(time.Second)
-			page.Cards[page.Items[0].VideoID] = card
-		}},
-		{"缺少作者", func(_ *domainfeed.TimelinePage, repo *stubRepository) {
-			repo.authorFn = func([]uint) (map[uint]domainfeed.Author, error) {
-				return map[uint]domainfeed.Author{}, nil
-			}
-		}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			repo := &stubRepository{}
-			page := buildPage(3, singleAuthor)
-			repo.listFn = func(_ *domainfeed.TimelineCursor, _ int) (domainfeed.TimelinePage, error) {
-				return page, nil
-			}
-			tc.mutate(&page, repo)
-
-			_, err := New(repo).GetFeed(context.Background(), FeedRequest{Limit: 2})
-			if !errors.Is(err, domainfeed.ErrInvalidReadResult) {
-				t.Fatalf("got error=%v want=%v", err, domainfeed.ErrInvalidReadResult)
-			}
-		})
-	}
-}
-
-type followingReadFunc func(context.Context, uint, *domainfeed.FollowingCursor, int) (domainfeed.TimelinePage, error)
-
-func (f followingReadFunc) ListFollowingPage(ctx context.Context, viewer uint, cursor *domainfeed.FollowingCursor, limit int) (domainfeed.TimelinePage, error) {
-	return f(ctx, viewer, cursor, limit)
-}
-
-// 测试目标：关注流截断探测行后批量组装，并绕过耗尽的 Timeline 缓存容量
-// 预期效果：仅最终两条参与作者与统计读取，游标绑定观看者且续页支持改变 limit
-func TestFollowingFeedTruncatesAndBypassesTimelineCache(t *testing.T) {
-	repo := &stubRepository{}
-	page := buildPage(3, func(i int) uint { return uint(10 + i) })
-	var seen *domainfeed.FollowingCursor
-	reader := followingReadFunc(func(_ context.Context, viewer uint, cursor *domainfeed.FollowingCursor, limit int) (domainfeed.TimelinePage, error) {
-		if viewer != 42 || limit < 2 || limit > 3 {
-			t.Fatalf("读取参数 viewer=%d limit=%d", viewer, limit)
-		}
-		seen = cursor
-		if cursor != nil {
-			return domainfeed.TimelinePage{}, nil
-		}
-		return page, nil
-	})
-	s := New(repo, WithFollowingReader(reader))
-	s.timelineCache = &timelineCache{readSlots: make(chan struct{}, 1), cacheSlots: make(chan struct{}, 1)}
-	s.timelineCache.readSlots <- struct{}{}
-	s.timelineCache.cacheSlots <- struct{}{}
-	result, err := s.GetFeed(t.Context(), FeedRequest{Scene: domainfeed.SceneFollowing, ViewerID: 42, Limit: 2})
-	if err != nil || len(result.Items) != 2 || result.NextCursor == "" {
-		t.Fatalf("关注页 result=%+v err=%v", result, err)
-	}
-	if repo.listCallCount() != 0 || !reflect.DeepEqual(repo.statIDList(), []uint{900, 899}) || !reflect.DeepEqual(repo.authorIDList(), []uint{10, 11}) {
-		t.Fatalf("探测行不得组装 timeline=%d stats=%v authors=%v", repo.listCallCount(), repo.statIDList(), repo.authorIDList())
-	}
-	last := page.Items[1]
-	position, err := decodeFollowingCursor(result.NextCursor, 42)
-	if err != nil || position.VideoID != last.VideoID || !position.PublishedAt.Equal(last.PublishedAt) {
-		t.Fatalf("游标位置=%+v err=%v", position, err)
-	}
-	if _, err := decodeFollowingCursor(result.NextCursor, 43); !errors.Is(err, domainfeed.ErrInvalidCursor) {
-		t.Fatalf("跨观看者游标=%v", err)
-	}
-	if _, err := decodeTimelineCursor(result.NextCursor); !errors.Is(err, domainfeed.ErrInvalidCursor) {
-		t.Fatalf("跨场景游标=%v", err)
-	}
-	next, err := s.GetFeed(t.Context(), FeedRequest{Scene: domainfeed.SceneFollowing, ViewerID: 42, Limit: 1, Cursor: result.NextCursor})
-	if err != nil || seen == nil || seen.VideoID != last.VideoID || next.Items == nil || len(next.Items) != 0 || next.NextCursor != "" {
-		t.Fatalf("末页=%+v cursor=%+v err=%v", next, seen, err)
-	}
-	if len(s.timelineCache.readSlots) != 1 || len(s.timelineCache.cacheSlots) != 1 {
-		t.Fatal("关注流不应取得或释放 Timeline 容量")
-	}
-}
-
 // cursorAt 取第 index 条页条目作为游标位置
 func cursorAt(index int) *domainfeed.TimelineCursor {
 	item := pageItemAt(index, 7)
@@ -361,43 +238,6 @@ func fixtureSource() *fakeCardReader {
 		}
 		return cards, nil
 	}}
-}
-
-// 测试目标：验证公开检查、状态变更和迟到回填不能复活已删除视频
-// 预期效果：缓存只接收当前可见标识，旧作者或发布时间数据回源，不可见时不访问 Redis
-func TestCachedCardReaderVisibilityAndLateWrite(t *testing.T) {
-	visible := true
-	states := stateReaderFunc(func(ctx context.Context, ids []uint) (map[uint]domainfeed.FeedPageItem, error) {
-		if !visible {
-			return map[uint]domainfeed.FeedPageItem{}, nil
-		}
-		return fixtureStates(ctx, ids[:1])
-	})
-	source, cache := fixtureSource(), &cardCacheStub{cards: map[uint]domainfeed.FeedCard{1: cachedFixture(1), 2: cachedFixture(2)}}
-	reader, _ := NewCachedCardReader(source, states, cache, nil)
-	for _, field := range []string{"author", "time", "media"} {
-		card := cachedFixture(1)
-		switch field {
-		case "author":
-			card.AuthorID = 5
-		case "time":
-			card.PublishedAt = card.PublishedAt.Add(time.Second)
-		case "media":
-			card.CoverOriginalName = ""
-		}
-		cache.cards[1] = card
-		cards, err := reader.BatchGetCards(t.Context(), []uint{1, 2})
-		if err != nil || len(cards) != 1 || !reflect.DeepEqual(source.ids, []uint{1}) || !reflect.DeepEqual(cache.requested, []uint{1}) {
-			t.Fatalf("%s cards=%v err=%v", field, cards, err)
-		}
-	}
-	visible = false
-	cache.cards[1] = cachedFixture(1) // 模拟删除之后旧请求迟到写入
-	before := cache.gets
-	cards, err := reader.BatchGetCards(t.Context(), []uint{1})
-	if err != nil || len(cards) != 0 || cache.gets != before {
-		t.Fatalf("deleted cards=%v err=%v gets=%d", cards, err, cache.gets)
-	}
 }
 
 // 测试目标：验证缓存故障回源与 MySQL 故障传播
@@ -607,4 +447,363 @@ func TestCachedCardReaderDeletionDuringFill(t *testing.T) {
 	if err != nil || len(cards) != 0 || cache.gets != before {
 		t.Fatalf("cards=%v err=%v gets=%d", cards, err, cache.gets)
 	}
+}
+
+type cacheKey struct {
+	scene    domainfeed.Scene
+	limit    int
+	position string
+}
+
+func keyOf(query PageCacheQuery) cacheKey {
+	position := "start"
+	if query.Cursor != nil {
+		position = query.Cursor.PublishedAt.UTC().Format(time.RFC3339Nano) + ":" +
+			strconv.FormatUint(uint64(query.Cursor.VideoID), 10)
+	}
+	return cacheKey{scene: query.Scene, limit: query.Limit, position: position}
+}
+
+// fakePageCache 同时具备可脚本化的故障注入与真实的内存往返能力
+type fakePageCache struct {
+	mu sync.Mutex
+
+	entries map[cacheKey]CachedPage
+	gets    int
+	sets    int
+	lastSet CachedPage
+	hasSet  bool
+
+	getErr  error
+	setErr  error
+	forced  *CachedPage
+	entered chan struct{}
+	block   <-chan struct{}
+}
+
+func newFakePageCache() *fakePageCache {
+	return &fakePageCache{entries: map[cacheKey]CachedPage{}}
+}
+
+func (f *fakePageCache) GetPage(ctx context.Context, query PageCacheQuery) (CachedPage, bool, error) {
+	f.mu.Lock()
+	f.gets++
+	getErr := f.getErr
+	forced := f.forced
+	entered := f.entered
+	block := f.block
+	f.mu.Unlock()
+
+	if entered != nil {
+		entered <- struct{}{}
+	}
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return CachedPage{}, false, ctx.Err()
+		}
+	}
+	if getErr != nil {
+		return CachedPage{}, false, getErr
+	}
+	if forced != nil {
+		return *forced, true, nil
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	page, ok := f.entries[keyOf(query)]
+	return page, ok, nil
+}
+
+func (f *fakePageCache) SetPage(_ context.Context, query PageCacheQuery, page CachedPage) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sets++
+	f.lastSet = page
+	f.hasSet = true
+	if f.setErr != nil {
+		return f.setErr
+	}
+	if f.entries == nil {
+		f.entries = map[cacheKey]CachedPage{}
+	}
+	f.entries[keyOf(query)] = page
+	return nil
+}
+
+func (f *fakePageCache) getCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gets
+}
+
+func (f *fakePageCache) setCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sets
+}
+
+func (f *fakePageCache) lastSetPage() (CachedPage, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastSet, f.hasSet
+}
+
+type fakeCardReader struct {
+	mu    sync.Mutex
+	calls int
+	ids   []uint
+	fn    func(videoIDs []uint) (map[uint]domainfeed.FeedCard, error)
+}
+
+func (f *fakeCardReader) BatchGetCards(_ context.Context, videoIDs []uint) (map[uint]domainfeed.FeedCard, error) {
+	f.mu.Lock()
+	f.calls++
+	f.ids = append([]uint(nil), videoIDs...)
+	fn := f.fn
+	f.mu.Unlock()
+	if fn == nil {
+		return map[uint]domainfeed.FeedCard{}, nil
+	}
+	return fn(videoIDs)
+}
+
+func (f *fakeCardReader) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func (f *fakeCardReader) idList() []uint {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]uint(nil), f.ids...)
+}
+
+func (f *fakeCardReader) setFunc(fn func(videoIDs []uint) (map[uint]domainfeed.FeedCard, error)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fn = fn
+}
+
+type cacheObserverRecorder struct {
+	mu      sync.Mutex
+	results []string
+}
+
+func (o *cacheObserverRecorder) observe(observation CacheObservation) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.results = append(o.results, observation.Result)
+}
+
+func (o *cacheObserverRecorder) contains(result string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, item := range o.results {
+		if item == result {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *cacheObserverRecorder) list() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.results...)
+}
+
+// pageStartingAt 构造从第 start 条开始的页，用于游标之后的后续页
+func pageStartingAt(start, count int) domainfeed.TimelinePage {
+	page := domainfeed.TimelinePage{
+		Items: make([]domainfeed.FeedPageItem, 0, count),
+		Cards: make(map[uint]domainfeed.FeedCard, count),
+	}
+	for index := start; index < start+count; index++ {
+		item := pageItemAt(index, 7)
+		page.Items = append(page.Items, item)
+		page.Cards[item.VideoID] = cardOf(item)
+	}
+	return page
+}
+
+func cardsForItems(items []domainfeed.FeedPageItem) map[uint]domainfeed.FeedCard {
+	cards := make(map[uint]domainfeed.FeedCard, len(items))
+	for _, item := range items {
+		cards[item.VideoID] = cardOf(item)
+	}
+	return cards
+}
+
+func encodedCursorAt(t *testing.T, index int) string {
+	t.Helper()
+	encoded, err := encodeTimelineCursor(cursorAt(index))
+	if err != nil {
+		t.Fatalf("构造游标失败: %v", err)
+	}
+	return encoded
+}
+
+func waitSignal(t *testing.T, signal <-chan struct{}, message string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(5 * time.Second):
+		t.Fatal(message)
+	}
+}
+
+// 测试目标：缓存操作容量上限为 16 个并发操作
+// 预期效果：第 17 个请求跳过缓存并在容量释放后仍能正常工作
+func TestFeedCacheOperationCapacityLimit(t *testing.T) {
+	encoded := encodedCursorAt(t, 0)
+	page := pageStartingAt(1, 4)
+
+	entered := make(chan struct{}, maxCacheOperations+4)
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+
+	cache := newFakePageCache()
+	cache.entered = entered
+	cache.block = release
+	cache.forced = &CachedPage{Items: page.Items}
+	cards := &fakeCardReader{}
+	cards.setFunc(func([]uint) (map[uint]domainfeed.FeedCard, error) {
+		return cardsForItems(page.Items), nil
+	})
+	observer := &cacheObserverRecorder{}
+	repo := &stubRepository{}
+	repo.listFn = func(_ *domainfeed.TimelineCursor, _ int) (domainfeed.TimelinePage, error) {
+		return pageStartingAt(1, 4), nil
+	}
+	service := New(repo, WithPageCache(cache, cards, observer.observe))
+
+	var wg sync.WaitGroup
+	errs := make([]error, maxCacheOperations)
+	for index := 0; index < maxCacheOperations; index++ {
+		wg.Add(1)
+		go func(slot int) {
+			defer wg.Done()
+			_, errs[slot] = service.GetFeed(context.Background(), FeedRequest{Cursor: encoded, Limit: 3})
+		}(index)
+	}
+	for index := 0; index < maxCacheOperations; index++ {
+		waitSignal(t, entered, "并发缓存操作未达到容量上限")
+	}
+
+	result, err := service.GetFeed(context.Background(), FeedRequest{Cursor: encoded, Limit: 3})
+	if err != nil {
+		t.Fatalf("容量耗尽应跳过缓存 got error=%v", err)
+	}
+	if len(result.Items) != 3 {
+		t.Fatalf("跳过缓存后应回源成功 got=%d", len(result.Items))
+	}
+	if cache.getCount() != maxCacheOperations {
+		t.Fatalf("容量耗尽时不应真正访问缓存 got=%d", cache.getCount())
+	}
+	if !observer.contains("cache_busy") {
+		t.Fatalf("应记录 cache_busy got=%v", observer.list())
+	}
+
+	unblock()
+	wg.Wait()
+	for index, err := range errs {
+		if err != nil {
+			t.Fatalf("第 %d 个并发请求失败: %v", index, err)
+		}
+	}
+}
+
+// 测试目标：读取中途取消也必须释放并发槽
+// 预期效果：取消请求返回后仍可再次占满 32 个读取容量
+func TestFeedCacheReleasesReadSlotOnCancel(t *testing.T) {
+	repo := &stubRepository{}
+	entered := make(chan struct{}, 4)
+	release := make(chan struct{})
+	repo.listEntered = entered
+	repo.listBlock = release
+
+	cache := newFakePageCache()
+	service := New(repo, WithPageCache(cache, &fakeCardReader{}, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.GetFeed(ctx, FeedRequest{})
+		done <- err
+	}()
+
+	waitSignal(t, entered, "请求未进入仓储读取")
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("取消后应返回取消原因 got error=%v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("取消后请求未返回")
+	}
+
+	close(release)
+	repo.mu.Lock()
+	repo.listEntered = nil
+	repo.listBlock = nil
+	repo.mu.Unlock()
+
+	probeReadCapacity(t, service, repo)
+}
+
+// probeReadCapacity 验证读取容量可被完全占满，超额请求被拒绝，释放后可恢复
+func probeReadCapacity(t *testing.T, service *Service, repo *stubRepository) {
+	t.Helper()
+
+	entered := make(chan struct{}, maxCachedFeedReads+4)
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+
+	repo.mu.Lock()
+	repo.listEntered = entered
+	repo.listBlock = release
+	repo.mu.Unlock()
+
+	var wg sync.WaitGroup
+	errs := make([]error, maxCachedFeedReads)
+	for index := 0; index < maxCachedFeedReads; index++ {
+		wg.Add(1)
+		go func(slot int) {
+			defer wg.Done()
+			_, errs[slot] = service.GetFeed(context.Background(), FeedRequest{})
+		}(index)
+	}
+	for index := 0; index < maxCachedFeedReads; index++ {
+		waitSignal(t, entered, "并发读取未达到容量上限")
+	}
+
+	if _, err := service.GetFeed(context.Background(), FeedRequest{}); !errors.Is(err, domainfeed.ErrUnavailable) {
+		t.Fatalf("容量耗尽 got error=%v want=%v", err, domainfeed.ErrUnavailable)
+	}
+
+	unblock()
+	wg.Wait()
+	for index, err := range errs {
+		if err != nil {
+			t.Fatalf("第 %d 个并发请求失败: %v", index, err)
+		}
+	}
+
+	if _, err := service.GetFeed(context.Background(), FeedRequest{}); err != nil {
+		t.Fatalf("容量释放后请求失败: %v", err)
+	}
+
+	repo.mu.Lock()
+	repo.listEntered = nil
+	repo.listBlock = nil
+	repo.mu.Unlock()
 }

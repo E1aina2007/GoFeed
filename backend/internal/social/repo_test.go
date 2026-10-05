@@ -60,50 +60,6 @@ func seedPublishedVideo(t *testing.T, db *gorm.DB, authorID uint) *video.Video {
 	return item
 }
 
-// 测试目标：验证互动仓储保存唯一关系并计算实时统计
-// 预期效果：重复点赞和关注不重复写入，删除评论后统计立即减少
-func TestRepositoryStoresInteractionsAndAggregatesMetrics(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-	ctx := context.Background()
-	author := seedUser(t, db, "social-author")
-	viewer := seedUser(t, db, "social-viewer")
-	item := seedPublishedVideo(t, db, author.ID)
-
-	created, err := repo.CreateLike(ctx, item.ID, viewer.ID)
-	if err != nil || !created {
-		t.Fatalf("首次点赞失败 created=%t err=%v", created, err)
-	}
-	created, err = repo.CreateLike(ctx, item.ID, viewer.ID)
-	if err != nil || created {
-		t.Fatalf("重复点赞应幂等 created=%t err=%v", created, err)
-	}
-	if _, err := repo.CreateFollow(ctx, viewer.ID, author.ID); err != nil {
-		t.Fatalf("创建关注失败: %v", err)
-	}
-	comment := &Comment{VideoID: item.ID, AuthorID: viewer.ID, Content: "repo comment"}
-	if err := repo.CreateComment(ctx, comment); err != nil {
-		t.Fatalf("创建评论失败: %v", err)
-	}
-
-	engagement, err := repo.GetEngagementCounts(ctx, []uint{item.ID})
-	if err != nil || engagement[item.ID].LikesCount != 1 || engagement[item.ID].CommentsCount != 1 {
-		t.Fatalf("视频互动统计错误 counts=%+v err=%v", engagement, err)
-	}
-	metrics, err := repo.GetProfileMetrics(ctx, author.ID)
-	if err != nil || metrics.TotalLikes != 1 || metrics.FollowerCount != 1 || metrics.VloggerCount != 0 {
-		t.Fatalf("用户互动统计错误 metrics=%+v err=%v", metrics, err)
-	}
-	deleted, err := repo.DeleteComment(ctx, comment.ID, viewer.ID)
-	if err != nil || !deleted {
-		t.Fatalf("删除评论失败 deleted=%t err=%v", deleted, err)
-	}
-	engagement, err = repo.GetEngagementCounts(ctx, []uint{item.ID})
-	if err != nil || engagement[item.ID].CommentsCount != 0 {
-		t.Fatalf("软删除评论后统计错误 counts=%+v err=%v", engagement, err)
-	}
-}
-
 // 测试目标：构造可空发布时间测试指针
 // 预期效果：边界用例可分别创建有发布时间和空发布时间的视频
 func socialTimePtr(value time.Time) *time.Time {

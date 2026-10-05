@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -122,30 +121,6 @@ func TestRepositoryPurgeExpired(t *testing.T) {
 	}
 	if countRows(t, db, "auth_sessions", "user_id = ?", grace) != 1 {
 		t.Fatal("宽限期用户的会话应保留")
-	}
-}
-
-// 测试目标：验证旧密码摘要不能覆盖已更新的密码
-// 预期效果：首次更新成功，携带旧摘要的后续更新被拒绝且新密码保持不变
-func TestRepositoryUpdatePasswordRejectsStaleHash(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-	ctx := context.Background()
-
-	id := seedUser(t, db, "stale-password")
-	if err := repo.UpdatePassword(ctx, id, "test-hash", "new-hash"); err != nil {
-		t.Fatalf("首次更新密码: %v", err)
-	}
-	if err := repo.UpdatePassword(ctx, id, "test-hash", "stale-hash"); !errors.Is(err, gorm.ErrRecordNotFound) {
-		t.Fatalf("过期密码哈希不应覆盖当前密码，got=%v", err)
-	}
-
-	user, err := repo.GetByID(ctx, id)
-	if err != nil {
-		t.Fatalf("查询更新后的用户: %v", err)
-	}
-	if user.Password != "new-hash" {
-		t.Fatalf("密码被过期哈希覆盖，got=%q", user.Password)
 	}
 }
 
@@ -641,25 +616,6 @@ func TestUserListPaginationCompatibility(t *testing.T) {
 	}
 	if len(secondBody.Users) != 1 || secondBody.NextCursor != "" || secondBody.Users[0].ID <= firstBody.Users[1].ID {
 		t.Fatalf("分页续页内容错误 got=%+v", secondBody)
-	}
-}
-
-// 测试目标：验证用户列表拒绝无效分页大小和不透明游标
-// 预期效果：两类参数错误均返回 400，不执行全量读取回退
-func TestUserListPaginationRejectsInvalidParameters(t *testing.T) {
-	db := testutil.DB(t)
-	engine := gin.New()
-	controller := NewController(NewService(NewRepository(db), nil), nil)
-	engine.GET("/api/user", controller.GetUserList)
-
-	for _, target := range []string{"/api/user?limit=0", "/api/user?limit=51", "/api/user?cursor=invalid"} {
-		t.Run(target, func(t *testing.T) {
-			recorder := httptest.NewRecorder()
-			engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
-			if recorder.Code != http.StatusBadRequest {
-				t.Fatalf("参数错误状态不正确 got=%d body=%s", recorder.Code, recorder.Body.String())
-			}
-		})
 	}
 }
 

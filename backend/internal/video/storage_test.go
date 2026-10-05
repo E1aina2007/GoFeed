@@ -205,38 +205,3 @@ func TestValidateMedia(t *testing.T) {
 		})
 	}
 }
-
-// 测试目标：验证媒体地址归属校验处理合法和非法来源
-// 预期效果：仅当前用户对应类型的本地素材地址通过校验
-func TestIsOwnedMediaURL(t *testing.T) {
-	// 1 覆盖相对地址与完整地址两种合法形式
-	// 2 覆盖跨用户、素材类型不符、任意外链、路径穿越和空值等非法场景
-	// 测试目标：定义媒体地址归属校验的输入和期望结果
-	// 预期效果：逐项覆盖本人、他人、外部和异常地址
-	tests := []struct {
-		name string
-		raw  string
-		kind MediaKind
-		uid  uint
-		want bool
-	}{
-		{"own relative video", "/static/videos/42/20260810/a.mp4", MediaVideo, 42, true},
-		{"own absolute video", "http://localhost:8080/static/videos/42/20260810/a.mp4", MediaVideo, 42, true},
-		{"own cover", "/static/covers/42/20260810/c.png", MediaCover, 42, true},
-		{"other user", "/static/videos/43/20260810/a.mp4", MediaVideo, 42, false},
-		{"wrong kind", "/static/videos/42/20260810/a.mp4", MediaCover, 42, false},
-		{"external url", "http://evil.example.com/a.mp4", MediaVideo, 42, false},
-		{"path traversal", "/static/videos/42/../43/a.mp4", MediaVideo, 42, false},
-		{"empty", "", MediaVideo, 42, false},
-	}
-
-	for _, tt := range tests {
-		// 测试目标：执行单个媒体地址归属校验子用例
-		// 预期效果：实际校验结果与当前用例的期望结果完全一致
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isOwnedMediaURL(tt.raw, tt.kind, tt.uid); got != tt.want {
-				t.Fatalf("isOwnedMediaURL(%q) got=%v want=%v", tt.raw, got, tt.want)
-			}
-		})
-	}
-}

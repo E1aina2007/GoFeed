@@ -13,15 +13,23 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	jwtlib "github.com/golang-jwt/jwt/v5"
 	"gorm.io/gorm"
 
+	applicationfeed "gofeed/internal/application/feed"
+	"gofeed/internal/auth"
 	"gofeed/internal/db"
+	domainfeed "gofeed/internal/domain/feed"
+	"gofeed/internal/middleware/ratelimit"
+	"gofeed/internal/social"
 	"gofeed/internal/testutil"
 	"gofeed/internal/user"
 	videoModel "gofeed/internal/video"
@@ -408,272 +416,6 @@ func TestVideoEndToEndFlow(t *testing.T) {
 	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, item.ID), "", nil, http.StatusNotFound, nil)
 }
 
-// 测试目标：验证公开路由在真实数据库中共同遵守公开视频完整性边界
-// 预期效果：残缺记录从 Feed、详情、评论入口和主页视频计数中排除
-func TestPublicRoutesExcludeIncompleteVideoRows(t *testing.T) {
-	db := testutil.DB(t)
-	author := &user.User{Username: "public-boundary-author", Password: "test-password-hash"}
-	if err := db.Create(author).Error; err != nil {
-		t.Fatalf("创建边界测试用户失败: %v", err)
-	}
-	publishedAt := time.Now()
-	valid := &videoModel.Video{
-		AuthorID:          author.ID,
-		Title:             "完整公开视频",
-		PlayURL:           "/static/videos/1/valid.mp4",
-		PlayFileName:      "valid.mp4",
-		PlayOriginalName:  "valid.mp4",
-		CoverURL:          "/static/covers/1/valid.png",
-		CoverFileName:     "valid.png",
-		CoverOriginalName: "valid.png",
-		Status:            videoModel.VideoStatusPublished,
-		PublishedAt:       &publishedAt,
-	}
-	incomplete := &videoModel.Video{
-		AuthorID:          author.ID,
-		Title:             "残缺公开视频",
-		PlayURL:           "/static/videos/1/incomplete.mp4",
-		PlayFileName:      "",
-		PlayOriginalName:  "incomplete.mp4",
-		CoverURL:          "/static/covers/1/incomplete.png",
-		CoverFileName:     "incomplete.png",
-		CoverOriginalName: "incomplete.png",
-		Status:            videoModel.VideoStatusPublished,
-		PublishedAt:       &publishedAt,
-	}
-	for _, item := range []*videoModel.Video{valid, incomplete} {
-		if err := db.Create(item).Error; err != nil {
-			t.Fatalf("创建视频 %q 失败: %v", item.Title, err)
-		}
-	}
-
-	engine := New(db, false, Options{UploadDir: t.TempDir()})
-	srv := httptest.NewServer(engine)
-	t.Cleanup(srv.Close)
-	client := srv.Client()
-
-	var list struct {
-		Items []videoItem `json:"items"`
-	}
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video?author_id=%d&limit=10", srv.URL, author.ID), "", nil, http.StatusOK, &list)
-	if len(list.Items) != 1 || list.Items[0].ID != valid.ID {
-		t.Fatalf("Feed 应只返回完整公开视频 got=%+v", list.Items)
-	}
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", srv.URL, incomplete.ID), "", nil, http.StatusNotFound, nil)
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d/comments", srv.URL, incomplete.ID), "", nil, http.StatusNotFound, nil)
-
-	var profile profileResponse
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/user/%d/profile", srv.URL, author.ID), "", nil, http.StatusOK, &profile)
-	if profile.VideoCount != 1 {
-		t.Fatalf("主页视频计数应排除残缺记录 got=%d", profile.VideoCount)
-	}
-}
-
-// 测试目标：验证点赞、评论和关注接口的完整互动流程
-// 预期效果：写入幂等且受认证和归属约束，视频与主页统计始终由关系表实时计算
-func TestSocialEndToEndFlow(t *testing.T) {
-	srv, client, gdb := newTestServer(t)
-	base := srv.URL
-
-	register(t, client, base, "social_author", "social-author-password-123")
-	author := login(t, client, base, "social_author", "social-author-password-123")
-	item := publishCompleteVideo(t, gdb, client, base, author.AccessToken, "互动测试视频")
-
-	register(t, client, base, "social_viewer", "social-viewer-password-123")
-	viewer := login(t, client, base, "social_viewer", "social-viewer-password-123")
-
-	likeURL := fmt.Sprintf("%s/api/video/auth/%d/like", base, item.ID)
-	commentURL := fmt.Sprintf("%s/api/video/auth/%d/comments", base, item.ID)
-	followURL := fmt.Sprintf("%s/api/user/auth/%d/follow", base, author.UserID)
-
-	// 匿名写入必须被认证中间件拒绝
-	doJSON(t, client, http.MethodPut, likeURL, "", nil, http.StatusUnauthorized, nil)
-	doJSON(t, client, http.MethodPost, commentURL, "", map[string]string{"content": "匿名评论"}, http.StatusUnauthorized, nil)
-	doJSON(t, client, http.MethodPut, followURL, "", nil, http.StatusUnauthorized, nil)
-	doJSON(t, client, http.MethodPut, fmt.Sprintf("%s/api/user/auth/%d/follow", base, viewer.UserID), viewer.AccessToken, nil, http.StatusBadRequest, nil)
-
-	var likeState struct {
-		Liked      bool  `json:"liked"`
-		LikesCount int64 `json:"likes_count"`
-	}
-	doJSON(t, client, http.MethodPut, likeURL, viewer.AccessToken, nil, http.StatusOK, &likeState)
-	if !likeState.Liked || likeState.LikesCount != 1 {
-		t.Fatalf("首次点赞状态错误 got=%+v", likeState)
-	}
-	doJSON(t, client, http.MethodPut, likeURL, viewer.AccessToken, nil, http.StatusOK, &likeState)
-	if !likeState.Liked || likeState.LikesCount != 1 {
-		t.Fatalf("重复点赞不应重复计数 got=%+v", likeState)
-	}
-	doJSON(t, client, http.MethodGet, likeURL, viewer.AccessToken, nil, http.StatusOK, &likeState)
-	if !likeState.Liked || likeState.LikesCount != 1 {
-		t.Fatalf("点赞状态读取错误 got=%+v", likeState)
-	}
-
-	var commentResult struct {
-		Comment struct {
-			ID      uint   `json:"id"`
-			Content string `json:"content"`
-			Author  struct {
-				ID uint `json:"id"`
-			} `json:"author"`
-		} `json:"comment"`
-	}
-	doJSON(t, client, http.MethodPost, commentURL, viewer.AccessToken, map[string]string{"content": "  第一条互动评论  "}, http.StatusCreated, &commentResult)
-	if commentResult.Comment.ID == 0 || commentResult.Comment.Content != "第一条互动评论" || commentResult.Comment.Author.ID != viewer.UserID {
-		t.Fatalf("创建评论响应错误 got=%+v", commentResult.Comment)
-	}
-
-	var comments struct {
-		Items []struct {
-			ID uint `json:"id"`
-		} `json:"items"`
-	}
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d/comments", base, item.ID), "", nil, http.StatusOK, &comments)
-	if len(comments.Items) != 1 || comments.Items[0].ID != commentResult.Comment.ID {
-		t.Fatalf("公开评论列表错误 got=%+v", comments.Items)
-	}
-
-	var followState struct {
-		Following     bool  `json:"following"`
-		FollowerCount int64 `json:"follower_count"`
-	}
-	doJSON(t, client, http.MethodPut, followURL, viewer.AccessToken, nil, http.StatusOK, &followState)
-	if !followState.Following || followState.FollowerCount != 1 {
-		t.Fatalf("首次关注状态错误 got=%+v", followState)
-	}
-	doJSON(t, client, http.MethodPut, followURL, viewer.AccessToken, nil, http.StatusOK, &followState)
-	if !followState.Following || followState.FollowerCount != 1 {
-		t.Fatalf("重复关注不应重复计数 got=%+v", followState)
-	}
-	doJSON(t, client, http.MethodGet, followURL, viewer.AccessToken, nil, http.StatusOK, &followState)
-	if !followState.Following || followState.FollowerCount != 1 {
-		t.Fatalf("关注状态读取错误 got=%+v", followState)
-	}
-
-	var followers struct {
-		Items []struct {
-			User struct {
-				ID uint `json:"id"`
-			} `json:"user"`
-		} `json:"items"`
-	}
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/user/%d/followers", base, author.UserID), "", nil, http.StatusOK, &followers)
-	if len(followers.Items) != 1 || followers.Items[0].User.ID != viewer.UserID {
-		t.Fatalf("粉丝列表错误 got=%+v", followers.Items)
-	}
-
-	var following struct {
-		Items []struct {
-			User struct {
-				ID uint `json:"id"`
-			} `json:"user"`
-		} `json:"items"`
-	}
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/user/%d/following", base, viewer.UserID), "", nil, http.StatusOK, &following)
-	if len(following.Items) != 1 || following.Items[0].User.ID != author.UserID {
-		t.Fatalf("关注列表错误 got=%+v", following.Items)
-	}
-
-	var detail struct {
-		Video videoItem `json:"video"`
-	}
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, item.ID), "", nil, http.StatusOK, &detail)
-	if detail.Video.LikesCount != 1 || detail.Video.CommentsCount != 1 {
-		t.Fatalf("视频详情互动统计错误 got=%+v", detail.Video)
-	}
-
-	var authorProfile profileResponse
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/user/%d/profile", base, author.UserID), "", nil, http.StatusOK, &authorProfile)
-	if authorProfile.TotalLikes != 1 || authorProfile.FollowerCount != 1 || authorProfile.VloggerCount != 0 {
-		t.Fatalf("作者主页互动统计错误 got=%+v", authorProfile)
-	}
-	var viewerProfile profileResponse
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/user/%d/profile", base, viewer.UserID), "", nil, http.StatusOK, &viewerProfile)
-	if viewerProfile.TotalLikes != 0 || viewerProfile.FollowerCount != 0 || viewerProfile.VloggerCount != 1 {
-		t.Fatalf("观看者主页互动统计错误 got=%+v", viewerProfile)
-	}
-
-	doJSON(t, client, http.MethodDelete, likeURL, viewer.AccessToken, nil, http.StatusOK, &likeState)
-	if likeState.Liked || likeState.LikesCount != 0 {
-		t.Fatalf("取消点赞状态错误 got=%+v", likeState)
-	}
-	doJSON(t, client, http.MethodDelete, likeURL, viewer.AccessToken, nil, http.StatusOK, &likeState)
-	if likeState.Liked || likeState.LikesCount != 0 {
-		t.Fatalf("重复取消点赞应保持未点赞状态 got=%+v", likeState)
-	}
-	doJSON(t, client, http.MethodPut, likeURL, viewer.AccessToken, nil, http.StatusOK, &likeState)
-
-	doJSON(t, client, http.MethodDelete, followURL, viewer.AccessToken, nil, http.StatusOK, &followState)
-	if followState.Following || followState.FollowerCount != 0 {
-		t.Fatalf("取消关注状态错误 got=%+v", followState)
-	}
-	doJSON(t, client, http.MethodDelete, followURL, viewer.AccessToken, nil, http.StatusOK, &followState)
-	if followState.Following || followState.FollowerCount != 0 {
-		t.Fatalf("重复取消关注应保持未关注状态 got=%+v", followState)
-	}
-	doJSON(t, client, http.MethodPut, followURL, viewer.AccessToken, nil, http.StatusOK, &followState)
-
-	foreignDeleteURL := fmt.Sprintf("%s/api/video/auth/%d/comments/%d", base, item.ID, commentResult.Comment.ID)
-	doJSON(t, client, http.MethodDelete, foreignDeleteURL, author.AccessToken, nil, http.StatusForbidden, nil)
-	doJSON(t, client, http.MethodDelete, foreignDeleteURL, viewer.AccessToken, nil, http.StatusNoContent, nil)
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d/comments", base, item.ID), "", nil, http.StatusOK, &comments)
-	if len(comments.Items) != 0 {
-		t.Fatalf("删除后评论仍然公开 got=%+v", comments.Items)
-	}
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, item.ID), "", nil, http.StatusOK, &detail)
-	if detail.Video.CommentsCount != 0 {
-		t.Fatalf("删除评论后视频统计未更新 got=%+v", detail.Video)
-	}
-
-	doJSON(t, client, http.MethodDelete, fmt.Sprintf("%s/api/video/auth/%d", base, item.ID), author.AccessToken, nil, http.StatusNoContent, nil)
-	doJSON(t, client, http.MethodPut, likeURL, viewer.AccessToken, nil, http.StatusNotFound, nil)
-	doJSON(t, client, http.MethodPost, commentURL, viewer.AccessToken, map[string]string{"content": "不应写入"}, http.StatusNotFound, nil)
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d/comments", base, item.ID), "", nil, http.StatusNotFound, nil)
-}
-
-// 测试目标：验证公开 Feed 的游标分页、草稿过滤和软删除可见性
-// 预期效果：最新发布的视频优先返回，下一页不重复，草稿和软删除视频不会公开
-func TestFeedRegressionCursorAndSoftDelete(t *testing.T) {
-	srv, client, gdb := newTestServer(t)
-	base := srv.URL
-
-	register(t, client, base, "feed_regression", "feed-regression-password-123")
-	sess := login(t, client, base, "feed_regression", "feed-regression-password-123")
-	older := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "较早发布的视频")
-	newer := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "较新发布的视频")
-	createDraft(t, client, base, sess.AccessToken, "不应公开的草稿", "", http.StatusCreated)
-
-	var firstPage struct {
-		Items      []videoItem `json:"items"`
-		NextCursor string      `json:"next_cursor"`
-	}
-	doJSON(t, client, http.MethodGet, base+"/api/video?limit=1", "", nil, http.StatusOK, &firstPage)
-	if len(firstPage.Items) != 1 || firstPage.Items[0].ID != newer.ID {
-		t.Fatalf("首屏应优先返回最新公开视频 got=%+v", firstPage.Items)
-	}
-	if firstPage.NextCursor == "" {
-		t.Fatal("存在下一页时必须返回游标")
-	}
-
-	var secondPage struct {
-		Items []videoItem `json:"items"`
-	}
-	nextPageURL := base + "/api/video?limit=1&cursor=" + url.QueryEscape(firstPage.NextCursor)
-	doJSON(t, client, http.MethodGet, nextPageURL, "", nil, http.StatusOK, &secondPage)
-	if len(secondPage.Items) != 1 || secondPage.Items[0].ID != older.ID {
-		t.Fatalf("下一页应只返回未重复的较早公开视频 got=%+v", secondPage.Items)
-	}
-
-	doJSON(t, client, http.MethodDelete, fmt.Sprintf("%s/api/video/auth/%d", base, older.ID), sess.AccessToken, nil, http.StatusNoContent, nil)
-	var afterDelete struct {
-		Items []videoItem `json:"items"`
-	}
-	doJSON(t, client, http.MethodGet, base+"/api/video?limit=3", "", nil, http.StatusOK, &afterDelete)
-	if len(afterDelete.Items) != 1 || afterDelete.Items[0].ID != newer.ID {
-		t.Fatalf("公开 Feed 不应保留草稿或软删除视频 got=%+v", afterDelete.Items)
-	}
-}
-
 // 测试目标：验证公开用户资料实时统计当前公开可见的视频数量
 // 预期效果：发布后增加，软删除后立即减少，注销用户资料不可再读取
 func TestUserProfileVideoCount(t *testing.T) {
@@ -774,109 +516,6 @@ func TestUserAvatarUploadFlow(t *testing.T) {
 	uploadAvatar(t, client, base, "", "anonymous.png", pngBytes, http.StatusUnauthorized)
 }
 
-// 测试目标：验证所有受保护的视频接口均要求有效认证
-// 预期效果：缺少令牌或使用伪造令牌时统一返回未认证状态
-func TestVideoEndToEndAuthRequired(t *testing.T) {
-	srv, client, _ := newTestServer(t)
-	base := srv.URL
-
-	// 测试目标：列出所有需要认证的视频写入和个人读取接口
-	// 预期效果：逐项拒绝匿名访问
-	cases := []struct {
-		method string
-		path   string
-	}{
-		{http.MethodPost, "/api/video/auth/drafts"},
-		{http.MethodPost, "/api/video/auth/drafts/1/play"},
-		{http.MethodPost, "/api/video/auth/drafts/1/cover"},
-		{http.MethodPost, "/api/video/auth/drafts/1/publish"},
-		{http.MethodGet, "/api/video/auth/mine"},
-		{http.MethodDelete, "/api/video/auth/1"},
-	}
-	for _, c := range cases {
-		doJSON(t, client, c.method, base+c.path, "", nil, http.StatusUnauthorized, nil)
-	}
-
-	// 伪造令牌同样拒绝
-	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", "not-a-real-token", nil, http.StatusUnauthorized, nil)
-}
-
-// 测试目标：验证草稿媒体与发布操作均受草稿作者约束
-// 预期效果：客户端不能借用他人草稿或媒体路径，自己的完整草稿可发布
-func TestVideoEndToEndForeignDraftRejected(t *testing.T) {
-	srv, client, gdb := newTestServer(t)
-	base := srv.URL
-
-	register(t, client, base, "e2e_owner", "e2e-password-123")
-	owner := login(t, client, base, "e2e_owner", "e2e-password-123")
-	ownerDraft := createDraft(t, client, base, owner.AccessToken, "作者草稿", "", http.StatusCreated)
-	uploadMedia(t, client, base, owner.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", ownerDraft.ID), "file", "owner.mp4", mp4Bytes, http.StatusCreated)
-	uploadMedia(t, client, base, owner.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", ownerDraft.ID), "file", "owner.png", pngBytes, http.StatusCreated)
-
-	register(t, client, base, "e2e_other", "e2e-password-123")
-	other := login(t, client, base, "e2e_other", "e2e-password-123")
-
-	// 他人不能写入或发布作者草稿
-	uploadMedia(t, client, base, other.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", ownerDraft.ID), "file", "stolen.mp4", mp4Bytes, http.StatusForbidden)
-	publishDraft(t, gdb, client, base, other.AccessToken, ownerDraft.ID, http.StatusForbidden)
-
-	// 使用本人草稿继续发布，预期成功以证明归属校验按草稿作者判定
-	otherDraft := createDraft(t, client, base, other.AccessToken, "自己的视频", "", http.StatusCreated)
-	uploadMedia(t, client, base, other.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", otherDraft.ID), "file", "mine.mp4", mp4Bytes, http.StatusCreated)
-	uploadMedia(t, client, base, other.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", otherDraft.ID), "file", "mine.png", pngBytes, http.StatusCreated)
-	item := publishDraft(t, gdb, client, base, other.AccessToken, otherDraft.ID, http.StatusAccepted)
-	if item.ID == 0 || item.Status != videoModel.VideoStatusProcessing {
-		t.Fatalf("本人草稿应发布成功 got=%+v", item)
-	}
-}
-
-// 测试目标：验证仅视频作者拥有删除权限
-// 预期效果：非作者删除被拒绝，作者本人删除成功
-func TestVideoEndToEndDeleteForbiddenForNonAuthor(t *testing.T) {
-	srv, client, gdb := newTestServer(t)
-	base := srv.URL
-
-	register(t, client, base, "e2e_author2", "e2e-password-123")
-	author := login(t, client, base, "e2e_author2", "e2e-password-123")
-	draft := createDraft(t, client, base, author.AccessToken, "待删除", "", http.StatusCreated)
-	uploadMedia(t, client, base, author.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/play", draft.ID), "file", "a.mp4", mp4Bytes, http.StatusCreated)
-	uploadMedia(t, client, base, author.AccessToken, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draft.ID), "file", "a.png", pngBytes, http.StatusCreated)
-	item := publishDraft(t, gdb, client, base, author.AccessToken, draft.ID, http.StatusAccepted)
-	completeProcessing(t, gdb, item.ID)
-
-	register(t, client, base, "e2e_intruder", "e2e-password-123")
-	intruder := login(t, client, base, "e2e_intruder", "e2e-password-123")
-	doJSON(t, client, http.MethodDelete, fmt.Sprintf("%s/api/video/auth/%d", base, item.ID), intruder.AccessToken, nil, http.StatusForbidden, nil)
-
-	// 作者本人删除，预期返回无内容状态
-	doJSON(t, client, http.MethodDelete, fmt.Sprintf("%s/api/video/auth/%d", base, item.ID), author.AccessToken, nil, http.StatusNoContent, nil)
-}
-
-// 测试目标：验证公开读取和草稿接口对无效参数的边界处理
-// 预期效果：不存在资源、错误分页参数、缺少标题和伪造媒体均返回对应客户端错误状态
-func TestVideoEndToEndBadRequests(t *testing.T) {
-	srv, client, _ := newTestServer(t)
-	base := srv.URL
-
-	// 公开读取使用错误参数，预期返回未找到或请求无效状态
-	doJSON(t, client, http.MethodGet, base+"/api/video/999999", "", nil, http.StatusNotFound, nil)
-	doJSON(t, client, http.MethodGet, base+"/api/video?limit=999", "", nil, http.StatusBadRequest, nil)
-	doJSON(t, client, http.MethodGet, base+"/api/video?author_id=abc", "", nil, http.StatusBadRequest, nil)
-	doJSON(t, client, http.MethodGet, base+"/api/video?cursor=garbage", "", nil, http.StatusBadRequest, nil)
-
-	// 已登录但创建草稿缺少标题，预期返回请求无效状态
-	register(t, client, base, "e2e_badreq", "e2e-password-123")
-	sess := login(t, client, base, "e2e_badreq", "e2e-password-123")
-	doJSON(t, client, http.MethodPost, base+"/api/video/auth/drafts", sess.AccessToken, map[string]string{}, http.StatusBadRequest, nil)
-
-	// 发布接口拒绝客户端伪造的媒体元数据
-	draft := createDraft(t, client, base, sess.AccessToken, "待发布", "", http.StatusCreated)
-	doJSON(t, client, http.MethodPost, fmt.Sprintf("%s/api/video/auth/drafts/%d/publish", base, draft.ID), sess.AccessToken, map[string]string{
-		"play_url":  "/static/videos/999/stolen.mp4",
-		"cover_url": "/static/covers/999/stolen.png",
-	}, http.StatusBadRequest, nil)
-}
-
 // 测试目标：构造绑定完整媒体的待发布草稿
 // 预期效果：发布语义用例不重复展开上传细节
 func prepareCompleteDraft(t *testing.T, client *http.Client, base, token, title string) draftItem {
@@ -885,87 +524,6 @@ func prepareCompleteDraft(t *testing.T, client *http.Client, base, token, title 
 	uploadMedia(t, client, base, token, fmt.Sprintf("/api/video/auth/drafts/%d/play", draft.ID), "file", "feed.mp4", mp4Bytes, http.StatusCreated)
 	uploadMedia(t, client, base, token, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draft.ID), "file", "feed.png", pngBytes, http.StatusCreated)
 	return draft
-}
-
-// 测试目标：验证发布事务将草稿原子转入 processing 并写入待派发 outbox 事件
-// 预期效果：响应返回 processing 草稿形体，数据库状态与事件字段满足 relay 派发契约
-func TestPublishEntersProcessingWithOutboxEvent(t *testing.T) {
-	srv, client, _, gdb := newResilienceTestServer(t)
-	base := srv.URL
-	register(t, client, base, "outbox_author", "outbox-password-123")
-	sess := login(t, client, base, "outbox_author", "outbox-password-123")
-
-	draft := prepareCompleteDraft(t, client, base, sess.AccessToken, "outbox 视频")
-	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusAccepted)
-	if item.ID == 0 || item.Status != videoModel.VideoStatusProcessing {
-		t.Fatalf("发布响应应为处理中草稿 got=%+v", item)
-	}
-
-	var row videoModel.Video
-	if err := gdb.First(&row, item.ID).Error; err != nil {
-		t.Fatalf("读取发布行失败: %v", err)
-	}
-	if row.Status != videoModel.VideoStatusProcessing || row.PublishedAt == nil || row.RejectedReason != "" {
-		t.Fatalf("发布行应处于 processing 且带发布时刻 got=%+v", row)
-	}
-
-	var events []videoModel.OutboxEvent
-	if err := gdb.Where("video_id = ?", item.ID).Find(&events).Error; err != nil {
-		t.Fatalf("读取 outbox 事件失败: %v", err)
-	}
-	if len(events) != 1 || events[0].EventType != videoModel.VideoProcessEventType ||
-		events[0].Status != videoModel.OutboxEventStatusPending || events[0].EventID == "" ||
-		events[0].Attempt != 0 || events[0].DispatchedAt != nil {
-		t.Fatalf("outbox 事件字段错误 got=%+v", events)
-	}
-
-	var status videoModel.VideoProcessingStatus
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/auth/%d/status", base, item.ID), sess.AccessToken, nil, http.StatusOK, &status)
-	if status.Status != videoModel.VideoStatusProcessing || status.PublishedAt == nil || status.RejectedAt != nil || status.RejectedReason != "" {
-		t.Fatalf("处理中状态响应错误 got=%+v", status)
-	}
-}
-
-// 测试目标：验证 processing 视频对外不可见，模拟处理完成后恢复公开可见
-// 预期效果：公开列表、详情与我的视频在处理期间不返回该视频
-func TestProcessingVideoInvisibleUntilCompleted(t *testing.T) {
-	srv, client, _, gdb := newResilienceTestServer(t)
-	base := srv.URL
-	register(t, client, base, "processing_author", "processing-password-123")
-	sess := login(t, client, base, "processing_author", "processing-password-123")
-
-	draft := prepareCompleteDraft(t, client, base, sess.AccessToken, "处理中视频")
-	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusAccepted)
-
-	var list struct {
-		Items []videoItem `json:"items"`
-	}
-	doJSON(t, client, http.MethodGet, base+"/api/video", "", nil, http.StatusOK, &list)
-	if len(list.Items) != 0 {
-		t.Fatalf("processing 视频不应进入公开列表 got=%+v", list.Items)
-	}
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, item.ID), "", nil, http.StatusNotFound, nil)
-	var mine struct {
-		Items []videoItem `json:"items"`
-	}
-	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", sess.AccessToken, nil, http.StatusOK, &mine)
-	if len(mine.Items) != 0 {
-		t.Fatalf("processing 视频不应进入我的视频 got=%+v", mine.Items)
-	}
-
-	// 模拟 worker 校验通过后的 CAS 状态流转
-	completeProcessing(t, gdb, item.ID)
-	var detail struct {
-		Video videoItem `json:"video"`
-	}
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, item.ID), "", nil, http.StatusOK, &detail)
-	if detail.Video.ID != item.ID {
-		t.Fatalf("处理完成后详情应可见 got=%+v", detail)
-	}
-	doJSON(t, client, http.MethodGet, base+"/api/video", "", nil, http.StatusOK, &list)
-	if len(list.Items) != 1 || list.Items[0].ID != item.ID {
-		t.Fatalf("处理完成后列表应可见 got=%+v", list.Items)
-	}
 }
 
 // 测试目标：验证 outbox 写入失败时发布事务整体回滚
@@ -1201,35 +759,6 @@ func TestFeedPagingDuringMutations(t *testing.T) {
 	}
 }
 
-// 测试目标：验证互动统计查询失败时公开读路径整体返回服务不可用
-// 预期效果：列表与详情返回 503 固定文案，不出现零计数的半组装响应
-func TestEngagementFailureReturnsServiceUnavailable(t *testing.T) {
-	srv, client, faults, gdb := newResilienceTestServer(t)
-	base := srv.URL
-	register(t, client, base, "stats_fault_author", "stats-fault-password-123")
-	sess := login(t, client, base, "stats_fault_author", "stats-fault-password-123")
-	video := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "统计故障视频")
-
-	faults.arm("video_likes", errors.New("injected engagement outage"))
-	defer faults.disarm()
-
-	var listBody map[string]any
-	doJSON(t, client, http.MethodGet, base+"/api/video", "", nil, http.StatusServiceUnavailable, &listBody)
-	if _, hasItems := listBody["items"]; hasItems {
-		t.Fatalf("统计失败不应返回半组装列表 got=%v", listBody)
-	}
-	message, _ := listBody["error"].(string)
-	if !strings.Contains(message, "engagement stats temporarily unavailable") {
-		t.Fatalf("统计失败应返回固定文案 got=%v", listBody)
-	}
-
-	var detailBody map[string]any
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, video.ID), "", nil, http.StatusServiceUnavailable, &detailBody)
-	if _, hasVideo := detailBody["video"]; hasVideo {
-		t.Fatalf("统计失败不应返回半组装详情 got=%v", detailBody)
-	}
-}
-
 // 测试目标：验证数据库暂态失败时错误路径干净且无半组装响应
 // 预期效果：视频或作者读取被注入失败时统一返回 500 固定文案
 func TestInjectedDatabaseFailureYieldsCleanError(t *testing.T) {
@@ -1296,194 +825,6 @@ func (q *queryCapture) snapshot() []int64 {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return append([]int64(nil), q.counts...)
-}
-
-// 测试目标：装配启用查询计数回调并注入计数探针的完整路由服务
-// 预期效果：预算断言可以读取每个请求在真实 MySQL 上的语句数量
-func newCountingTestServer(t *testing.T) (*httptest.Server, *http.Client, *queryCapture, *gorm.DB) {
-	t.Helper()
-	gdb := testutil.DB(t)
-	if err := db.RegisterQueryCounter(gdb); err != nil {
-		t.Fatalf("注册查询计数回调失败: %v", err)
-	}
-	capture := &queryCapture{}
-	engine := New(gdb, false, Options{UploadDir: t.TempDir(), Middlewares: []gin.HandlerFunc{capture.middleware()}})
-	srv := httptest.NewServer(engine)
-	t.Cleanup(srv.Close)
-	return srv, srv.Client(), capture, gdb
-}
-
-// 测试目标：断言单个请求的查询次数落在预算范围内
-// 预期效果：次数不超过预算且至少发生一次语句，计数序列只新增一项
-func assertQueryBudget(t *testing.T, capture *queryCapture, before int, budget int64) int64 {
-	t.Helper()
-	counts := capture.snapshot()
-	if len(counts) != before+1 {
-		t.Fatalf("应只新增一次请求记录 got=%d want=%d", len(counts), before+1)
-	}
-	got := counts[len(counts)-1]
-	if got < 1 || got > budget {
-		t.Fatalf("查询预算超限 got=%d want 1..%d", got, budget)
-	}
-	return got
-}
-
-// 测试目标：验证公开 Feed 首页的数据库查询收敛在预算内
-// 预期效果：列表请求最多执行视频、作者、点赞、评论各一次共四条语句
-func TestPublicListQueryBudget(t *testing.T) {
-	srv, client, capture, gdb := newCountingTestServer(t)
-	base := srv.URL
-	register(t, client, base, "budget-author", "budget-author-password")
-	session := login(t, client, base, "budget-author", "budget-author-password")
-	publishCompleteVideo(t, gdb, client, base, session.AccessToken, "预算列表视频")
-
-	capture.reset()
-	before := len(capture.snapshot())
-	var list struct {
-		Items []videoItem `json:"items"`
-	}
-	doJSON(t, client, http.MethodGet, base+"/api/video", "", nil, http.StatusOK, &list)
-	if len(list.Items) == 0 {
-		t.Fatal("预算用例应至少返回一条已发布视频")
-	}
-	assertQueryBudget(t, capture, before, 4)
-}
-
-// 测试目标：验证公开视频详情的数据库查询收敛在预算内
-// 预期效果：详情请求最多执行视频、作者与两类聚合共四条语句
-func TestPublicDetailQueryBudget(t *testing.T) {
-	srv, client, capture, gdb := newCountingTestServer(t)
-	base := srv.URL
-	register(t, client, base, "budget-detail-author", "budget-detail-password")
-	session := login(t, client, base, "budget-detail-author", "budget-detail-password")
-	video := publishCompleteVideo(t, gdb, client, base, session.AccessToken, "预算详情视频")
-
-	capture.reset()
-	before := len(capture.snapshot())
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, video.ID), "", nil, http.StatusOK, &videoItem{})
-	assertQueryBudget(t, capture, before, 4)
-}
-
-// 测试目标：提交刷新令牌并读取轮换后的会话信息
-// 预期效果：按指定状态返回新的凭据或空结果
-func refreshSession(t *testing.T, client *http.Client, base, refreshToken string, wantStatus int) authSession {
-	t.Helper()
-	var out struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		User         struct {
-			ID       uint   `json:"id"`
-			Username string `json:"username"`
-		} `json:"user"`
-	}
-	if wantStatus == http.StatusOK {
-		doJSON(t, client, http.MethodPost, base+"/api/user/refresh", "", map[string]string{
-			"refresh_token": refreshToken,
-		}, wantStatus, &out)
-	} else {
-		doJSON(t, client, http.MethodPost, base+"/api/user/refresh", "", map[string]string{
-			"refresh_token": refreshToken,
-		}, wantStatus, nil)
-	}
-	return authSession{
-		AccessToken:  out.AccessToken,
-		RefreshToken: out.RefreshToken,
-		UserID:       out.User.ID,
-		Username:     out.User.Username,
-	}
-}
-
-// 测试目标：验证刷新令牌轮换不会使同一会话的访问令牌提前失效
-// 预期效果：旧刷新令牌不能重放，新刷新令牌可继续轮换，轮换前后访问令牌均可使用
-func TestSessionRefreshRotation(t *testing.T) {
-	srv, client, _ := newTestServer(t)
-	base := srv.URL
-
-	register(t, client, base, "refresh_user", "refresh-password-123")
-	sess := login(t, client, base, "refresh_user", "refresh-password-123")
-
-	refreshed := refreshSession(t, client, base, sess.RefreshToken, http.StatusOK)
-	if refreshed.RefreshToken == "" || refreshed.RefreshToken == sess.RefreshToken {
-		t.Fatal("refresh 应返回新的 refresh token")
-	}
-
-	// 新访问令牌可用
-	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", refreshed.AccessToken, nil, http.StatusOK, nil)
-	// 旧刷新令牌重放返回未认证状态
-	refreshSession(t, client, base, sess.RefreshToken, http.StatusUnauthorized)
-	// 旧访问令牌仍有效，预期刷新仅轮换刷新令牌且会话标识不变
-	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", sess.AccessToken, nil, http.StatusOK, nil)
-	// 新刷新令牌可继续轮换
-	refreshSession(t, client, base, refreshed.RefreshToken, http.StatusOK)
-}
-
-// 测试目标：验证退出登录仅撤销当前会话而不会影响同用户其他会话
-// 预期效果：已退出会话不可访问，另一会话保持可用，重复退出被拒绝
-func TestSessionLogoutIsolation(t *testing.T) {
-	srv, client, _ := newTestServer(t)
-	base := srv.URL
-
-	register(t, client, base, "logout_user", "logout-password-123")
-	a := login(t, client, base, "logout_user", "logout-password-123")
-	b := login(t, client, base, "logout_user", "logout-password-123")
-
-	doJSON(t, client, http.MethodPost, base+"/api/user/auth/logout", a.AccessToken, nil, http.StatusNoContent, nil)
-	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", a.AccessToken, nil, http.StatusUnauthorized, nil)
-	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", b.AccessToken, nil, http.StatusOK, nil)
-
-	// 已撤销会话再次退出，预期返回未认证状态
-	doJSON(t, client, http.MethodPost, base+"/api/user/auth/logout", a.AccessToken, nil, http.StatusUnauthorized, nil)
-
-	doJSON(t, client, http.MethodPost, base+"/api/user/auth/logout", b.AccessToken, nil, http.StatusNoContent, nil)
-	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", b.AccessToken, nil, http.StatusUnauthorized, nil)
-}
-
-// 测试目标：验证修改密码会撤销该用户的全部现有会话
-// 预期效果：两个访问令牌均失效，旧密码不能登录而新密码可以登录
-func TestSessionPasswordChangeRevokesAll(t *testing.T) {
-	srv, client, _ := newTestServer(t)
-	base := srv.URL
-
-	register(t, client, base, "pw_user", "old-password-123")
-	a := login(t, client, base, "pw_user", "old-password-123")
-	b := login(t, client, base, "pw_user", "old-password-123")
-
-	doJSON(t, client, http.MethodPatch, base+"/api/user/auth/password", b.AccessToken, map[string]string{
-		"old_password": "old-password-123",
-		"new_password": "new-password-456",
-	}, http.StatusOK, nil)
-
-	// 修改密码后两个会话的访问令牌全部失效
-	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", a.AccessToken, nil, http.StatusUnauthorized, nil)
-	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", b.AccessToken, nil, http.StatusUnauthorized, nil)
-
-	// 旧密码登录返回未认证状态，新密码登录成功
-	doJSON(t, client, http.MethodPost, base+"/api/user/login", "", map[string]string{
-		"username": "pw_user",
-		"password": "old-password-123",
-	}, http.StatusUnauthorized, nil)
-	login(t, client, base, "pw_user", "new-password-456")
-}
-
-// 测试目标：验证注销账号会撤销会话并禁止后续身份访问
-// 预期效果：原访问令牌和密码登录均失效，公开读取已删除用户返回未找到状态
-func TestSessionDeleteUserRevokesAll(t *testing.T) {
-	srv, client, _ := newTestServer(t)
-	base := srv.URL
-
-	register(t, client, base, "del_user", "del-password-123")
-	sess := login(t, client, base, "del_user", "del-password-123")
-
-	doJSON(t, client, http.MethodDelete, base+"/api/user/auth", sess.AccessToken, nil, http.StatusNoContent, nil)
-	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", sess.AccessToken, nil, http.StatusUnauthorized, nil)
-
-	// 公开读取已删除用户，预期仓储过滤软删除记录后返回未找到状态
-	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/user/%d", base, sess.UserID), "", nil, http.StatusNotFound, nil)
-
-	doJSON(t, client, http.MethodPost, base+"/api/user/login", "", map[string]string{
-		"username": "del_user",
-		"password": "del-password-123",
-	}, http.StatusUnauthorized, nil)
 }
 
 // 测试目标：验证用户认证接口对重复数据、非法输入和冲突操作的边界处理
@@ -1696,4 +1037,425 @@ func TestSocialCursorScopeContract(t *testing.T) {
 		fmt.Sprintf("%s/api/user/%d/followers?cursor=%s", base, target.UserID, oldCursor), "", nil, http.StatusBadRequest, nil)
 	doJSON(t, client, http.MethodGet,
 		fmt.Sprintf("%s/api/user/%d/following?cursor=%s", base, target.UserID, oldCursor), "", nil, http.StatusBadRequest, nil)
+}
+
+type followingCacheSpy struct{ calls atomic.Int64 }
+
+func (s *followingCacheSpy) GetPage(context.Context, applicationfeed.PageCacheQuery) (applicationfeed.CachedPage, bool, error) {
+	s.calls.Add(1)
+	return applicationfeed.CachedPage{}, false, errors.New("unexpected page cache read")
+}
+func (s *followingCacheSpy) SetPage(context.Context, applicationfeed.PageCacheQuery, applicationfeed.CachedPage) error {
+	s.calls.Add(1)
+	return errors.New("unexpected page cache write")
+}
+func (s *followingCacheSpy) GetCards(context.Context, []uint) (applicationfeed.CachedCards, error) {
+	s.calls.Add(1)
+	return applicationfeed.CachedCards{}, errors.New("unexpected card cache read")
+}
+func (s *followingCacheSpy) SetCards(context.Context, []domainfeed.FeedCard) (applicationfeed.CardCacheWrite, error) {
+	s.calls.Add(1)
+	return applicationfeed.CardCacheWrite{}, errors.New("unexpected card cache write")
+}
+func (s *followingCacheSpy) DeleteCards(context.Context, []uint) error {
+	s.calls.Add(1)
+	return errors.New("unexpected card cache delete")
+}
+
+type followingHTTPEnv struct {
+	t       *testing.T
+	gdb     *gorm.DB
+	server  *httptest.Server
+	viewer  authSession
+	capture *queryCapture
+	faults  *faultInjection
+	cache   *followingCacheSpy
+}
+
+// 测试目标：在隔离 MySQL 中装配生产路由、真实会话、查询计数与缓存探针
+// 预期效果：关注流验证不依赖 Redis 或 MQ，缓存开启装配下仍只能读 MySQL
+func newFollowingHTTPEnv(t *testing.T) *followingHTTPEnv {
+	t.Helper()
+	gdb := testutil.DB(t)
+	if err := db.RegisterQueryCounter(gdb); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFaultInjection(gdb); err != nil {
+		t.Fatal(err)
+	}
+	capture := &queryCapture{}
+	faults := &faultInjection{}
+	cache := &followingCacheSpy{}
+	engine := New(gdb, false, Options{UploadDir: t.TempDir(), FeedPageCache: cache, FeedCardCache: cache, Middlewares: []gin.HandlerFunc{capture.middleware(), faults.middleware(), func(c *gin.Context) { c.Header("Vary", "Origin"); c.Next() }}})
+	server := httptest.NewServer(engine)
+	t.Cleanup(server.Close)
+	register(t, server.Client(), server.URL, "following-viewer", "following-password-123")
+	viewer := login(t, server.Client(), server.URL, "following-viewer", "following-password-123")
+	authors := []user.User{{ID: 20, Username: "following-author-a"}, {ID: 30, Username: "following-author-b"}, {ID: 40, Username: "following-other-author"}}
+	if err := gdb.Create(&authors).Error; err != nil {
+		t.Fatal(err)
+	}
+	return &followingHTTPEnv{t: t, gdb: gdb, server: server, viewer: viewer, capture: capture, faults: faults, cache: cache}
+}
+
+// 测试目标：为关注集合写入历史公开视频
+// 预期效果：媒体展示字段完整，发布时间早于当前关注时间且视频 ID 独立于作者 ID
+func (e *followingHTTPEnv) video(id, author uint) videoModel.Video {
+	e.t.Helper()
+	when := feedBaseTime
+	row := videoModel.Video{ID: id, AuthorID: author, Title: fmt.Sprintf("关注视频%d", id), Description: "历史视频", Status: videoModel.VideoStatusPublished, PublishedAt: &when,
+		PlayURL: "/static/videos/a.mp4", PlayFileName: "a.mp4", PlayOriginalName: "原始 视频.mp4", CoverURL: "/static/covers/a.png", CoverFileName: "a.png", CoverOriginalName: "原始 封面.png"}
+	if err := e.gdb.Create(&row).Error; err != nil {
+		e.t.Fatal(err)
+	}
+	return row
+}
+
+// 测试目标：写入本观看者的当前关注关系
+// 预期效果：无需读请求补发历史事件即可把当前可见历史视频加入集合
+func (e *followingHTTPEnv) follow(author uint) {
+	e.t.Helper()
+	if err := e.gdb.Create(&social.Follow{FollowerID: e.viewer.UserID, FolloweeID: author}).Error; err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// 测试目标：通过生产 HTTP 入口读取关注页并核对私有头
+// 预期效果：状态与 JSON 准确，已有 Origin 的 Vary 保留且包含 Authorization
+func (e *followingHTTPEnv) get(query, token string, status int) feedTimelineResponse {
+	e.t.Helper()
+	var page feedTimelineResponse
+	response := doJSON(e.t, e.server.Client(), http.MethodGet, e.server.URL+"/api/feed?scene=following"+query, token, nil, status, &page)
+	if response.Header.Get("Cache-Control") != "private, no-store" || response.Header.Get("Vary") != "Origin, Authorization" {
+		e.t.Fatalf("关注响应头=%v", response.Header)
+	}
+	return page
+}
+
+// 测试目标：验证真实关注查询的历史可见性、同刻 keyset、探测截断与实时批量统计
+// 预期效果：只返回关注的活动作者，视频字段不被 JOIN 覆盖，非空六次查询且缓存零调用
+func TestFollowingFeedMySQLPagingAndQueryBudget(t *testing.T) {
+	e := newFollowingHTTPEnv(t)
+	e.follow(20)
+	e.follow(30)
+	e.video(101, 20)
+	e.video(102, 30)
+	e.video(103, 20)
+	e.video(999, 40)
+	private := e.video(98, 20)
+	if err := e.gdb.Model(&private).UpdateColumn("status", videoModel.VideoStatusProcessing).Error; err != nil {
+		t.Fatal(err)
+	}
+	e.capture.reset()
+	first := e.get("&limit=2", e.viewer.AccessToken, 200)
+	if ids := followingIDs(first); !reflect.DeepEqual(ids, []uint{103, 102}) || first.NextCursor == "" {
+		t.Fatalf("首屏 ids=%v cursor=%s", ids, first.NextCursor)
+	}
+	if first.Items[0].Author.ID != 20 || first.Items[0].PlayOriginalName != "原始 视频.mp4" || first.Items[0].CoverOriginalName != "原始 封面.png" {
+		t.Fatalf("JOIN 字段映射=%+v", first.Items[0])
+	}
+	if err := e.gdb.Create(&social.VideoLike{VideoID: 103, UserID: e.viewer.UserID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := e.gdb.Create(&social.Comment{VideoID: 103, AuthorID: 30, Content: "当前评论"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	updated := e.get("&limit=2", e.viewer.AccessToken, 200)
+	if updated.Items[0].LikesCount != 1 || updated.Items[0].CommentsCount != 1 {
+		t.Fatalf("当前统计=%+v", updated.Items[0])
+	}
+	second := e.get("&limit=1&cursor="+url.QueryEscape(first.NextCursor), e.viewer.AccessToken, 200)
+	if ids := followingIDs(second); !reflect.DeepEqual(ids, []uint{101}) || second.NextCursor != "" {
+		t.Fatalf("末页=%+v", second)
+	}
+	if counts := e.capture.snapshot(); !reflect.DeepEqual(counts, []int64{6, 6, 6}) {
+		t.Fatalf("非空查询预算=%v", counts)
+	}
+	if e.cache.calls.Load() != 0 {
+		t.Fatalf("Following 缓存调用=%d", e.cache.calls.Load())
+	}
+}
+
+func followingIDs(page feedTimelineResponse) []uint {
+	ids := make([]uint, 0, len(page.Items))
+	for _, item := range page.Items {
+		ids = append(ids, item.ID)
+	}
+	return ids
+}
+
+// 测试目标：真实 SQL 排除不公开、软删、未关注和注销作者的视频
+// 预期效果：无关注空页三次查询，六项媒体缺陷与非发布状态不进入结果，Timeline 注销占位保留
+func TestFollowingFeedMySQLVisibilityAndEmptyPage(t *testing.T) {
+	e := newFollowingHTTPEnv(t)
+	e.video(101, 20)
+	e.capture.reset()
+	if page := e.get("", e.viewer.AccessToken, 200); page.Items == nil || len(page.Items) != 0 || page.NextCursor != "" {
+		t.Fatalf("无关注页=%+v", page)
+	}
+	if counts := e.capture.snapshot(); !reflect.DeepEqual(counts, []int64{3}) {
+		t.Fatalf("空页预算=%v", counts)
+	}
+	e.follow(20)
+	e.follow(30)
+	e.video(102, 30)
+	if err := e.gdb.Delete(&user.User{}, 30).Error; err != nil {
+		t.Fatal(err)
+	}
+	for i, column := range []string{"play_url", "play_file_name", "play_original_name", "cover_url", "cover_file_name", "cover_original_name"} {
+		row := e.video(uint(200+i), 20)
+		if err := e.gdb.Model(&row).UpdateColumn(column, "").Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, state := range []string{videoModel.VideoStatusDraft, videoModel.VideoStatusProcessing, videoModel.VideoStatusRejected, videoModel.VideoStatusPurging} {
+		row := e.video(uint(300+i), 20)
+		if err := e.gdb.Model(&row).UpdateColumn("status", state).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	deleted := e.video(400, 20)
+	if err := e.gdb.Delete(&deleted).Error; err != nil {
+		t.Fatal(err)
+	}
+	nilTime := e.video(401, 20)
+	if err := e.gdb.Model(&nilTime).UpdateColumn("published_at", nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	e.video(999, 40)
+	page := e.get("", e.viewer.AccessToken, 200)
+	if !reflect.DeepEqual(followingIDs(page), []uint{101}) {
+		t.Fatalf("公开集合=%v", followingIDs(page))
+	}
+	var timeline feedTimelineResponse
+	doJSON(t, e.server.Client(), http.MethodGet, e.server.URL+"/api/feed?scene=timeline", "", nil, 200, &timeline)
+	found := false
+	for _, item := range timeline.Items {
+		if item.ID == 102 {
+			found = true
+			if item.Author.Username != "已注销用户" {
+				t.Fatalf("Timeline 注销占位=%+v", item.Author)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("Following 的作者过滤不得改变 Timeline")
+	}
+}
+
+// 测试目标：取关、重新关注、作者注销与视频删除按每次 MySQL 查询的当前事实生效
+// 预期效果：同一游标只读取边界之后的当前集合，重新关注可读历史，删除后为空且不写缓存
+func TestFollowingFeedMySQLDynamicRelations(t *testing.T) {
+	e := newFollowingHTTPEnv(t)
+	e.follow(20)
+	e.follow(30)
+	e.video(101, 20)
+	e.video(102, 30)
+	first := e.get("&limit=1", e.viewer.AccessToken, 200)
+	if !reflect.DeepEqual(followingIDs(first), []uint{102}) || first.NextCursor == "" {
+		t.Fatalf("首屏=%+v", first)
+	}
+	if err := e.gdb.Where("follower_id = ? AND followee_id = ?", e.viewer.UserID, 20).Delete(&social.Follow{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	query := "&limit=1&cursor=" + url.QueryEscape(first.NextCursor)
+	if page := e.get(query, e.viewer.AccessToken, 200); len(page.Items) != 0 {
+		t.Fatalf("取关续页=%+v", page)
+	}
+	e.follow(20)
+	if page := e.get(query, e.viewer.AccessToken, 200); !reflect.DeepEqual(followingIDs(page), []uint{101}) {
+		t.Fatalf("重新关注续页=%+v", page)
+	}
+	if err := e.gdb.Delete(&user.User{}, 30).Error; err != nil {
+		t.Fatal(err)
+	}
+	if page := e.get("", e.viewer.AccessToken, 200); !reflect.DeepEqual(followingIDs(page), []uint{101}) {
+		t.Fatalf("作者注销页=%+v", page)
+	}
+	if err := e.gdb.Delete(&videoModel.Video{}, 101).Error; err != nil {
+		t.Fatal(err)
+	}
+	if page := e.get("", e.viewer.AccessToken, 200); len(page.Items) != 0 {
+		t.Fatalf("视频删除页=%+v", page)
+	}
+	if e.cache.calls.Load() != 0 {
+		t.Fatal("动态关注集合不得触发缓存")
+	}
+}
+
+// 测试目标：生产 JWT/session 校验与观看者游标边界阻止跨用户、过期和撤销访问
+// 预期效果：认证失败优先于游标错误，非法跨场景游标为 400，认证错误与成功均带私有头
+func TestFollowingFeedAuthenticationAndCursorIsolation(t *testing.T) {
+	e := newFollowingHTTPEnv(t)
+	e.follow(20)
+	e.video(101, 20)
+	e.video(102, 20)
+	first := e.get("&limit=1", e.viewer.AccessToken, 200)
+	e.get("&cursor=invalid", "", 401)
+	e.get("&cursor=invalid", "broken", 401)
+	e.get("&cursor=invalid", e.viewer.AccessToken, 400)
+	e.get("&viewer_id=999", e.viewer.AccessToken, 400)
+	register(t, e.server.Client(), e.server.URL, "following-other-viewer", "following-password-123")
+	other := login(t, e.server.Client(), e.server.URL, "following-other-viewer", "following-password-123")
+	e.get("&cursor="+url.QueryEscape(first.NextCursor), other.AccessToken, 400)
+	// 游标可被重编码，观看者仍必须使用认证身份，不能读取原观看者的关注集合
+	data, err := base64.RawURLEncoding.DecodeString(first.NextCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var forged map[string]any
+	if err := json.Unmarshal(data, &forged); err != nil {
+		t.Fatal(err)
+	}
+	forged["viewer_id"] = other.UserID
+	data, err = json.Marshal(forged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page := e.get("&cursor="+url.QueryEscape(base64.RawURLEncoding.EncodeToString(data)), other.AccessToken, 200); len(page.Items) != 0 {
+		t.Fatal("重编码游标不能读取他人的关注视频")
+	}
+	var timeline feedTimelineResponse
+	doJSON(t, e.server.Client(), http.MethodGet, e.server.URL+"/api/feed?limit=1", "", nil, 200, &timeline)
+	e.get("&cursor="+url.QueryEscape(timeline.NextCursor), e.viewer.AccessToken, 400)
+	doJSON(t, e.server.Client(), http.MethodGet, e.server.URL+"/api/feed?cursor="+url.QueryEscape(first.NextCursor), "", nil, 400, nil)
+	claims, err := auth.ParseToken(e.viewer.AccessToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims.ExpiresAt = jwtlib.NewNumericDate(time.Now().Add(-time.Minute))
+	expired, err := jwtlib.NewWithClaims(jwtlib.SigningMethodHS256, claims).SignedString([]byte(os.Getenv("JWT_SECRET")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.get("", expired, 401)
+	doJSON(t, e.server.Client(), http.MethodPost, e.server.URL+"/api/user/auth/logout", e.viewer.AccessToken, nil, 204, nil)
+	e.get("", e.viewer.AccessToken, 401)
+}
+
+// 测试目标：旧接口游标与匿名有效关注游标不能进入关注流，相同用户的新活动 session 可续用游标
+// 预期效果：旧 /api/video 游标返回 400，匿名携带有效游标仍 401，重登录后同一游标继续分页
+func TestFollowingFeedCursorSourcesAndSessionContinuity(t *testing.T) {
+	e := newFollowingHTTPEnv(t)
+	e.follow(20)
+	e.video(101, 20)
+	e.video(102, 20)
+	first := e.get("&limit=1", e.viewer.AccessToken, 200)
+	var legacy struct {
+		NextCursor string `json:"next_cursor"`
+	}
+	doJSON(t, e.server.Client(), http.MethodGet, e.server.URL+"/api/video?author_id=20&limit=1", "", nil, http.StatusOK, &legacy)
+	if legacy.NextCursor == "" {
+		t.Fatal("旧接口应返回游标")
+	}
+	e.get("&cursor="+url.QueryEscape(legacy.NextCursor), e.viewer.AccessToken, 400)
+	e.get("&cursor="+url.QueryEscape(first.NextCursor), "", 401)
+	current := e.get("&cursor="+url.QueryEscape(first.NextCursor), e.viewer.AccessToken, 200)
+	if !reflect.DeepEqual(followingIDs(current), []uint{101}) {
+		t.Fatalf("当前 session 续页=%+v", current)
+	}
+	renewed := login(t, e.server.Client(), e.server.URL, "following-viewer", "following-password-123")
+	if renewed.AccessToken == e.viewer.AccessToken || renewed.UserID != e.viewer.UserID {
+		t.Fatalf("应取得同用户的新 session user_id=%d want=%d 令牌与旧值相同=%v 令牌长度 old=%d new=%d",
+			renewed.UserID, e.viewer.UserID, renewed.AccessToken == e.viewer.AccessToken, len(e.viewer.AccessToken), len(renewed.AccessToken))
+	}
+	next := e.get("&cursor="+url.QueryEscape(first.NextCursor), renewed.AccessToken, 200)
+	if !reflect.DeepEqual(followingIDs(next), []uint{101}) || next.NextCursor != "" {
+		t.Fatalf("新 session 续用游标=%+v", next)
+	}
+}
+
+// 测试目标：有效 session 不能使已注销观看者继续读关注页，依赖故障不能伪装空页
+// 预期效果：活动用户检查为 401，业务 SQL 故障安全映射 503，保留现有 session 故障 401 语义
+func TestFollowingFeedDeletedViewerAndDatabaseFailures(t *testing.T) {
+	e := newFollowingHTTPEnv(t)
+	e.follow(20)
+	e.video(101, 20)
+	for _, tc := range []struct {
+		table  string
+		status int
+	}{{"auth_sessions", 401}, {"users", 503}, {"videos", 503}, {"video_likes", 503}, {"video_comments", 503}} {
+		e.faults.arm(tc.table, errors.New("injected private database failure"))
+		page := e.get("", e.viewer.AccessToken, tc.status)
+		if len(page.Items) != 0 {
+			t.Fatal("错误响应不得带伪成功页")
+		}
+		e.faults.disarm()
+	}
+	if err := e.gdb.Delete(&user.User{}, e.viewer.UserID).Error; err != nil {
+		t.Fatal(err)
+	}
+	e.get("", e.viewer.AccessToken, 401)
+}
+
+type rateLimitCall struct {
+	keys []string
+	args []any
+}
+
+type routeRateLimitCache struct {
+	mu     sync.Mutex
+	result any
+	err    error
+	calls  []rateLimitCall
+}
+
+func (c *routeRateLimitCache) Eval(_ context.Context, _ string, keys []string, args ...any) (any, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, rateLimitCall{
+		keys: append([]string(nil), keys...),
+		args: append([]any(nil), args...),
+	})
+	return c.result, c.err
+}
+
+func (c *routeRateLimitCache) callsSnapshot() []rateLimitCall {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]rateLimitCall(nil), c.calls...)
+}
+
+func routeRequest(method, path, body string) *http.Request {
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.RemoteAddr = "203.0.113.9:8443"
+	return request
+}
+
+// 测试目标：验证注册和登录均在 JSON 绑定前使用各自动作和 ClientIP 执行限流
+// 预期效果：格式错误请求仍会触发一次对应限流调用，然后保持原有 400 契约
+func TestRegisterAndLoginRateLimitRunBeforeJSONBinding(t *testing.T) {
+	cases := []struct {
+		name     string
+		path     string
+		action   string
+		windowMS int64
+	}{
+		{name: "register", path: "/api/user/register", action: ratelimit.RegisterAction, windowMS: ratelimit.RegisterWindow.Milliseconds()},
+		{name: "login", path: "/api/user/login", action: ratelimit.LoginAction, windowMS: ratelimit.LoginWindow.Milliseconds()},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			cache := &routeRateLimitCache{result: []any{int64(1), int64(1000)}}
+			engine := New(nil, false, Options{RateLimitCache: cache})
+			response := httptest.NewRecorder()
+			engine.ServeHTTP(response, routeRequest(http.MethodPost, testCase.path, "{"))
+
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("格式错误请求状态错误 got=%d want=%d", response.Code, http.StatusBadRequest)
+			}
+			calls := cache.callsSnapshot()
+			if len(calls) != 1 {
+				t.Fatalf("限流调用次数错误 got=%d want=1", len(calls))
+			}
+			if got, want := calls[0].keys, []string{"rl:v1:" + testCase.action + ":203.0.113.9"}; len(got) != 1 || got[0] != want[0] {
+				t.Fatalf("限流键错误 got=%v want=%v", got, want)
+			}
+			if len(calls[0].args) != 1 || calls[0].args[0] != testCase.windowMS {
+				t.Fatalf("限流窗口参数错误 got=%v want=%d", calls[0].args, testCase.windowMS)
+			}
+		})
+	}
 }

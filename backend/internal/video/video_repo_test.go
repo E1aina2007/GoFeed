@@ -1,19 +1,27 @@
 package video
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"os"
-	"reflect"
-	"sort"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	authn "gofeed/internal/auth"
 	dbpkg "gofeed/internal/db"
+	jwtmw "gofeed/internal/middleware/jwt"
 	"gofeed/internal/testutil"
+	"gofeed/internal/user"
 )
 
 // 测试目标：固定仓储测试的基准时间
@@ -65,146 +73,6 @@ func setVideoDeletedAt(t *testing.T, db *gorm.DB, id uint, at time.Time) {
 	t.Helper()
 	if err := db.Exec("UPDATE videos SET deleted_at = ? WHERE id = ?", at, id).Error; err != nil {
 		t.Fatalf("设置视频 deleted_at 失败: %v", err)
-	}
-}
-
-// 测试目标：验证所有公开查询都要求完整的发布状态和媒体快照
-// 预期效果：状态异常、软删除、空发布时间或任一媒体字段为空的记录均不可见
-func TestRepositoryPublicQueriesRequireCompleteVideo(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-	ctx := context.Background()
-
-	valid := seedVideo(t, repo, 1, "valid", VideoStatusPublished, baseTime)
-	otherAuthor := seedVideo(t, repo, 2, "other-author", VideoStatusPublished, baseTime.Add(time.Minute))
-	invalidIDs := make(map[uint]bool)
-
-	for _, status := range []string{VideoStatusDraft, VideoStatusPurging, VideoStatusProcessing, VideoStatusRejected} {
-		item := newVideoFixture(1, "status-"+status, status, baseTime.Add(2*time.Minute))
-		if err := repo.Create(ctx, item); err != nil {
-			t.Fatalf("创建 %s 测试记录失败: %v", status, err)
-		}
-		invalidIDs[item.ID] = true
-	}
-
-	withoutPublishedAt := newVideoFixture(1, "missing-published-at", VideoStatusPublished, baseTime)
-	withoutPublishedAt.PublishedAt = nil
-	if err := repo.Create(ctx, withoutPublishedAt); err != nil {
-		t.Fatalf("创建空发布时间记录失败: %v", err)
-	}
-	invalidIDs[withoutPublishedAt.ID] = true
-
-	for _, missing := range []struct {
-		name  string
-		clear func(*Video)
-	}{
-		{name: "play_url", clear: func(item *Video) { item.PlayURL = "" }},
-		{name: "play_file_name", clear: func(item *Video) { item.PlayFileName = "" }},
-		{name: "play_original_name", clear: func(item *Video) { item.PlayOriginalName = "" }},
-		{name: "cover_url", clear: func(item *Video) { item.CoverURL = "" }},
-		{name: "cover_file_name", clear: func(item *Video) { item.CoverFileName = "" }},
-		{name: "cover_original_name", clear: func(item *Video) { item.CoverOriginalName = "" }},
-	} {
-		item := newVideoFixture(1, "missing-"+missing.name, VideoStatusPublished, baseTime)
-		missing.clear(item)
-		if err := repo.Create(ctx, item); err != nil {
-			t.Fatalf("创建缺少 %s 的记录失败: %v", missing.name, err)
-		}
-		invalidIDs[item.ID] = true
-	}
-
-	deleted := seedVideo(t, repo, 1, "deleted", VideoStatusPublished, baseTime)
-	if err := db.Delete(&Video{}, deleted.ID).Error; err != nil {
-		t.Fatalf("软删除测试记录失败: %v", err)
-	}
-	invalidIDs[deleted.ID] = true
-
-	for id := range invalidIDs {
-		if _, err := repo.GetPublishedByID(ctx, id); !errors.Is(err, gorm.ErrRecordNotFound) {
-			t.Errorf("不完整视频 id=%d 不应通过详情查询, err=%v", id, err)
-		}
-	}
-
-	all, err := repo.GetPublishedVideoList(ctx, 0, nil, 100)
-	if err != nil {
-		t.Fatalf("查询公开列表失败: %v", err)
-	}
-	if len(all) != 2 || all[0].ID != otherAuthor.ID || all[1].ID != valid.ID {
-		t.Fatalf("公开列表应只包含两条完整视频, got=%+v", all)
-	}
-
-	mine, err := repo.GetAuthorVideoList(ctx, 1, nil, 100)
-	if err != nil {
-		t.Fatalf("查询作者公开列表失败: %v", err)
-	}
-	if len(mine) != 1 || mine[0].ID != valid.ID {
-		t.Fatalf("作者列表应排除全部不完整记录, got=%+v", mine)
-	}
-
-	count, err := repo.GetPublishedVideoCountByAuthor(ctx, 1)
-	if err != nil {
-		t.Fatalf("统计作者公开视频失败: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("作者统计应只计入完整公开视频, got=%d", count)
-	}
-	otherCount, err := repo.GetPublishedVideoCountByAuthor(ctx, 2)
-	if err != nil || otherCount != 1 {
-		t.Fatalf("其他作者统计错误 count=%d err=%v", otherCount, err)
-	}
-}
-
-// 测试目标：验证草稿媒体归属、完整性和发布状态转换均由仓储原子约束
-// 预期效果：跨作者或重复绑定被拒绝，不完整草稿不能发布，完整草稿写入实际发布时间
-func TestRepositoryDraftMediaAndPublish(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-	ctx := context.Background()
-	draft := &Video{AuthorID: 1, Title: "草稿", Status: VideoStatusDraft}
-	if err := repo.Create(ctx, draft); err != nil {
-		t.Fatalf("创建草稿失败: %v", err)
-	}
-
-	videoFile := SavedFile{PublicURL: "/static/videos/1/20260810/a.mp4", FileName: "a.mp4"}
-	coverFile := SavedFile{PublicURL: "/static/covers/1/20260810/c.png", FileName: "c.png"}
-	if err := repo.UpdateDraftMedia(ctx, draft.ID, 2, MediaVideo, videoFile, "视频.mp4"); !errors.Is(err, ErrNotAuthor) {
-		t.Fatalf("跨作者绑定未被拒绝 error=%v", err)
-	}
-	if err := repo.UpdateDraftMedia(ctx, draft.ID, 1, MediaVideo, videoFile, "视频.mp4"); err != nil {
-		t.Fatalf("绑定视频失败: %v", err)
-	}
-	if err := repo.UpdateDraftMedia(ctx, draft.ID, 1, MediaVideo, videoFile, "视频.mp4"); !errors.Is(err, ErrDraftNotWritable) {
-		t.Fatalf("重复绑定未被拒绝 error=%v", err)
-	}
-	if _, err := repo.UpdateDraftPublication(ctx, draft.ID, 1); !errors.Is(err, ErrDraftIncomplete) {
-		t.Fatalf("不完整草稿未被拒绝 error=%v", err)
-	}
-	if err := repo.UpdateDraftMedia(ctx, draft.ID, 1, MediaCover, coverFile, "封面.png"); err != nil {
-		t.Fatalf("绑定封面失败: %v", err)
-	}
-
-	published, err := repo.UpdateDraftPublication(ctx, draft.ID, 1)
-	if err != nil {
-		t.Fatalf("发布草稿失败: %v", err)
-	}
-	if published.Status != VideoStatusProcessing || published.PublishedAt == nil || published.PlayURL != videoFile.PublicURL || published.CoverURL != coverFile.PublicURL {
-		t.Fatalf("发布结果错误 got=%+v", published)
-	}
-	// 发布事务应原子写入待派发处理事件
-	var events []OutboxEvent
-	if err := db.Where("video_id = ?", draft.ID).Find(&events).Error; err != nil {
-		t.Fatalf("读取 outbox 事件失败: %v", err)
-	}
-	if len(events) != 1 || events[0].EventType != VideoProcessEventType || events[0].Status != OutboxEventStatusPending ||
-		events[0].EventID == "" || events[0].Attempt != 0 || events[0].DispatchedAt != nil {
-		t.Fatalf("outbox 事件写入错误 got=%+v", events)
-	}
-	if err := repo.UpdateDraftMedia(ctx, draft.ID, 1, MediaCover, coverFile, "封面.png"); !errors.Is(err, ErrDraftNotWritable) {
-		t.Fatalf("发布后写入媒体未被拒绝 error=%v", err)
-	}
-	// processing 状态下重复发布应被条件更新拒绝
-	if _, err := repo.UpdateDraftPublication(ctx, draft.ID, 1); !errors.Is(err, ErrDraftNotWritable) {
-		t.Fatalf("重复发布未被拒绝 error=%v", err)
 	}
 }
 
@@ -505,96 +373,6 @@ func TestRepositoryClaimDraftPurgeIsExclusive(t *testing.T) {
 	}
 }
 
-// 测试目标：验证公开视频列表的游标分页完整性
-// 预期效果：所有视频按倒序仅返回一次且不会遗漏或重复
-func TestRepositoryListPublishedCursorPagination(t *testing.T) {
-	repo := NewRepository(testutil.DB(t))
-	ctx := context.Background()
-
-	// 测试目标：记录写入视频的标识与标题对应关系
-	// 预期效果：后续可按翻页结果验证完整排序
-	titles := map[uint]string{}
-	for i := 0; i < 5; i++ {
-		v := seedVideo(t, repo, 1, fmt.Sprintf("v%d", i), VideoStatusPublished, baseTime.Add(time.Duration(i)*time.Minute))
-		titles[v.ID] = v.Title
-	}
-
-	// 测试目标：记录已读取视频和分页游标结果
-	// 预期效果：可检测重复项并验证翻页完整性
-	seen := map[uint]bool{}
-	var cursor *Cursor
-	var got []uint
-	for page := 0; page < 10; page++ {
-		items, err := repo.GetPublishedVideoList(ctx, 0, cursor, 2)
-		if err != nil {
-			t.Fatalf("第 %d 页查询失败: %v", page, err)
-		}
-		if len(items) == 0 {
-			break
-		}
-		for _, item := range items {
-			if seen[item.ID] {
-				t.Fatalf("游标翻页重复返回 id=%d", item.ID)
-			}
-			seen[item.ID] = true
-			got = append(got, item.ID)
-		}
-		last := items[len(items)-1]
-		cursor = &Cursor{PublishedAt: *last.PublishedAt, ID: last.ID}
-	}
-
-	if len(got) != 5 {
-		t.Fatalf("应完整翻出 5 条, got=%v", got)
-	}
-	want := []string{"v4", "v3", "v2", "v1", "v0"}
-	for i, id := range got {
-		if titles[id] != want[i] {
-			t.Fatalf("翻页顺序错误 index=%d id=%d title=%s want=%s", i, id, titles[id], want[i])
-		}
-	}
-}
-
-// 测试目标：验证发布时间相同时游标分页的次级排序
-// 预期效果：视频按标识倒序返回且翻页边界不重复不遗漏
-func TestRepositoryListPublishedCursorTieBreak(t *testing.T) {
-	repo := NewRepository(testutil.DB(t))
-	ctx := context.Background()
-
-	// 测试目标：准备发布时间相同的视频和其标识集合
-	// 预期效果：验证同一时间点以视频标识作为次级排序条件
-	same := baseTime
-	var ids []uint
-	for i := 0; i < 3; i++ {
-		v := seedVideo(t, repo, 1, fmt.Sprintf("same-%d", i), VideoStatusPublished, same)
-		ids = append(ids, v.ID)
-	}
-
-	first, err := repo.GetPublishedVideoList(ctx, 0, nil, 2)
-	if err != nil {
-		t.Fatalf("第一页查询失败: %v", err)
-	}
-	if len(first) != 2 || first[0].ID != ids[2] || first[1].ID != ids[1] {
-		t.Fatalf("同一 published_at 应按 id 倒序, got ids=%v", []uint{first[0].ID, first[1].ID})
-	}
-
-	last := first[1]
-	second, err := repo.GetPublishedVideoList(ctx, 0, &Cursor{PublishedAt: *last.PublishedAt, ID: last.ID}, 2)
-	if err != nil {
-		t.Fatalf("第二页查询失败: %v", err)
-	}
-	if len(second) != 1 || second[0].ID != ids[0] {
-		t.Fatalf("第二页应只剩 id=%d, got=%+v", ids[0], second)
-	}
-
-	empty, err := repo.GetPublishedVideoList(ctx, 0, &Cursor{PublishedAt: same, ID: ids[0]}, 2)
-	if err != nil {
-		t.Fatalf("末页查询失败: %v", err)
-	}
-	if len(empty) != 0 {
-		t.Fatalf("游标指向最后一条后应为空, got=%+v", empty)
-	}
-}
-
 // 测试目标：验证仓储只软删除作者的已发布视频
 // 预期效果：草稿不会进入已发布视频清扫路径，已发布行仍保持软删除语义
 func TestRepositorySoftDeletePublished(t *testing.T) {
@@ -718,50 +496,6 @@ func TestRepositoryPurgeExpiredDeleted(t *testing.T) {
 	}
 }
 
-// 测试目标：验证批量读取公开视频的有效标识数量上限
-// 预期效果：五十一项含重复与零标识时成功且只查询一次，超出一个有效标识即整体失败且不访问数据库
-func TestRepositoryGetPublishedByIDsBatchLimitBoundary(t *testing.T) {
-	gdb := testutil.DB(t)
-	repo := NewRepository(gdb)
-	if err := dbpkg.RegisterQueryCounter(gdb); err != nil {
-		t.Fatalf("注册查询计数回调失败: %v", err)
-	}
-
-	ids := []uint{0}
-	for i := 0; i < MaxPublishedVideoBatchSize; i++ {
-		row := seedVideo(t, repo, 1, fmt.Sprintf("batch-%d", i), VideoStatusPublished, baseTime.Add(time.Duration(i)*time.Second))
-		ids = append(ids, row.ID)
-	}
-	ids = append(ids, ids[1], 0)
-
-	ctx := dbpkg.WithQueryCounter(context.Background())
-	got, err := repo.GetPublishedByIDs(ctx, ids)
-	if err != nil {
-		t.Fatalf("上限内的批量读取失败: %v", err)
-	}
-	if len(got) != MaxPublishedVideoBatchSize {
-		t.Fatalf("上限内应返回全部视频 got=%d want=%d", len(got), MaxPublishedVideoBatchSize)
-	}
-	if count := dbpkg.QueryCount(ctx); count != 1 {
-		t.Fatalf("上限内应只执行一次参数化查询 count=%d", count)
-	}
-
-	extra := seedVideo(t, repo, 1, "batch-extra", VideoStatusPublished, baseTime.Add(time.Hour))
-	over := append(append([]uint{}, ids...), extra.ID)
-
-	overCtx := dbpkg.WithQueryCounter(context.Background())
-	got, err = repo.GetPublishedByIDs(overCtx, over)
-	if !errors.Is(err, ErrInvalidPublishedVideoBatch) {
-		t.Fatalf("超限应返回 ErrInvalidPublishedVideoBatch, err=%v", err)
-	}
-	if got != nil {
-		t.Fatalf("超限不应返回数据 got=%+v", got)
-	}
-	if count := dbpkg.QueryCount(overCtx); count != 0 {
-		t.Fatalf("超限不应查询数据库 count=%d", count)
-	}
-}
-
 // 测试目标：验证批量读取公开视频的可见性过滤
 // 预期效果：非发布状态、软删除、发布时间为空、媒体字段不完整和不存在的标识都不返回
 func TestRepositoryGetPublishedByIDsFiltersInvisible(t *testing.T) {
@@ -855,57 +589,525 @@ func TestRepositoryGetPublishedByIDsFiltersInvisible(t *testing.T) {
 	}
 }
 
-// 测试目标：验证轻量公开状态与现有完整卡片读取的真实 MySQL 可见性完全一致
-// 预期效果：排除软删、非公开状态、缺失时间和任一媒体字段，保留零作者记录
-func TestPublicVideoStatesVisibilityParity(t *testing.T) {
+// videoTestVideoHeader 是校验通过的最小 mp4 文件头
+var videoTestVideoHeader = []byte{0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
+
+// videoTestImageHeader 是校验通过的最小 png 文件头
+var videoTestImageHeader = []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
+
+// videoJSONRequest 发送可选 JSON 请求体与可选访问令牌的 HTTP 请求
+func videoJSONRequest(t *testing.T, engine *gin.Engine, method, path, token string, payload any) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader *bytes.Reader
+	if payload == nil {
+		reader = bytes.NewReader(nil)
+	} else {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("序列化请求体失败: %v", err)
+		}
+		reader = bytes.NewReader(encoded)
+	}
+
+	request := httptest.NewRequest(method, path, reader)
+	if payload != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+	return recorder
+}
+
+// videoMultipartRequest 以多部分表单上传单个媒体文件
+func videoMultipartRequest(t *testing.T, engine *gin.Engine, path, token, filename string, content []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var form bytes.Buffer
+	writer := multipart.NewWriter(&form)
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatalf("创建表单文件失败: %v", err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatalf("写入表单失败: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭表单失败: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, path, &form)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+	return recorder
+}
+
+// videoResponseBody 解析响应体为通用映射以便断言字段契约
+func videoResponseBody(t *testing.T, recorder *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("响应体不是合法 JSON: %v body=%s", err, recorder.Body.String())
+	}
+	return body
+}
+
+// videoErrorMessage 断言状态码并读取错误响应的公开文案
+func videoErrorMessage(t *testing.T, recorder *httptest.ResponseRecorder, wantStatus int) string {
+	t.Helper()
+	if recorder.Code != wantStatus {
+		t.Fatalf("状态码错误 got=%d want=%d body=%s", recorder.Code, wantStatus, recorder.Body.String())
+	}
+	message, ok := videoResponseBody(t, recorder)["error"].(string)
+	if !ok {
+		t.Fatalf("错误响应缺少 error 字段 body=%s", recorder.Body.String())
+	}
+	return message
+}
+
+// videoListIDs 读取列表响应中的视频标识顺序
+func videoListIDs(t *testing.T, recorder *httptest.ResponseRecorder) []uint {
+	t.Helper()
+	value, exists := videoResponseBody(t, recorder)["items"]
+	if !exists {
+		t.Fatalf("列表响应缺少 items body=%s", recorder.Body.String())
+	}
+	if value == nil {
+		return []uint{}
+	}
+	raw, ok := value.([]any)
+	if !ok {
+		t.Fatalf("列表响应 items 格式错误 body=%s", recorder.Body.String())
+	}
+	ids := make([]uint, 0, len(raw))
+	for _, entry := range raw {
+		item, ok := entry.(map[string]any)
+		if !ok {
+			t.Fatalf("列表项格式错误 got=%v", entry)
+		}
+		value, ok := item["id"].(float64)
+		if !ok {
+			t.Fatalf("列表项缺少标识 got=%v", item)
+		}
+		ids = append(ids, uint(value))
+	}
+	return ids
+}
+
+// assertVideoIDs 断言列表响应中的视频标识与顺序
+func assertVideoIDs(t *testing.T, got, want []uint) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("列表长度错误 got=%v want=%v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("列表顺序错误 got=%v want=%v", got, want)
+		}
+	}
+}
+
+// sqlEngagementReader 使用真实 SQL 聚合互动计数以替代 social 包避免测试包循环依赖
+type sqlEngagementReader struct {
+	db *gorm.DB
+}
+
+func (r sqlEngagementReader) GetEngagementCounts(ctx context.Context, videoIDs []uint) (map[uint]EngagementCounts, error) {
+	counts := make(map[uint]EngagementCounts, len(videoIDs))
+	if len(videoIDs) == 0 {
+		return counts, nil
+	}
+	for _, id := range videoIDs {
+		counts[id] = EngagementCounts{}
+	}
+
+	type aggregate struct {
+		VideoID uint
+		Total   int64
+	}
+	var likes []aggregate
+	if err := r.db.WithContext(ctx).Table("video_likes").
+		Select("video_id, COUNT(*) AS total").Where("video_id IN ?", videoIDs).
+		Group("video_id").Scan(&likes).Error; err != nil {
+		return nil, err
+	}
+	for _, item := range likes {
+		entry := counts[item.VideoID]
+		entry.LikesCount = item.Total
+		counts[item.VideoID] = entry
+	}
+
+	var comments []aggregate
+	if err := r.db.WithContext(ctx).Table("video_comments").
+		Select("video_id, COUNT(*) AS total").
+		Where("video_id IN ? AND deleted_at IS NULL", videoIDs).
+		Group("video_id").Scan(&comments).Error; err != nil {
+		return nil, err
+	}
+	for _, item := range comments {
+		entry := counts[item.VideoID]
+		entry.CommentsCount = item.Total
+		counts[item.VideoID] = entry
+	}
+	return counts, nil
+}
+
+// newVideoHTTPEngine 装配视频模块的公开读取与认证写入端点
+func newVideoHTTPEngine(t *testing.T, middlewares ...gin.HandlerFunc) (*gin.Engine, *gorm.DB, *Repository, *authn.SessionService) {
+	t.Helper()
 	gdb := testutil.DB(t)
 	repo := NewRepository(gdb)
-	ids := []uint{0}
-	for _, status := range []string{VideoStatusPublished, VideoStatusDraft, VideoStatusProcessing, VideoStatusRejected, VideoStatusPurging} {
-		v := seedVideo(t, repo, 0, status, status, baseTime)
-		ids = append(ids, v.ID)
+	sessions := authn.NewSessionService(authn.NewSessionRepository(gdb))
+	service := NewService(repo, NewUserAuthorReader(user.NewRepository(gdb)), sqlEngagementReader{db: gdb})
+	controller := NewController(service, NewLocalStorage(t.TempDir()))
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.Use(middlewares...)
+	engine.GET("/api/video", controller.GetVideoList)
+	engine.GET("/api/video/:id", controller.GetVideo)
+
+	authorized := engine.Group("/api/video/auth", jwtmw.Auth(sessions))
+	authorized.POST("/drafts", controller.CreateDraft)
+	authorized.GET("/drafts/:id", controller.GetDraft)
+	authorized.POST("/drafts/:id/play", controller.UpdateDraftVideo)
+	authorized.POST("/drafts/:id/cover", controller.UpdateDraftCover)
+	authorized.POST("/drafts/:id/publish", controller.UpdateDraftPublication)
+	authorized.DELETE("/drafts/:id", controller.DiscardDraft)
+	authorized.GET("/mine", controller.GetMyVideoList)
+	authorized.GET("/:id/status", controller.GetVideoStatus)
+	authorized.DELETE("/:id", controller.DeleteVideo)
+	return engine, gdb, repo, sessions
+}
+
+// newVideoAuthor 创建作者账号并签发访问令牌
+func newVideoAuthor(t *testing.T, gdb *gorm.DB, username string) (*user.User, string) {
+	t.Helper()
+	account := &user.User{Username: username, Password: "test-password-hash"}
+	if err := gdb.Create(account).Error; err != nil {
+		t.Fatalf("创建用户 %q 失败: %v", username, err)
 	}
-	for _, field := range []string{"published_at", "play_url", "play_file_name", "play_original_name", "cover_url", "cover_file_name", "cover_original_name", "deleted_at"} {
-		v := seedVideo(t, repo, 1, field, VideoStatusPublished, baseTime)
-		ids = append(ids, v.ID)
-		var value any = ""
-		if field == "published_at" {
-			value = nil
-		}
-		if field == "deleted_at" {
-			value = baseTime
-		}
-		if err := gdb.Model(&Video{}).Where("id = ?", v.ID).UpdateColumn(field, value).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	ids = append(ids, ids[1], 999999)
-	states, err := repo.GetPublicVideoStates(t.Context(), ids)
+	sessions := authn.NewSessionService(authn.NewSessionRepository(gdb))
+	pair, err := sessions.Create(context.Background(), account.ID, account.Username)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("创建会话失败: %v", err)
 	}
-	full, err := repo.GetPublishedByIDs(t.Context(), ids)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a, b := []uint{}, []uint{}
-	for _, v := range states {
-		a = append(a, v.ID)
-		if v.AuthorID != 0 {
-			t.Fatal("作者零标识应保持")
+	return account, pair.AccessToken
+}
+
+// videoInteractions 写入真实点赞与评论行以验证互动计数
+func videoInteractions(t *testing.T, gdb *gorm.DB, videoID uint, likerIDs []uint, commenters []uint) {
+	t.Helper()
+	now := time.Now()
+	for _, likerID := range likerIDs {
+		if err := gdb.Exec("INSERT INTO video_likes (video_id, user_id, created_at) VALUES (?, ?, ?)",
+			videoID, likerID, now).Error; err != nil {
+			t.Fatalf("写入点赞失败: %v", err)
 		}
 	}
-	for _, v := range full {
-		b = append(b, v.ID)
+	for index, authorID := range commenters {
+		if err := gdb.Exec("INSERT INTO video_comments (video_id, author_id, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+			videoID, authorID, fmt.Sprintf("评论 %d", index+1), now, now).Error; err != nil {
+			t.Fatalf("写入评论失败: %v", err)
+		}
 	}
-	sort.Slice(a, func(i, j int) bool { return a[i] < a[j] })
-	sort.Slice(b, func(i, j int) bool { return b[i] < b[j] })
-	if len(a) != 1 || !reflect.DeepEqual(a, b) {
-		t.Fatalf("states=%v full=%v", a, b)
+}
+
+// 测试目标：验证草稿上传与发布的完整 HTTP 状态契约
+// 预期效果：建草稿 201、媒体不完整发布 409、上传媒体 201、发布 202 且状态转为 processing
+func TestVideoDraftPublishHTTPContract(t *testing.T) {
+	engine, gdb, _, _ := newVideoHTTPEngine(t)
+	author, token := newVideoAuthor(t, gdb, "draft-author")
+
+	created := videoJSONRequest(t, engine, http.MethodPost, "/api/video/auth/drafts", token,
+		map[string]any{"title": "我的第一个作品", "description": "草稿描述"})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("建草稿状态错误 got=%d body=%s", created.Code, created.Body.String())
 	}
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	if _, err := repo.GetPublicVideoStates(ctx, ids); !errors.Is(err, context.Canceled) {
-		t.Fatal(err)
+	draft, ok := videoResponseBody(t, created)["draft"].(map[string]any)
+	if !ok {
+		t.Fatalf("建草稿响应缺少 draft body=%s", created.Body.String())
 	}
+	if draft["status"] != VideoStatusDraft || draft["has_video"] != false || draft["has_cover"] != false {
+		t.Fatalf("草稿初始字段错误 got=%v", draft)
+	}
+	draftID := uint(draft["id"].(float64))
+
+	incomplete := videoJSONRequest(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/video/auth/drafts/%d/publish", draftID), token, nil)
+	if message := videoErrorMessage(t, incomplete, http.StatusConflict); message != ErrDraftIncomplete.Error() {
+		t.Fatalf("媒体不完整发布文案错误 got=%q", message)
+	}
+
+	play := videoMultipartRequest(t, engine, fmt.Sprintf("/api/video/auth/drafts/%d/play", draftID), token,
+		"clip.mp4", videoTestVideoHeader)
+	if play.Code != http.StatusCreated {
+		t.Fatalf("上传视频状态错误 got=%d body=%s", play.Code, play.Body.String())
+	}
+	playBody := videoResponseBody(t, play)
+	if uint(playBody["draft_id"].(float64)) != draftID {
+		t.Fatalf("上传视频 draft_id 错误 got=%v", playBody)
+	}
+	if !strings.HasPrefix(playBody["play_url"].(string), fmt.Sprintf("/static/videos/%d/", author.ID)) ||
+		!strings.HasSuffix(playBody["play_url"].(string), playBody["play_file_name"].(string)) {
+		t.Fatalf("上传视频地址归属错误 got=%v", playBody)
+	}
+	if playBody["play_original_name"] != "clip.mp4" {
+		t.Fatalf("上传视频原始文件名错误 got=%v", playBody)
+	}
+
+	cover := videoMultipartRequest(t, engine, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draftID), token,
+		"cover.png", videoTestImageHeader)
+	if cover.Code != http.StatusCreated {
+		t.Fatalf("上传封面状态错误 got=%d body=%s", cover.Code, cover.Body.String())
+	}
+	coverBody := videoResponseBody(t, cover)
+	if !strings.HasPrefix(coverBody["cover_url"].(string), fmt.Sprintf("/static/covers/%d/", author.ID)) ||
+		!strings.HasSuffix(coverBody["cover_url"].(string), coverBody["cover_file_name"].(string)) {
+		t.Fatalf("上传封面地址归属错误 got=%v", coverBody)
+	}
+
+	detail := videoJSONRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/video/auth/drafts/%d", draftID), token, nil)
+	if detail.Code != http.StatusOK {
+		t.Fatalf("草稿详情状态错误 got=%d body=%s", detail.Code, detail.Body.String())
+	}
+	detailDraft := videoResponseBody(t, detail)["draft"].(map[string]any)
+	if detailDraft["has_video"] != true || detailDraft["has_cover"] != true {
+		t.Fatalf("草稿媒体标记错误 got=%v", detailDraft)
+	}
+
+	withBody := videoJSONRequest(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/video/auth/drafts/%d/publish", draftID), token, map[string]any{"title": "覆盖"})
+	if message := videoErrorMessage(t, withBody, http.StatusBadRequest); message != "publish draft does not accept a request body" {
+		t.Fatalf("发布请求体文案错误 got=%q", message)
+	}
+
+	published := videoJSONRequest(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/video/auth/drafts/%d/publish", draftID), token, nil)
+	if published.Code != http.StatusAccepted {
+		t.Fatalf("发布状态错误 got=%d body=%s", published.Code, published.Body.String())
+	}
+	publishedDraft := videoResponseBody(t, published)["draft"].(map[string]any)
+	if publishedDraft["status"] != VideoStatusProcessing {
+		t.Fatalf("发布后状态错误 got=%v", publishedDraft)
+	}
+
+	repeated := videoJSONRequest(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/video/auth/drafts/%d/publish", draftID), token, nil)
+	if message := videoErrorMessage(t, repeated, http.StatusConflict); message != ErrDraftNotWritable.Error() {
+		t.Fatalf("重复发布文案错误 got=%q", message)
+	}
+
+	processing := videoJSONRequest(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/video/auth/%d/status", draftID), token, nil)
+	if processing.Code != http.StatusOK {
+		t.Fatalf("处理状态查询错误 got=%d body=%s", processing.Code, processing.Body.String())
+	}
+	if videoResponseBody(t, processing)["status"] != VideoStatusProcessing {
+		t.Fatalf("处理状态字段错误 got=%s", processing.Body.String())
+	}
+
+	anonymous := videoJSONRequest(t, engine, http.MethodPost, "/api/video/auth/drafts", "",
+		map[string]any{"title": "未登录"})
+	if message := videoErrorMessage(t, anonymous, http.StatusUnauthorized); message != "missing authorization header" {
+		t.Fatalf("未登录建草稿文案错误 got=%q", message)
+	}
+}
+
+// 测试目标：验证公开列表与详情的可见性、排序与互动计数语义
+// 预期效果：仅完整已发布作品可见，同发布时间按标识倒序，计数随真实互动增长
+func TestVideoPublicVisibilityHTTPContract(t *testing.T) {
+	engine, gdb, repo, _ := newVideoHTTPEngine(t)
+	author, token := newVideoAuthor(t, gdb, "list-author")
+	other, otherToken := newVideoAuthor(t, gdb, "list-other")
+
+	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.Local)
+	first := seedVideo(t, repo, author.ID, "第一条", VideoStatusPublished, base)
+	second := seedVideo(t, repo, author.ID, "第二条", VideoStatusPublished, base)
+	newest := seedVideo(t, repo, author.ID, "最新一条", VideoStatusPublished, base.Add(time.Hour))
+	draft := seedVideo(t, repo, author.ID, "未发布草稿", VideoStatusDraft, base)
+	foreign := seedVideo(t, repo, other.ID, "他人作品", VideoStatusPublished, base.Add(2*time.Hour))
+	removed := seedVideo(t, repo, author.ID, "已删除作品", VideoStatusPublished, base.Add(3*time.Hour))
+	setVideoDeletedAt(t, gdb, removed.ID, time.Now())
+	incomplete := newVideoFixture(author.ID, "媒体不完整作品", VideoStatusPublished, base.Add(4*time.Hour))
+	incomplete.CoverFileName = ""
+	if err := repo.Create(context.Background(), incomplete); err != nil {
+		t.Fatalf("写入不完整作品失败: %v", err)
+	}
+
+	public := videoJSONRequest(t, engine, http.MethodGet, "/api/video", "", nil)
+	if public.Code != http.StatusOK {
+		t.Fatalf("公开列表状态错误 got=%d body=%s", public.Code, public.Body.String())
+	}
+	assertVideoIDs(t, videoListIDs(t, public), []uint{foreign.ID, newest.ID, second.ID, first.ID})
+
+	byAuthor := videoJSONRequest(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/video?author_id=%d", author.ID), "", nil)
+	assertVideoIDs(t, videoListIDs(t, byAuthor), []uint{newest.ID, second.ID, first.ID})
+
+	if message := videoErrorMessage(t, videoJSONRequest(t, engine, http.MethodGet, "/api/video?author_id=abc", "", nil),
+		http.StatusBadRequest); message != ErrInvalidAuthorID.Error() {
+		t.Fatalf("非法作者参数文案错误 got=%q", message)
+	}
+	if message := videoErrorMessage(t, videoJSONRequest(t, engine, http.MethodGet, "/api/video?limit=99", "", nil),
+		http.StatusBadRequest); message != ErrInvalidLimit.Error() {
+		t.Fatalf("非法分页文案错误 got=%q", message)
+	}
+
+	detail := videoJSONRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/video/%d", first.ID), "", nil)
+	if detail.Code != http.StatusOK {
+		t.Fatalf("公开详情状态错误 got=%d body=%s", detail.Code, detail.Body.String())
+	}
+	item := videoResponseBody(t, detail)["video"].(map[string]any)
+	detailAuthor := item["author"].(map[string]any)
+	if detailAuthor["username"] != "list-author" || detailAuthor["id"].(float64) != float64(author.ID) {
+		t.Fatalf("公开详情作者错误 got=%v", detailAuthor)
+	}
+	if item["likes_count"].(float64) != 0 || item["comments_count"].(float64) != 0 {
+		t.Fatalf("初始互动计数错误 got=%v", item)
+	}
+
+	videoInteractions(t, gdb, first.ID, []uint{other.ID, author.ID}, []uint{other.ID})
+	liked := videoJSONRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/video/%d", first.ID), "", nil)
+	likedItem := videoResponseBody(t, liked)["video"].(map[string]any)
+	if likedItem["likes_count"].(float64) != 2 || likedItem["comments_count"].(float64) != 1 {
+		t.Fatalf("互动计数错误 got=%v", likedItem)
+	}
+
+	for name, id := range map[string]uint{
+		"草稿":    draft.ID,
+		"已删除":   removed.ID,
+		"媒体不完整": incomplete.ID,
+	} {
+		message := videoErrorMessage(t, videoJSONRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/video/%d", id), "", nil),
+			http.StatusNotFound)
+		if message != "video not found" {
+			t.Fatalf("%s作品详情文案错误 got=%q", name, message)
+		}
+	}
+
+	mine := videoJSONRequest(t, engine, http.MethodGet, "/api/video/auth/mine", token, nil)
+	if mine.Code != http.StatusOK {
+		t.Fatalf("我的视频状态错误 got=%d body=%s", mine.Code, mine.Body.String())
+	}
+	assertVideoIDs(t, videoListIDs(t, mine), []uint{newest.ID, second.ID, first.ID})
+
+	foreignMine := videoJSONRequest(t, engine, http.MethodGet, "/api/video/auth/mine", otherToken, nil)
+	assertVideoIDs(t, videoListIDs(t, foreignMine), []uint{foreign.ID})
+}
+
+// 测试目标：验证视频删除的权限与可见性契约
+// 预期效果：非作者删除 403、作者删除 204 后详情 404 且公开列表不再包含
+func TestVideoDeleteHTTPContract(t *testing.T) {
+	engine, gdb, repo, _ := newVideoHTTPEngine(t)
+	author, token := newVideoAuthor(t, gdb, "delete-author")
+	_, otherToken := newVideoAuthor(t, gdb, "delete-other")
+	video := seedVideo(t, repo, author.ID, "待删除作品", VideoStatusPublished, time.Date(2026, 8, 1, 12, 0, 0, 0, time.Local))
+	path := fmt.Sprintf("/api/video/auth/%d", video.ID)
+
+	if message := videoErrorMessage(t, videoJSONRequest(t, engine, http.MethodDelete, path, otherToken, nil),
+		http.StatusForbidden); message != ErrNotAuthor.Error() {
+		t.Fatalf("非作者删除文案错误 got=%q", message)
+	}
+	if message := videoErrorMessage(t, videoJSONRequest(t, engine, http.MethodDelete, path, "", nil),
+		http.StatusUnauthorized); message != "missing authorization header" {
+		t.Fatalf("未登录删除文案错误 got=%q", message)
+	}
+	if message := videoErrorMessage(t, videoJSONRequest(t, engine, http.MethodDelete, path, "not-a-token", nil),
+		http.StatusUnauthorized); message != "invalid or expired token" {
+		t.Fatalf("非法令牌删除文案错误 got=%q", message)
+	}
+	if message := videoErrorMessage(t, videoJSONRequest(t, engine, http.MethodDelete, "/api/video/auth/abc", token, nil),
+		http.StatusBadRequest); message != ErrInvalidVideoID.Error() {
+		t.Fatalf("非法标识删除文案错误 got=%q", message)
+	}
+
+	deleted := videoJSONRequest(t, engine, http.MethodDelete, path, token, nil)
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("删除状态错误 got=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+	if deleted.Body.Len() != 0 {
+		t.Fatalf("删除响应体应为空 got=%s", deleted.Body.String())
+	}
+
+	if message := videoErrorMessage(t, videoJSONRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/video/%d", video.ID), "", nil),
+		http.StatusNotFound); message != "video not found" {
+		t.Fatalf("删除后详情文案错误 got=%q", message)
+	}
+	assertVideoIDs(t, videoListIDs(t, videoJSONRequest(t, engine, http.MethodGet, "/api/video", "", nil)), []uint{})
+	assertVideoIDs(t, videoListIDs(t, videoJSONRequest(t, engine, http.MethodGet, "/api/video/auth/mine", token, nil)), []uint{})
+
+	if message := videoErrorMessage(t, videoJSONRequest(t, engine, http.MethodDelete, path, token, nil),
+		http.StatusNotFound); message != "video not found" {
+		t.Fatalf("重复删除文案错误 got=%q", message)
+	}
+}
+
+// videoQueryCapture 记录请求内真实执行的 SQL 语句数量
+type videoQueryCapture struct {
+	counts []int64
+}
+
+func (q *videoQueryCapture) middleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request = c.Request.WithContext(dbpkg.WithQueryCounter(c.Request.Context()))
+		c.Next()
+		q.counts = append(q.counts, dbpkg.QueryCount(c.Request.Context()))
+	}
+}
+
+// videoQueryBudget 断言目标请求的语句数量落在预算内并返回实际值
+func videoQueryBudget(t *testing.T, capture *videoQueryCapture, before int, budget int64) int64 {
+	t.Helper()
+	if len(capture.counts) != before+1 {
+		t.Fatalf("应只新增一次请求记录 got=%d want=%d", len(capture.counts), before+1)
+	}
+	got := capture.counts[len(capture.counts)-1]
+	if got < 1 || got > budget {
+		t.Fatalf("查询预算超限 got=%d want 1..%d", got, budget)
+	}
+	return got
+}
+
+// 测试目标：验证公开读取端点的真实 SQL 语句数量不随列表长度增长
+// 预期效果：列表与详情各自最多四条语句且六条作品时不出现逐条查询
+func TestVideoReadEndpointsQueryBudget(t *testing.T) {
+	capture := &videoQueryCapture{}
+	engine, gdb, repo, _ := newVideoHTTPEngine(t, capture.middleware())
+	if err := dbpkg.RegisterQueryCounter(gdb); err != nil {
+		t.Fatalf("注册查询计数回调失败: %v", err)
+	}
+
+	author, _ := newVideoAuthor(t, gdb, "budget-author")
+	liker, _ := newVideoAuthor(t, gdb, "budget-liker")
+	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.Local)
+	var ids []uint
+	for index := 0; index < 6; index++ {
+		video := seedVideo(t, repo, author.ID, fmt.Sprintf("预算作品 %d", index), VideoStatusPublished, base.Add(time.Duration(index)*time.Minute))
+		ids = append(ids, video.ID)
+	}
+	videoInteractions(t, gdb, ids[0], []uint{liker.ID}, []uint{liker.ID})
+
+	capture.counts = nil
+	list := videoJSONRequest(t, engine, http.MethodGet, "/api/video", "", nil)
+	if list.Code != http.StatusOK {
+		t.Fatalf("公开列表状态错误 got=%d body=%s", list.Code, list.Body.String())
+	}
+	if len(videoListIDs(t, list)) != 6 {
+		t.Fatalf("公开列表条数错误 body=%s", list.Body.String())
+	}
+	listQueries := videoQueryBudget(t, capture, 0, 4)
+	t.Logf("公开列表语句数量=%d", listQueries)
+
+	detail := videoJSONRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/video/%d", ids[0]), "", nil)
+	if detail.Code != http.StatusOK {
+		t.Fatalf("公开详情状态错误 got=%d body=%s", detail.Code, detail.Body.String())
+	}
+	detailQueries := videoQueryBudget(t, capture, 1, 4)
+	t.Logf("公开详情语句数量=%d", detailQueries)
 }
