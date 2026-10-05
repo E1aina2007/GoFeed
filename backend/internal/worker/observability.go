@@ -140,6 +140,10 @@ func (o *QueueObserver) Run(ctx context.Context) {
 }
 
 func (o *QueueObserver) observe(ctx context.Context) {
+	event := "feed_card_warm_queue"
+	if o.spec.Queue == mq.InteractionHeatQueue {
+		event = "feed_heat_queue"
+	}
 	names := []string{o.spec.Queue, o.spec.DeadLetterQueueName()}
 	for index := range o.spec.Retry.Delays {
 		names = append(names, o.spec.RetryQueueName(index))
@@ -150,9 +154,9 @@ func (o *QueueObserver) observe(ctx context.Context) {
 		}
 		depth, err := o.queues.QueueDepth(queue)
 		if err != nil {
-			log.Printf("event=feed_card_warm_queue event_type=%s queue=%s result=failed", o.spec.Event.EventType, queue)
+			log.Printf("event=%s event_type=%s queue=%s result=failed", event, o.spec.Event.EventType, queue)
 			continue
 		}
-		log.Printf("event=feed_card_warm_queue event_type=%s queue=%s result=success depth=%d", o.spec.Event.EventType, queue, depth)
+		log.Printf("event=%s event_type=%s queue=%s result=success depth=%d", event, o.spec.Event.EventType, queue, depth)
 	}
 }

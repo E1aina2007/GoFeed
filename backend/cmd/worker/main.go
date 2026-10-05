@@ -12,6 +12,7 @@ import (
 	applicationfeed "gofeed/internal/application/feed"
 	"gofeed/internal/config"
 	"gofeed/internal/db"
+	domainfeed "gofeed/internal/domain/feed"
 	infracachefeed "gofeed/internal/infra/cache/feed"
 	infrafeed "gofeed/internal/infra/persistence/feed"
 	infrainteraction "gofeed/internal/infra/persistence/interaction"
@@ -63,6 +64,9 @@ func main() {
 	if err := cfg.ValidateFeedRuntime(); err != nil {
 		log.Fatal(err)
 	}
+	if err := cfg.ValidateHeatRuntime(); err != nil {
+		log.Fatal(err)
+	}
 
 	var dbConn *gorm.DB
 	connectWithRetry("MySQL", 10, func() error {
@@ -93,14 +97,50 @@ func main() {
 	defer stop()
 	var interactionBroker *mq.Runtime
 	var interactionRelay *worker.InteractionRelay
-	if cfg.Interaction.RelayEnabled {
+	var heatConsumer *worker.HeatConsumer
+	var heatObserver *worker.QueueObserver
+	var heatCacheRuntime *cache.Runtime
+	if cfg.Interaction.RelayEnabled || cfg.Feed.HeatConsumerEnabled {
 		// 独立连接声明互动拓扑，关闭采集后仍可排空已提交事实
 		interactionBroker = mq.NewRuntime(cfg.RabbitMQ,
 			mq.WithConsumerSpecs(mq.InteractionHeatSpec()), mq.WithMandatoryPublishing(true))
 		connectWithRetry("Interaction RabbitMQ", 10, interactionBroker.EnsureConnected)
-		interactionRelay, err = worker.NewInteractionRelay(infrainteraction.New(dbConn, false), interactionBroker)
-		if err != nil {
-			log.Fatal("Interaction relay configuration failed")
+		if cfg.Interaction.RelayEnabled {
+			interactionRelay, err = worker.NewInteractionRelay(infrainteraction.New(dbConn, false), interactionBroker)
+			if err != nil {
+				log.Fatal("Interaction relay configuration failed")
+			}
+		}
+		if cfg.Feed.HeatConsumerEnabled {
+			settings := cfg.Feed.Heat
+			heatCacheRuntime = cache.NewRuntime(cfg.Redis)
+			index, err := infracachefeed.NewHeatIndex(heatCacheRuntime, infracachefeed.HeatIndexOptions{
+				Generation: settings.Generation,
+				Policy: domainfeed.HeatPolicy{
+					Window:             time.Duration(settings.WindowMinutes) * time.Minute,
+					RetentionGrace:     time.Duration(settings.RetentionGraceMinutes) * time.Minute,
+					DedupeTTL:          time.Duration(settings.DedupeTTLHours) * time.Hour,
+					LikeWeight:         int64(settings.LikeWeight),
+					CommentWeight:      int64(settings.CommentWeight),
+					MaxVideosPerMinute: int64(settings.MaxVideosPerMinute),
+					MaxEventsPerMinute: int64(settings.MaxEventsPerMinute),
+				},
+			})
+			if err != nil {
+				log.Fatal("Heat index configuration failed")
+			}
+			projector, err := applicationfeed.NewHeatProjector(index)
+			if err != nil {
+				log.Fatal("Heat projector configuration failed")
+			}
+			heatConsumer, err = worker.NewHeatConsumer(projector, interactionBroker)
+			if err != nil {
+				log.Fatal("Heat consumer configuration failed")
+			}
+			heatObserver, err = worker.NewQueueObserver(interactionBroker, mq.InteractionHeatSpec())
+			if err != nil {
+				log.Fatal("Heat queue observer configuration failed")
+			}
 		}
 	}
 
@@ -165,14 +205,31 @@ func main() {
 			interactionRelay.Run(ctx)
 		}()
 	}
+	if heatConsumer != nil {
+		workers.Add(2)
+		go func() {
+			defer workers.Done()
+			heatConsumer.Run(ctx, interactionBroker)
+		}()
+		go func() {
+			defer workers.Done()
+			heatObserver.Run(ctx)
+		}()
+	}
 
 	log.Println("Worker started - relay, consumer and MQ observer are running")
 	log.Printf("event=feed_card_warm_runtime consumer_enabled=%t published_event_enabled=%t", cfg.Feed.CardWarmupEnabled, cfg.Feed.PublishedEventEnabled)
 	log.Printf("event=interaction_relay_runtime relay_enabled=%t", cfg.Interaction.RelayEnabled)
+	log.Printf("event=feed_heat_runtime consumer_enabled=%t generation=%q coverage=unverified", cfg.Feed.HeatConsumerEnabled, cfg.Feed.Heat.Generation)
 
 	<-ctx.Done()
 	log.Println("Received shutdown signal, draining...")
 	workers.Wait()
+	if heatCacheRuntime != nil {
+		if err := heatCacheRuntime.Close(); err != nil {
+			log.Printf("Heat cache runtime close failed")
+		}
+	}
 	if feedCacheRuntime != nil {
 		if err := feedCacheRuntime.Close(); err != nil {
 			log.Printf("Feed cache runtime close failed")

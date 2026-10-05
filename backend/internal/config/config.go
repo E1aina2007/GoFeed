@@ -54,10 +54,36 @@ type RabbitMQConfig struct {
 }
 
 type FeedConfig struct {
-	PageCacheEnabled      bool `yaml:"page_cache_enabled"`
-	CardCacheEnabled      bool `yaml:"card_cache_enabled"`
-	PublishedEventEnabled bool `yaml:"published_event_enabled"`
-	CardWarmupEnabled     bool `yaml:"card_warmup_enabled"`
+	PageCacheEnabled      bool       `yaml:"page_cache_enabled"`
+	CardCacheEnabled      bool       `yaml:"card_cache_enabled"`
+	PublishedEventEnabled bool       `yaml:"published_event_enabled"`
+	CardWarmupEnabled     bool       `yaml:"card_warmup_enabled"`
+	HeatConsumerEnabled   bool       `yaml:"heat_consumer_enabled"`
+	Heat                  HeatConfig `yaml:"heat"`
+}
+
+type HeatConfig struct {
+	Generation            string `yaml:"generation"`
+	WindowMinutes         int    `yaml:"window_minutes"`
+	RetentionGraceMinutes int    `yaml:"retention_grace_minutes"`
+	DedupeTTLHours        int    `yaml:"dedupe_ttl_hours"`
+	LikeWeight            int    `yaml:"like_weight"`
+	CommentWeight         int    `yaml:"comment_weight"`
+	MaxVideosPerMinute    int    `yaml:"max_videos_per_minute"`
+	MaxEventsPerMinute    int    `yaml:"max_events_per_minute"`
+}
+
+func DefaultHeatConfig() HeatConfig {
+	return HeatConfig{
+		Generation:            "initial",
+		WindowMinutes:         60,
+		RetentionGraceMinutes: 10,
+		DedupeTTLHours:        24,
+		LikeWeight:            3,
+		CommentWeight:         5,
+		MaxVideosPerMinute:    10000,
+		MaxEventsPerMinute:    100000,
+	}
 }
 
 type InteractionConfig struct {
@@ -89,6 +115,24 @@ func (c Config) ValidateFeedRuntime() error {
 	return nil
 }
 
+// ValidateHeatRuntime 防止本进程只派发互动事件而没有运行热度消费
+func (c Config) ValidateHeatRuntime() error {
+	if c.Interaction.RelayEnabled && !c.Feed.HeatConsumerEnabled {
+		return errors.New("interaction relay requires heat consumption in this worker")
+	}
+	if c.Feed.HeatConsumerEnabled {
+		h := c.Feed.Heat
+		if h.WindowMinutes < 1 || h.WindowMinutes > 1440 || h.RetentionGraceMinutes < 0 || h.RetentionGraceMinutes > 1440 ||
+			h.DedupeTTLHours < 1 || h.DedupeTTLHours > 168 || h.DedupeTTLHours*60 < h.WindowMinutes+h.RetentionGraceMinutes+1 ||
+			h.LikeWeight < 1 || h.LikeWeight > 1000 || h.CommentWeight < 1 || h.CommentWeight > 1000 ||
+			h.MaxVideosPerMinute < 1 || h.MaxVideosPerMinute > 100000 ||
+			h.MaxEventsPerMinute < h.MaxVideosPerMinute || h.MaxEventsPerMinute > 1000000 {
+			return errors.New("invalid feed heat configuration")
+		}
+	}
+	return nil
+}
+
 type RetentionConfig struct {
 	// UserDeletedDays 注销账号从软删除到硬删除的保留天数
 	UserDeletedDays int `yaml:"user_deleted_days"`
@@ -113,7 +157,7 @@ func Load(filename string) (Config, error) {
 		return Config{}, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	cfg := Config{}
+	cfg := Config{Feed: FeedConfig{Heat: DefaultHeatConfig()}}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("failed to parse config %s: %w", filename, err)
 	}
@@ -201,6 +245,30 @@ func OverrideWithEnv(cfg *Config) {
 	if v := os.Getenv("FEED_CARD_WARMUP_ENABLED"); v != "" {
 		enabled, err := strconv.ParseBool(v)
 		cfg.Feed.CardWarmupEnabled = err == nil && enabled
+	}
+	if v := os.Getenv("FEED_HEAT_CONSUMER_ENABLED"); v != "" {
+		enabled, err := strconv.ParseBool(v)
+		cfg.Feed.HeatConsumerEnabled = err == nil && enabled
+	}
+	if v := os.Getenv("FEED_HEAT_GENERATION"); v != "" {
+		cfg.Feed.Heat.Generation = v
+	}
+	for name, target := range map[string]*int{
+		"FEED_HEAT_WINDOW_MINUTES":          &cfg.Feed.Heat.WindowMinutes,
+		"FEED_HEAT_RETENTION_GRACE_MINUTES": &cfg.Feed.Heat.RetentionGraceMinutes,
+		"FEED_HEAT_DEDUPE_TTL_HOURS":        &cfg.Feed.Heat.DedupeTTLHours,
+		"FEED_HEAT_LIKE_WEIGHT":             &cfg.Feed.Heat.LikeWeight,
+		"FEED_HEAT_COMMENT_WEIGHT":          &cfg.Feed.Heat.CommentWeight,
+		"FEED_HEAT_MAX_VIDEOS_PER_MINUTE":   &cfg.Feed.Heat.MaxVideosPerMinute,
+		"FEED_HEAT_MAX_EVENTS_PER_MINUTE":   &cfg.Feed.Heat.MaxEventsPerMinute,
+	} {
+		if value := os.Getenv(name); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil {
+				parsed = -1
+			}
+			*target = parsed
+		}
 	}
 	if v := os.Getenv("INTERACTION_EVENTS_ENABLED"); v != "" {
 		enabled, err := strconv.ParseBool(v)
