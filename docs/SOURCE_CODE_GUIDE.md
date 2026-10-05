@@ -1,6 +1,6 @@
 # GoFeed 源码导读
 
-> 阅读基线：2026-10-05，`F:\work\Feed\GoFeed`，生产实现基线为 `26a3f95`。本文从当前路由、源码、迁移和既有页面入口推导，不把开发计划中的功能视为现有实现。互动事实存储、Relay 与 F4-B1 热度消费已提交，热度消费默认关闭、真实验收待补；没有重建、快照或覆盖完整性证明。指标配置和请求回调已提交，但仍未接通采集器或监听出口，见第 11 节。本轮不碰前端或测试代码，不作运行验收结论。
+> 阅读基线：2026-10-05，`F:\work\Feed\GoFeed`，后端源码基线为 `8e059e2`。七项 Feed/互动能力直接装配，相关配置开关已删除；worker 在入口 `startWorkers` 中统一编排，热度业务规则由领域层统一校验。本文从当前源码、路由及迁移推导；热度尚无重建、快照或完整覆盖证明。指标配置与请求回调仍未接通采集器/监听出口，见第 11 节。本轮不碰前端和测试代码，不作运行验收结论。
 >
 > 本文用于理解源码。运行与配置看 [README](../README.md)，接口字段看 [API](../API.md)，未完成设计与历史验收看 [开发计划](./DEVELOPMENT_PLAN.md)。本文中的“源码入口”均可直接点击。
 
@@ -25,8 +25,8 @@
 GoFeed 是一个 Go/Gin + Vue 的短视频系统。它已覆盖账户会话、草稿上传、异步发布、视频流、关注、点赞、评论和后台回收。理解项目时，先记住三个职责：
 
 1. **MySQL 保存业务事实**：用户、会话、视频状态、互动关系和待派发事件。
-2. **Redis 加速或限制访问**：当前用于注册/登录限流，以及可选的 Timeline 页缓存与基础卡片缓存。
-3. **RabbitMQ 承接异步处理**：当前用于视频媒体校验与可选的发布后卡片预热，事件从 MySQL Outbox 派发；独立互动 Relay 向 `feed.heat` 投递事实，工作树已有默认关闭的幂等热度消费者。
+2. **Redis 加速或限制访问**：当前用于注册/登录限流，以及Timeline 页缓存与基础卡片缓存。
+3. **RabbitMQ 承接异步处理**：当前用于视频媒体校验与发布后卡片预热，事件从 MySQL Outbox 派发；独立互动 Relay 向 `feed.heat` 投递事实，当前 worker 同时运行幂等热度消费者。
 
 视频文件保存在本地媒体目录；MySQL 保存相对访问地址和关联信息。数据库中的媒体字段完整，不等于文件此刻一定可读。
 
@@ -40,10 +40,10 @@ flowchart LR
     Static --> Files
     Worker["Worker：Relay 与消费者"] -->|读取 Outbox| MySQL
     Worker -->|确认发布| MQ["RabbitMQ"]
-    MQ -->|视频处理、卡片预热、可选热度消费| Worker
+    MQ -->|视频处理、卡片预热、热度消费| Worker
     Worker -->|状态变更| MySQL
     Worker -->|校验媒体| Files
-    Worker -->|可选预热| Redis
+    Worker -->|卡片预热| Redis
     Sweeper["Sweeper：定期清扫"] --> MySQL
     Sweeper --> Files
 ```
@@ -54,18 +54,18 @@ flowchart LR
 | -------------------------- | ------------------------ | --------------------------------------------------------- |
 | Timeline 最新视频流        | 已实现，匿名读取         | MySQL 时间排序；首页使用 `/api/feed?scene=timeline`       |
 | Following 关注视频流       | 后端与页面已实现         | 认证后查询当前关注关系；当前全部读 MySQL                  |
-| Timeline 页缓存            | 已实现，默认关闭         | 只读写带游标的后续页，首屏直接查询 MySQL                  |
-| 基础卡片缓存               | 已实现，默认关闭         | 需要页缓存同时启用；只用于后续页的页缓存命中路径          |
-| 发布事件与卡片预热         | 已实现，默认关闭         | `video.published` → `feed.card.warm`；重读当前 MySQL 卡片 |
-| 互动事实存储与可靠派发     | 已提交，默认关闭         | `interaction_outbox_events` → Relay → `feed.heat`；派发不是覆盖完成 |
-| 热度消费与分钟桶           | 工作树已实现，默认关闭   | 原创建分钟归属、Hash 去重及绝对分数 → ZSET；coverage 为 unverified |
+| Timeline 页缓存            | 已实现，直接装配         | 只读写带游标的后续页，首屏直接查询 MySQL                  |
+| 基础卡片缓存               | 已实现，直接装配         | 与页缓存一起装配；只用于后续页的页缓存命中路径          |
+| 发布事件与卡片预热         | 已实现，直接装配         | `video.published` → `feed.card.warm`；重读当前 MySQL 卡片 |
+| 互动事实存储与可靠派发     | 已提交，直接装配         | `interaction_outbox_events` → Relay → `feed.heat`；派发不是覆盖完成 |
+| 热度消费与分钟桶           | 已实现，直接装配         | 原创建分钟归属、Hash 去重及绝对分数 → ZSET；coverage 为 unverified |
 | 注册/登录限流              | 已接入                   | Redis 固定窗口；Redis 故障时放行                          |
 | Feed 指标与容量基线        | 仅配置及请求回调已提交   | 无采集器、监听装配或容量工具；第 11 节标明边界            |
 | Following 混合推拉 / Inbox | 尚未实现                 | 当前关注流没有 Redis Inbox 或粉丝写扩散                   |
 | Hot 热榜                   | 尚未实现                 | `scene=hot` 返回 501；已有分钟桶代码，没有重建或快照      |
 | Recommend / 向量召回       | 尚未实现                 | `scene=recommend` 返回 501；没有向量模型、索引或检索链路  |
 
-源码入口：[Feed 场景分派](../backend/internal/application/feed/service.go) · [实际路由装配](../backend/internal/router/router.go) · [开关与配置](../backend/internal/config/config.go)。
+源码入口：[Feed 场景分派](../backend/internal/application/feed/service.go) · [实际路由装配](../backend/internal/router/router.go) · [运行参数配置](../backend/internal/config/config.go)。
 
 ## 2. 目录、分层与依赖方向
 
@@ -74,7 +74,7 @@ flowchart LR
 | 入口                                                          | 负责什么                                        | 主要依赖                                    |
 | ------------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------- |
 | [backend/cmd/main.go](../backend/cmd/main.go)                 | API 启动、资源装配、HTTP 生命周期               | MySQL；可恢复 Redis Runtime；不建立 MQ 连接 |
-| [backend/cmd/worker/main.go](../backend/cmd/worker/main.go)   | 视频及可选互动 Relay、视频消费者、可选卡片预热/热度消费与队列观测 | MySQL、RabbitMQ、共享媒体；预热或热度消费时使用 Redis |
+| [backend/cmd/worker/main.go](../backend/cmd/worker/main.go)   | 视频与互动 Relay、视频/预热/热度消费者及队列观测 | MySQL、RabbitMQ、Redis、共享媒体 |
 | [backend/cmd/sweeper/main.go](../backend/cmd/sweeper/main.go) | 到期用户、视频、草稿和孤儿媒体清扫              | MySQL、媒体目录；不建立 MQ 连接             |
 
 三个入口可以独立运行。API 接受发布请求与 worker 完成发布是两个不同阶段。
@@ -97,7 +97,7 @@ backend/
    ├─ domain/interaction/      互动规则、不可变事实与 Outbox 端口
    ├─ application/interaction/ 写入编排与租约派发
    ├─ infra/persistence/interaction/ 同事务业务/事实及派发状态
-   ├─ interfaces/http/interaction/ 默认关闭的四种互动写入口
+   ├─ interfaces/http/interaction/ 四种互动事实写入口
    ├─ middleware/cache/        Redis Runtime 的故障与恢复状态
    ├─ middleware/ratelimit/    注册/登录限流策略
    ├─ mq/ worker/              MQ 拓扑、连接、确认与事件处理
@@ -105,7 +105,7 @@ backend/
    └─ observability/ db/ error/ 日志、就绪检查、查询计数、错误映射
 ```
 
-Feed 采取渐进拆层：先建立新的读取边界，再通过小接口复用已有仓储。互动事实写入和派发也已建立四层边界，默认关闭时仍沿用旧 social 写入口；关注、统计及评论列表继续复用既有模块。
+Feed 采取渐进拆层：通过读取边界和小接口复用已有仓储。互动事实写入、Relay 与热度消费直接装配；四种互动写入使用独立四层，关注、统计与评论列表继续复用既有模块。
 
 ```mermaid
 flowchart TD
@@ -336,7 +336,7 @@ Redis 里可能保留已删除视频或旧卡片。`CachedCardReader.BatchGetCar
 
 页缓存减少重复排序取页，卡片缓存减少重复读取展示字段。它们仍保留公开状态、作者与统计 SQL；卡片未命中还可能增加一次完整卡片读取。因此不能把“缓存命中”推导成“零 SQL”，也不能只凭命中率证明整体更快。
 
-比较时应区分首屏/续页、页缓存/卡片命中、冷缓存/热缓存，并一起看 SQL 次数、扫描量、返回字节、延迟和故障回源压力。当前开关仍默认关闭。
+比较时应区分首屏/续页、页缓存/卡片命中、冷缓存/热缓存，并一起看 SQL 次数、扫描量、返回字节、延迟和故障回源压力。当前缓存直接装配，收益与容量仍待测量。
 
 ## 7. 发布链路：事务、Outbox、消费与预热
 
@@ -506,15 +506,13 @@ worker 启动期连接失败有有限次数退避，耗尽会退出；运行期�
 | 清扫一半失败                     | 保留 purging 与媒体检查点，后续接管重试 | 不把部分删除对象恢复成可发布草稿      | [draft_purge.go](../backend/internal/sweeper/draft_purge.go)                                                                                       |
 | MySQL 不可用                     | 就绪检查 503；业务按各自错误映射失败    | 不靠缓存伪造当前业务事实              | [http.go](../backend/internal/observability/http.go)                                                                                               |
 
-### 8.5 可回退的功能开关
+### 8.5 默认装配与回退边界
 
-`FEED_PAGE_CACHE_ENABLED`、`FEED_CARD_CACHE_ENABLED`、`FEED_PUBLISHED_EVENT_ENABLED`、`FEED_CARD_WARMUP_ENABLED`、`INTERACTION_EVENTS_ENABLED`、`INTERACTION_RELAY_ENABLED`、`FEED_HEAT_CONSUMER_ENABLED` 都默认关闭。
+API 直接装配页缓存和卡片缓存，四种互动写入直接使用同事务事实存储；worker 直接装配发布事件/预热、互动 Relay、热度消费及队列观测。七项布尔配置与环境变量入口已经删除，旧配置副本中的同名项不再影响行为。热度窗口、权重、代际与容量继续使用原参数，不新增开关或配置字段。
 
-关闭卡片读取可回到“页缓存 + MySQL 卡片”；再关闭页缓存可回到 MySQL Timeline。预热与 API 读取分别装配：即使 worker 成功预热，API 没有同时开启页缓存与卡片缓存也不会使用这些值。
+Redis 缓存失败仍回源 MySQL。计划性回退使用对应代码版本，并保留认识已有事件类型的消费者处理存量；不能删除事实表或伪造派发/消费完成。启动前须应用迁移 `000010_interaction_outbox`。配置包只读取热度参数；[worker/main.go](../backend/cmd/worker/main.go) 的 `startWorkers` 在时间单位转换前检查整数溢出，热度索引构造时统一调用 [HeatPolicy.Validate](../backend/internal/domain/feed/heat.go) 校验窗口、去重保留、权重及容量。入口参照 GCFeed 集中装配视频处理、卡片预热、互动 Relay、热度索引/投影器/消费者及观测循环；主函数处理配置加载、连接和关闭信号，收到取消后调用返回的收尾函数，等待循环退出再关闭资源。
 
-worker 拒绝“事件生产开启但本进程预热消费关闭”。升级时先准备消费者和完整拓扑、再开启生产；回滚时先关闭生产，保留消费者处理既有事件。这里是源码与现有文档约定，不表示本次执行过部署或回滚。
-
-视频发布/卡片预热由 `ValidateFeedRuntime` 校验；工作树新增 `ValidateHeatRuntime`，要求互动 Relay 开启时本进程同时开启热度消费。采集与派发仍独立，热度消费可在 Relay 关闭时排空。`feed.heat` 声明成功不表示消费者已运行或覆盖完整；当前保持默认关闭，运行验收后再按开发计划安排迁移、消费者、Relay 和 API 采集的上线顺序。
+组件装配、队列声明与进程启动都不能证明窗口覆盖完整，Hot/Recommend 仍为 501。本轮未执行部署、迁移或运行验收。
 
 ## 9. 账户、互动与媒体清扫
 
@@ -530,19 +528,19 @@ Following 另外检查观看者有效。匿名 Timeline 不会因携带 token �
 
 [social/controller.go](../backend/internal/social/controller.go) → [social/service.go](../backend/internal/social/service.go) → [social/repo.go](../backend/internal/social/repo.go)。
 
-这条链是默认互动路径，关注、统计、评论列表也继续使用旧模块。点赞与关注通过关系表唯一键处理重复创建，删除返回是否确实发生变更；评论使用软删除。Feed 的点赞和评论数来自当前页批量聚合，评论聚合遵循软删除作用域。
+关注、点赞状态、统计和评论列表继续复用这条旧模块链路。点赞与关注通过关系表唯一键处理重复创建，删除返回是否确实发生变更；评论使用软删除。Feed 的点赞和评论数来自当前页批量聚合，评论聚合遵循软删除作用域。
 
-开启 `INTERACTION_EVENTS_ENABLED` 后，四种写操作改走 [HTTP handler](../backend/internal/interfaces/http/interaction/handler.go) → [application/interaction/service.go](../backend/internal/application/interaction/service.go) → [事务适配器 writer.go](../backend/internal/infra/persistence/interaction/writer.go)。实际点赞/取消、评论创建/软删除与 `interaction_outbox_events` 在同一事务提交；重复点赞/取消不追加事实，重复删评仍为 404，评论 POST 仍无请求幂等键。提交后的统计/作者读取失败不撤销已提交业务与事实。
+四种写操作直接走 [HTTP handler](../backend/internal/interfaces/http/interaction/handler.go) → [application/interaction/service.go](../backend/internal/application/interaction/service.go) → [事务适配器 writer.go](../backend/internal/infra/persistence/interaction/writer.go)。实际点赞/取消、评论创建/软删除与 `interaction_outbox_events` 在同一事务提交；重复点赞/取消不追加事实，重复删评仍为 404，评论 POST 仍无请求幂等键。提交后的统计/作者读取失败不撤销已提交事实。
 
-[domain/interaction/event.go](../backend/internal/domain/interaction/event.go) 固定 `event_id`、版本、类型、互动 ID、正负 delta、变更时间及原创建时间；[000010](../backend/db/migrations/000010_interaction_outbox.up.sql) 独立存储事实，原视频/互动删除不会级联清理该表。开启前须检查目标库并应用迁移，本次未查询实时数据库。
+[domain/interaction/event.go](../backend/internal/domain/interaction/event.go) 固定 `event_id`、版本、类型、互动 ID、正负 delta、变更时间及原创建时间；[000010](../backend/db/migrations/000010_interaction_outbox.up.sql) 独立存储事实，原视频/互动删除不会级联清理该表。2026-10-05 本机 feedsystem 已完成版本 9→10、dirty=false 的增量迁移及结构核对，见开发计划第 5.20 节；其他部署目标仍须单独确认。
 
-开启独立 `INTERACTION_RELAY_ENABLED` 后，[worker/main.go](../backend/cmd/worker/main.go) 装配 [InteractionRelay](../backend/internal/worker/interaction_relay.go) → [Dispatcher](../backend/internal/application/interaction/dispatcher.go) → [Outbox 适配器](../backend/internal/infra/persistence/interaction/outbox.go)。每轮最多逐条派发 32 个已提交事实，领取使用数据库时钟、30 秒租约和递增 attempt；确认发布后只在当前有效租约下标记 dispatched，失败退避，同事件可能重复投递。MQ 编码直接使用持久事实，不重新查询当前业务行拼装历史。
+[worker/main.go](../backend/cmd/worker/main.go) 直接装配 [InteractionRelay](../backend/internal/worker/interaction_relay.go) → [Dispatcher](../backend/internal/application/interaction/dispatcher.go) → [Outbox 适配器](../backend/internal/infra/persistence/interaction/outbox.go)。每轮最多逐条派发 32 个已提交事实，领取使用数据库时钟、30 秒租约与递增 attempt；确认发布后仅在有效租约内标记 dispatched，失败退避，同事件可能重复投递。MQ 编码使用持久事实，不重新读取当前业务行拼装历史。
 
-[interaction_spec.go](../backend/internal/mq/interaction_spec.go) 声明 `interaction.changed` → `feed.heat`、QoS 4、`1s/5s/30s` 重试和 DLQ；独立 Runtime 开启 mandatory/Return 检查。工作树中的 [HeatConsumer](../backend/internal/worker/feed_heat.go) 负责严格解码、有限重试/死信和成功后的 ACK，[HeatProjector](../backend/internal/application/feed/heat_projector.go) 将不可变事实映射到 [领域热度规则](../backend/internal/domain/feed/heat.go)，再调用 [Redis 热度适配器](../backend/internal/infra/cache/feed/heat_index.go)。
+[interaction_spec.go](../backend/internal/mq/interaction_spec.go) 声明 `interaction.changed` → `feed.heat`、QoS 4、`1s/5s/30s` 重试和 DLQ；独立 Runtime 开启 mandatory/Return 检查。[HeatConsumer](../backend/internal/worker/feed_heat.go) 负责严格解码、有限重试/死信和成功后的 ACK，[HeatProjector](../backend/internal/application/feed/heat_projector.go) 将不可变事实映射到 [领域热度规则](../backend/internal/domain/feed/heat.go)，再调用 [Redis 热度适配器](../backend/internal/infra/cache/feed/heat_index.go)。
 
 新增与撤销归属同一原创建分钟。Lua 状态 Hash 同时保存收据、绝对分数及容量计数，再把绝对分数写入 ZSET；重复投递读取当前分数补写 ZSET，不重复加分，撤销先到保留负贡献。桶过期由原创建分钟确定，不因重投延长，过期或已离开窗口且不存在的桶不重建。同代际规则指纹不一致、已有状态损坏或分钟容量超限均不伪造成功。
 
-所有新开关默认关闭；热度处理上下文 5 秒，Redis 单次操作 100ms。meta 的 `coverage=unverified` 不会因收到事件自动变为完整；当前只观察处理结果、单事件 lag 与队列深度，没有持久覆盖水位、事实重建或 MySQL 快照，Hot 仍为 501。Redis 去重状态丢失后的恢复属于后续 B2，不能把 Lua/ACK 的源码实现当作已经通过真实故障验收。范围见开发计划第 3.7、5.18 节。
+热度消费直接装配，处理上下文 5 秒、Redis 单次操作 100ms。meta 的 `coverage=unverified` 不会因收到事件自动变为完整；目前只有处理结果、单事件 lag 和队列深度，没有持久覆盖水位、事实重建或 MySQL 快照，Hot 仍为 501。去重状态丢失后的恢复属于后续 B2，源码和编译不能替代真实故障验收。范围见开发计划第 3.7、5.19 节。
 
 ### 9.3 文件系统与数据库无法共用一个事务
 
@@ -620,12 +618,12 @@ Timeline 和 Following 各自保存视频、游标、首屏/续页加载状态�
 
 | 要理解的行为                                  | 建议读的测试                                                                                                                                                        |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 读模型一致性、关注流缓存隔离                  | [application/feed/service_test.go](../backend/internal/application/feed/service_test.go)                                                                            |
-| 首屏旁路、整页失效回源、容量与取消            | [timeline_cache_test.go](../backend/internal/application/feed/timeline_cache_test.go)                                                                               |
-| 卡片故障回源、删除与迟到写                    | [service_test.go](../backend/internal/application/feed/service_test.go)                                                                                             |
-| 当前关注关系、认证、跨用户游标、查询计划      | [following_feed_integration_test.go](../backend/internal/router/following_feed_integration_test.go)                                                                 |
+| 卡片故障回源、并发容量与迟到写                | [application/feed/service_test.go](../backend/internal/application/feed/service_test.go)                                                                            |
+| 缓存命中、载荷损坏与 MySQL 回源               | [feed_http_integration_test.go](../backend/internal/router/feed_http_integration_test.go)                                                                           |
+| 页缓存容量与取消释放                          | [service_test.go](../backend/internal/application/feed/service_test.go)                                                                                             |
+| 当前关注关系、认证与跨用户游标                | [e2e_test.go](../backend/internal/router/e2e_test.go)                                                                                                                |
 | MySQL/Redis 下实际卡片读取                    | [feed_http_integration_test.go](../backend/internal/router/feed_http_integration_test.go)                                                                           |
-| MySQL → Relay → RabbitMQ → 预热消费者 → Redis | [feed_card_warm_chain_integration_test.go](../backend/internal/worker/feed_card_warm_chain_integration_test.go)                                                     |
+| MySQL → Relay → RabbitMQ → 预热消费者 → Redis | [integration_test.go](../backend/internal/worker/integration_test.go)                                                                                               |
 | 草稿部分回收、失去租约与断点继续              | [draft_purge_test.go](../backend/internal/sweeper/draft_purge_test.go)                                                                                              |
 | 前端迟到响应、场景与分页                      | [usePublishedFeed.spec.ts](../frontend/src/features/video/__tests__/usePublishedFeed.spec.ts)、[FeedView.spec.ts](../frontend/src/views/__tests__/FeedView.spec.ts) |
 
@@ -677,7 +675,7 @@ flowchart TD
 | 候选不足、检索超时 | 需要对规则候选或 Timeline 定义显式降级               | 复用非权威依赖故障的思路，冻结推荐专属响应契约          |
 | 分页稳定性         | 推荐分数及用户兴趣变化后，时间游标不足以保持分页语义 | 需要绑定策略/候选快照等版本，不能直接沿用 Timeline 游标 |
 
-同样，Hot 需要分钟桶热度、MySQL 快照与独立分页；当前工作树只实现了分钟桶消费，快照和 Hot 读取仍在计划中。Following 混合推拉是未来的派生 Inbox/作者索引。它们与向量召回分别解决热度、关注分发和相关候选问题，不能把三者混为一个功能。
+同样，Hot 需要分钟桶热度、MySQL 快照与独立分页；当前只实现了分钟桶消费，快照和 Hot 读取仍在计划中。Following 混合推拉是未来的派生 Inbox/作者索引。它们与向量召回分别解决热度、关注分发和相关候选问题，不能把三者混为一个功能。
 
 ## 13. 建议阅读顺序与自检题
 

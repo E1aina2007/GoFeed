@@ -116,7 +116,7 @@ pnpm dev
 
 ## 配置
 
-配置加载顺序：先读取 `CONFIG_PATH` 指定的 YAML（默认 `configs/config.dev.yaml`），再用环境变量覆盖，环境变量优先级最高。数据库、Redis、RabbitMQ 的密码、JWT 密钥和运行模式只从环境变量读取，YAML 中即使存在同名字段也会被忽略。API 已创建可恢复 cache Runtime 并将其接入注册/登录限流；Redis 初始连接失败只记录脱敏事件，API 仍会启动，后续请求由 Runtime 按冷却和单探针机制恢复。Feed 页缓存默认关闭，开启后使用独立 Runtime 和故障恢复状态。worker 通过可重连 runtime 建立 RabbitMQ 连接并运行 relay/consumer，API 与 sweeper 不建立 MQ 连接。`observe.pprof` 仍是后续功能预留，当前加载器不读取它，现有 `/ready` 只依赖 MySQL。
+配置加载顺序：先读取 `CONFIG_PATH` 指定的 YAML（默认 `configs/config.dev.yaml`），再用环境变量覆盖。数据库、Redis、RabbitMQ 的密码、JWT 密钥和运行模式只从环境变量读取。API 为限流和 Feed 分别创建可恢复 Redis Runtime；Redis 不可用时 API 仍可启动，Feed 缓存读取失败回源 MySQL。页缓存、卡片缓存、发布事件、预热消费、互动事实记录、Relay 与热度消费直接启用，已移除对应布尔配置及环境变量入口。worker 使用可重连 RabbitMQ Runtime；API 与 sweeper 不连接 MQ。`observe.pprof` 仍为预留，现有 `/ready` 只依赖 MySQL。
 
 当前生效的配置项：
 
@@ -139,15 +139,8 @@ pnpm dev
 | 草稿清扫租约 | `SWEEPER_DRAFT_PURGE_LEASE_MINUTES` | 默认 `15`；单条草稿或拒绝视频的 token 围栏租约，过期后可由其他 sweeper 接管 |
 | Redis 主机 | `REDIS_HOST` | 本地默认 `localhost`；Docker 容器由 Compose 覆盖为 `redis` |
 | Redis 端口 | `REDIS_PORT` | `6379` |
-| Redis DB | `REDIS_DB` | `0`；供限流与可选 Feed Runtime 选择逻辑库 |
+| Redis DB | `REDIS_DB` | `0`；供限流与独立 Feed Runtime 选择逻辑库 |
 | Redis 密码 | `REDIS_PASSWORD` | 仅从环境变量读取；Compose Redis 将其传给 `requirepass` |
-| Feed 页缓存 | `FEED_PAGE_CACHE_ENABLED` | 默认 `false`，对应 `feed.page_cache_enabled`；环境变量非空但不是合法布尔值时关闭 |
-| Feed 基础卡片缓存 | `FEED_CARD_CACHE_ENABLED` | 默认 `false`，对应 `feed.card_cache_enabled`；仅页缓存同时开启时生效，非法非空布尔值关闭 |
-| 发布事件生产 | `FEED_PUBLISHED_EVENT_ENABLED` | 默认 `false`，对应 `feed.published_event_enabled`；worker 处理成功时同事务写发布事件，本进程须同时开启预热消费，只开生产而未开本进程预热消费时启动即拒绝 |
-| 卡片预热消费 | `FEED_CARD_WARMUP_ENABLED` | 默认 `false`，对应 `feed.card_warmup_enabled`；开启发布路由、预热消费者和完整重连拓扑，可在关闭生产后继续排空 |
-| 互动事实记录 | `INTERACTION_EVENTS_ENABLED` | 默认 `false`，对应 `interaction.events_enabled`；应用迁移 `000010` 后才可开启，四种互动的实际变更与事件同事务提交 |
-| 互动事件派发 | `INTERACTION_RELAY_ENABLED` | 默认 `false`，对应 `interaction.relay_enabled`；worker 独立派发已提交事实至 `feed.heat`，与 API 采集开关独立；开启时本进程必须同时开启热度消费 |
-| 热度消费 | `FEED_HEAT_CONSUMER_ENABLED` | 默认 `false`，对应 `feed.heat_consumer_enabled`；独立消费 `feed.heat`、派生分钟桶，不启用 Hot；可单独开启消费排空 |
 | 热度代际 | `FEED_HEAT_GENERATION` | 默认 `initial`；同一代际锁定规则指纹，修改规则或重建使用新代际 |
 | 热度窗口与保留宽限 | `FEED_HEAT_WINDOW_MINUTES`、`FEED_HEAT_RETENTION_GRACE_MINUTES` | 默认 `60`、`10` 分钟；桶到期由原创建分钟计算，重复投递不延长窗口 |
 | 热度去重保留 | `FEED_HEAT_DEDUPE_TTL_HOURS` | 默认 `24` 小时，必须至少覆盖窗口、保留宽限及额外一分钟 |
@@ -162,22 +155,17 @@ pnpm dev
 
 本机 MySQL 的完整初始化、迁移和直接启动流程见上方「本地开发（不使用 Compose）」。`backend/.env` 存放数据库和中间件密码及固定 `JWT_SECRET`，`backend/configs/config.dev.yaml` 存放非敏感配置；从 `backend` 目录运行的 API 和 worker 都会读取这些配置。仅启动 API 仍只要求 MySQL；Redis 已接入注册/登录限流，但不可用时 API 启动和这两个业务接口均按 fail-open 继续。要验证异步发布闭环，需在填好 `backend/.env` 后启动 RabbitMQ 并运行 worker（可执行 `docker compose up -d rabbitmq`，再直接运行 worker）。
 
-Feed 页缓存只作用于 `/api/feed?scene=timeline` 的带游标后续页，首屏仍查 MySQL；默认 TTL 30 秒、单次缓存操作上限 100 毫秒。命中后批量检查整页（含探测记录）的当前公开卡片，失效时按原游标整页回源；作者和互动统计实时读取。Redis 失败回源，短超时同步回填失败不影响成功响应，不启动后台回填任务。开启时最多并发处理 32 个 Timeline 缓存读取请求和 16 次缓存操作；请求容量耗尽返回安全的 503，缓存容量耗尽直接回源。旧 `/api/video` 不受这些限制影响。
+Feed 页缓存直接装配，只作用于 `/api/feed?scene=timeline` 的带游标后续页，首屏仍查 MySQL；默认 TTL 30 秒、单次操作上限 100ms。命中后批量检查整页（含探测记录）的当前公开卡片，失效时按原游标整页回源；作者和互动统计实时读取。Redis 失败回源，短超时同步回填失败不影响成功响应，不启动后台回填任务。每实例最多并发处理 32 个 Timeline 缓存链路请求和 16 次缓存操作；请求容量耗尽返回安全 503，缓存容量耗尽直接回源。旧 `/api/video` 不受这些限制影响。
 
-F2-B1 增加可选基础卡片缓存，仍默认关闭。两个开关同时开启后，仅在后续页的页缓存命中路径使用：先按完整公开规则查询 MySQL 的 `id`、`author_id`、`published_at`，再批量读卡片；只有与当前状态匹配的值才能使用，缺失或坏值仅批量回源缺失卡片。作者资料和统计继续实时读取。Key 为 `gofeed:feed:card:v1:<video_id>`，默认 TTL 30 秒、单卡片上限 16 KiB；Redis 脚本在返回字符串前检查长度，超大卡片不回填。卡片与页缓存共享 16 次操作容量和同一个独立 Feed Runtime，缓存故障不影响成功回源，MySQL 故障仍返回错误。`feed_card_cache` 日志记录命中数量、回源、坏值、超大跳过及读写故障。
+基础卡片缓存直接装配，仅在后续页的页缓存命中路径使用：先按完整公开规则查询 MySQL 的 `id`、`author_id`、`published_at`，再批量读卡片；卡片必须匹配当前状态，缺失或坏值批量回源。作者和统计继续实时读取。Key 为 `gofeed:feed:card:v1:<video_id>`，默认 TTL 30 秒、单卡片上限 16 KiB；超大卡片不回填。卡片与页缓存共享 16 次操作容量和同一 Feed Runtime；缓存故障不影响成功回源，MySQL 故障仍返回错误。`feed_card_cache` 记录命中、回源及载荷/读写失败。
 
-只把 `FEED_CARD_CACHE_ENABLED` 设为 `false` 并重启 API，可回到原页缓存加 MySQL 卡片读取；再关闭页缓存则回到全部 MySQL 读取。HTTP 与游标格式不变，无迁移、无需全库清理；也可等待精确卡片键自然过期。B1 本身不包含发布事件或预热；后续 B2 后端代码见下文，默认关闭，可靠性验收见开发计划第 5.10 节。已发布内容编辑尚无入口，未来增加编辑前须另补内容版本与旧写入围栏，不能用发布时间匹配作为编辑一致性保障。
+缓存与异步链路不再提供功能开关，旧 `.env` / YAML 中的七个布尔项不会影响当前装配。Redis 故障仍按既有读取规则回源 MySQL；计划性回退需使用对应代码版本，并保留能够识别发布/互动事件的 worker 处理存量。当前没有已发布内容编辑入口，未来新增编辑前仍需补齐内容版本及旧写入围栏。
 
-评审后可在 `backend` 目录用临时环境变量开启；设为 `false` 并重启 API 即回到原读取路径，无需迁移或清理 Redis。下面是操作说明；本轮的缓存验收通过测试内装配的 httptest 服务完成，未以 `go run ./cmd` 常驻启动 API：
+Worker 参照 GCFeed 的入口编排，在 [cmd/worker/main.go](./backend/cmd/worker/main.go) 的 `startWorkers` 中集中装配各条链路，不新增启动包。主函数处理配置、连接与关闭信号，退出时等待全部循环结束再关闭 Redis、RabbitMQ 和数据库。
 
-```powershell
-$env:FEED_PAGE_CACHE_ENABLED = 'true'
-go run ./cmd
-```
+F2-B2 的 worker 在实际 `processing → published` 变更时同事务写 `video.published`，经 `feed.card.warm` 预热当前 MySQL 公开卡片。独立消费使用 5 秒上下文、100ms 缓存操作超时、`1s/5s/30s` 重试与 DLQ；重复投递可覆盖当前卡片，不可见视频清理精确键，超大载荷跳过。首次连接和重连均声明 `video.process` 与预热拓扑，发布沿用 mandatory/Return 检查。
 
-F2-B2 后端实现：worker 在实际处理成功时可同事务写 `video.published`，通过独立 `feed.card.warm` 队列读取当前 MySQL 公开卡片并写入 B1 缓存，最多三次 `1s/5s/30s` 延迟重试及专用 DLQ。预热处理使用 5 秒上下文，缓存操作沿用 100ms；重复投递可覆盖当前卡片，不可见视频清理精确键，超大卡片记录跳过。首次连接和每次重连都声明两个消费规格，启用 B2 时为发布开启 mandatory/Return 检查，缺失绑定视为失败。`feed_card_warm` 记录处理结果，`feed_card_warm_queue` 记录主、重试与死信队列深度；stdout 不代表持久化消费水位或告警平台。
-
-部署先准备开启预热消费、关闭事件生产的新版 worker，确认完整拓扑与消费者就绪并完成全部处理 worker 升级，再开启生产者；API 需同时开启页缓存和卡片读取才能使用预热值。worker 不允许生产开启而本进程消费关闭。回滚先关闭事件生产，保留新版路由与预热消费排空已有 Outbox、主队列及重试队列，DLQ 记录受控重放清单；可独立关闭 API 卡片读取。在仍有新事件未处理时不要回退到仅识别旧类型的 worker。本轮未运行这些部署/回滚流程，隔离测试内的真实链路验收见开发计划第 5.10 节，实现阶段的排除范围见第 5.9 节。
+启动新版 API/worker 前须应用仓库迁移至 `000010_interaction_outbox`；建议先启动能够识别全部事件的 worker，再启动 API。历史隔离验收见开发计划第 5.10、5.11 节；本次仅完成生产编译与静态检查，没有执行部署、迁移或真实链路验收。
 
 ### Docker 部署
 
@@ -217,7 +205,7 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 ### 观测与健康检查
 
-`GET /health` 只检查 API 进程存活，`GET /ready` 还会在 2 秒内探测 MySQL，数据库不可用时返回 `503`。Compose 使用 `/ready` 作为 backend 健康检查，frontend 仅在 backend 健康后启动；Redis/RabbitMQ 各自有容器健康检查，但 Redis Runtime 不进入 API 就绪条件。每个响应会返回 `X-Request-ID`；客户端可复用该请求头值关联服务端的 `http_request`、`http_request_error` 和 `readiness_check` 日志。开启 Feed 缓存后，`feed_page_cache` 日志记录命中、未命中、失效、读写失败、MySQL 读取及容量限制的结果与耗时，不输出游标或 Redis 错误详情；这些基础事件尚未接入指标/告警平台。sweeper 每项清扫和每轮汇总都会记录事件、结果、耗时、删除数量及失败数量。当前未启用或暴露 pprof；后续实现会参考 `feedsystem` 的隔离模式，以独立 `ServeMux`、仅回环监听、显式开关和独立关闭生命周期提供诊断端点，而不将其注册到 Gin 路由。
+`GET /health` 只检查 API 进程存活，`GET /ready` 还会在 2 秒内探测 MySQL，数据库不可用时返回 `503`。Compose 使用 `/ready` 作为 backend 健康检查，frontend 仅在 backend 健康后启动；Redis/RabbitMQ 各自有容器健康检查，但 Redis Runtime 不进入 API 就绪条件。每个响应会返回 `X-Request-ID`；客户端可复用该请求头值关联服务端的 `http_request`、`http_request_error` 和 `readiness_check` 日志。Feed 缓存的 `feed_page_cache` 日志记录命中、未命中、失效、读写失败、MySQL 读取及容量限制的结果与耗时，不输出游标或 Redis 错误详情；这些基础事件尚未接入指标/告警平台。sweeper 每项清扫和每轮汇总都会记录事件、结果、耗时、删除数量及失败数量。当前未启用或暴露 pprof；后续实现会参考 `feedsystem` 的隔离模式，以独立 `ServeMux`、仅回环监听、显式开关和独立关闭生命周期提供诊断端点，而不将其注册到 Gin 路由。
 
 ## 已完成能力概述
 
@@ -226,10 +214,10 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 - 账户与会话、匿名视频流、草稿上传/异步发布、公开详情、个人主页、我的视频、头像、点赞/评论/关注及对应前端页面；接口契约见 [API.md](./API.md)。
 - 视频与 social 列表使用带版本和范围的游标；用户列表兼容分页已提交为 `455849e`，保留旧的无参数读取。
 - `internal/error` 统一 user/video/social 的 HTTP 错误分类和安全响应，保持既有状态码与 `{"error":"..."}` 形状；后台任务保留自身错误语义。
-- MySQL 事务 + Outbox 可靠发布，RabbitMQ 运行时连接恢复与拓扑重建、publisher confirm、派发租约/退避、消费 CAS 幂等和 `1s/5s/30s` 重试/DLQ。F2-A `48ce8df` 支持按 `event_type` 装配发布目标、快照检查与载荷构造；默认只写入及派发 `video.process`，开启 F2-B2 的发布事件与预热消费开关后也装配 `video.published`；未知类型继续固定退避。
+- MySQL 事务 + Outbox 可靠发布，RabbitMQ 运行时连接恢复与拓扑重建、publisher confirm、派发租约/退避、消费 CAS 幂等和 `1s/5s/30s` 重试/DLQ。F2-A `48ce8df` 支持按 `event_type` 装配发布目标、快照检查与载荷构造；当前同时装配 `video.process` 与 `video.published` 的派发及消费；未知类型继续固定退避。
 - 数据和媒体清扫、草稿租约、公开视频完整性过滤、请求日志与 MySQL 就绪检查；本地媒体孤儿回收已提交为 `d0902a3`，按宽限期与引用检查清理。
 - 登录/注册 Redis 固定窗口限流、故障 fail-open 和冷却/单探针恢复；页面按服务端 `Retry-After` 等待。Redis 不进入 `/ready`。
-- F0 新增匿名 Timeline `/api/feed` 的四层读取边界；F1-A 批量公开卡片 `a7e2bd4`、F1-B 轻量页缓存端口与适配 `509c123` 已提交。F1-C 已提交为 `f772349`，接入默认关闭的后续页缓存、命中校验、MySQL 回源、独立 Runtime 与有界并发。首页已通过 `896f4e1` 切换为 `/api/feed?scene=timeline&limit=12`，作者主页继续使用 `/api/video?author_id=...`；取消、去重、分页错误态、手动重试与播放暂停保持原行为。测试覆盖及实际依赖参与情况见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 5 节；缓存收益与容量压测仍待验证。
+- F0 新增匿名 Timeline `/api/feed` 的四层读取边界；F1-A 批量公开卡片 `a7e2bd4`、F1-B 轻量页缓存端口与适配 `509c123` 已提交。F1-C 已提交为 `f772349`，接入后续页缓存、命中校验、MySQL 回源、独立 Runtime 与有界并发。首页已通过 `896f4e1` 切换为 `/api/feed?scene=timeline&limit=12`，作者主页继续使用 `/api/video?author_id=...`；取消、去重、分页错误态、手动重试与播放暂停保持原行为。测试覆盖及实际依赖参与情况见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 5 节；缓存收益与容量压测仍待验证。
 
 2026-10-02 首页迁移验收：lint、149 个单元用例、构建通过；mock 浏览器桌面/移动 38 通过、2 个真实限流用例未启用。隔离联调工具 `f4af6b8` 在独立 MySQL 测试库准备 13 条可见视频，以真实 Go API 返回 JSON 与游标；缓存关闭/开启各通过桌面与移动浏览器，观测到第二页未命中、回填及重复查询命中，开关前后响应逐字节一致。媒体使用本地夹具，未验证 MQ 发布或性能收益。
 
@@ -243,11 +231,11 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 ## 后续开发
 
-首页 Timeline 接入与真实链路验收已完成，Feed 页缓存继续默认关闭。F2-B1 基础卡片缓存后端为 `98f9df2`，F2-B2 同事务发布事件、预热消费、重试/DLQ 与重连装配后端为 `0c68c82`。补测经审查后分为 `5a87830`（卡片读取）与 `719e873`（发布预热），修复了测试清空固定 MQ 队列的问题，改用每用例随机拓扑，并在真实 ACK 后停止消费循环。配置校验提取保留既有 worker 启动行为。构建、vet、普通和 race 全量回归通过，真实 MySQL/RabbitMQ/Redis 参与；6 个专项开关用例跳过，不算通过。F3-A 后端/API `3a85681`、F3-B 页面 `c8e88df`、真实浏览器与脱敏测试 `5e545c9` 已分别提交；最新独立副本验证、真实联调及证据边界见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 5.15 节，生产开关仍默认关闭。
+首页 Timeline、基础卡片缓存、发布预热和 MySQL Following 已分别提交并保留历史验收记录。2026-10-05 默认装配、worker 入口编排与热度校验整理已按用户指令提交为 `8e059e2`，七项 Feed/互动能力直接装配，不再依赖布尔开关。历史普通/race、MySQL/Redis/RabbitMQ、浏览器证据及跳过范围见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 5 节，不能替代本次行为变更的运行验收。
 
-F4-A1 互动事实存储已提交为 `82c01d5`，F4-A2 可靠派发已提交为 `65cebf6`。`INTERACTION_EVENTS_ENABLED` / `interaction.events_enabled` 默认关闭，关闭时沿用原互动处理器；开启后，点赞、取消点赞、创建评论和删除评论通过 HTTP、应用、领域、持久化四层提交业务行与 `interaction_outbox_events`。只有真实变更写事件，事件插入失败使同一事务失败；提交后读取统计或作者资料失败仍可能返回错误，不撤销已经提交的事实。接口与认证沿用现有契约。
+F4-A1 互动事实存储已提交为 `82c01d5`，F4-A2 可靠派发已提交为 `65cebf6`。当前点赞、取消点赞、创建评论和删除评论直接通过互动四层提交业务行与 `interaction_outbox_events`，仅真实变更写事件；插入失败使同一事务失败，提交后统计/作者读取失败不撤销事实。接口与认证契约不变。
 
-启用事件记录或派发前需核对目标库并应用迁移 `000010_interaction_outbox`；本文本轮只核对源码，未检查实时数据库，2026-10-04 的版本 9 记录仅是历史证据。worker 的独立互动 Relay 通过 `INTERACTION_RELAY_ENABLED` / `interaction.relay_enabled` 控制，读取持久载荷，沿用租约、attempt 围栏、退避、publisher confirm 与 mandatory/Return 检查。F4-B1 后端已提交为 `26a3f95`，实现默认关闭的独立热度消费，复用 `feed.heat` 及 `1s/5s/30s` 重试/DLQ、重连和关闭生命周期；派发开启时要求本进程同时开启消费，消费可在派发关闭时排空存量。真实依赖验收仍待补齐，所有新开关继续默认关闭。
+当前 API 互动写入和 worker Relay 都依赖迁移 `000010_interaction_outbox`，启动前必须确认已应用。2026-10-05 已使用当前后端配置将本机 `localhost:3306/feedsystem` 从版本 9 迁移至 10，dirty=false；互动事实表的 18 个字段、7 个索引已核对，原有七张业务表记录数未变。这只证明迁移与结构，不代表真实互动/消费链路验收。worker 直接运行独立互动 Relay 与 F4-B1 热度消费（实现提交 `26a3f95`），沿用持久载荷、租约/attempt 围栏、publisher confirm、mandatory/Return、`1s/5s/30s` 重试/DLQ、重连与关闭生命周期。coverage 保持 unverified，真实依赖验收仍待补齐。
 
 热度新增与撤销都计入原互动创建分钟。Lua 在状态 Hash 中同时记录 event_id 收据与绝对分数，再写分钟 ZSET；重复投递可修复未完成的 ZSET 写入而不再次累加，负贡献不在写入时截断。分钟桶按原始时间到期，过期桶不重建；同一代际锁定权重/时间/容量规则，覆盖标记始终为 `unverified`。没有 MySQL 热榜快照、自动重建或完整消费水位，`scene=hot` 仍为 501，派发完成也不表示热榜完整。
 
