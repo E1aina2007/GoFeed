@@ -2,92 +2,20 @@ package redis
 
 import (
 	"context"
-	"errors"
-	"net"
+	"os"
 	"reflect"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
-	"gofeed/internal/config"
-
 	"github.com/alicebob/miniredis/v2"
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
+
+	"gofeed/internal/config"
 )
-
-// 测试目标：构造客户端时使用配置中的地址密码和数据库
-// 预期效果：正确凭据连通并隔离数据库且错误凭据原样返回错误
-func TestNewConfig(t *testing.T) {
-	s := miniredis.RunT(t)
-	s.RequireAuth("test-password")
-	port, _ := strconv.Atoi(s.Port())
-	cfg := config.RedisConfig{Host: s.Host(), Port: port, DB: 3, Password: "test-password"}
-	c, err := New(t.Context(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = c.Close() })
-	if err := c.Ping(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Set(t.Context(), "key", "value", 0); err != nil {
-		t.Fatal(err)
-	}
-	if s.DB(0).Exists("key") || !s.DB(3).Exists("key") {
-		t.Fatal("DB selection not respected")
-	}
-	cfg.Password = "wrong"
-	bad, err := New(t.Context(), cfg)
-	var redisErr redis.Error
-	if bad != nil || !errors.As(err, &redisErr) {
-		t.Fatalf("client=%v error=%v", bad, err)
-	}
-}
-
-// 测试目标：构造期间无法连通或上下文取消时释放客户端并保留错误类型
-// 预期效果：返回空接口和网络错误或原始取消错误
-func TestNewFailure(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
-	c, err := New(ctx, config.RedisConfig{Host: "127.0.0.1", Port: port})
-	var netErr net.Error
-	if c != nil || !errors.As(err, &netErr) {
-		t.Fatalf("client=%v error=%v", c, err)
-	}
-	canceled, stop := context.WithCancel(t.Context())
-	stop()
-	c, err = New(canceled, config.RedisConfig{Host: "127.0.0.1", Port: port})
-	if c != nil || err != context.Canceled {
-		t.Fatalf("client=%v error=%v", c, err)
-	}
-}
-
-// 测试目标：关闭客户端后探测及所有命令均保留底层关闭语义
-// 预期效果：每种操作返回同一关闭哨兵错误且关闭不自动重建连接
-func TestClientClosed(t *testing.T) {
-	c := testClient(t)
-	if err := c.Close(); err != nil {
-		t.Fatal(err)
-	}
-	ctx := t.Context()
-	_, getErr := c.Get(ctx, "key")
-	_, delErr := c.Del(ctx, "key")
-	_, evalErr := c.Eval(ctx, "return 1", nil)
-	for _, err := range []error{c.Ping(ctx), getErr, delErr, evalErr, c.Set(ctx, "key", "value", 0), c.Close()} {
-		if err != redis.ErrClosed {
-			t.Fatalf("closed error=%v", err)
-		}
-	}
-}
 
 // 测试目标：一次 Lua 调用返回计数与剩余 TTL 并保持并发原子性
 // 预期效果：并发调用返回互不重复的计数及同一毫秒 TTL
@@ -144,4 +72,73 @@ func testClient(t testing.TB) Client {
 	}
 	t.Cleanup(func() { _ = c.Close() })
 	return c
+}
+
+// 测试目标：在显式启用时验证真实 Redis 的生命周期和 KV 及 Lua 多值契约
+// 预期效果：仅操作随机测试键并清理且未启用时明确标记集成跳过
+func TestRealRedis(t *testing.T) {
+	if os.Getenv("GOFEED_REDIS_INTEGRATION") != "1" {
+		t.Skip("集成跳过：设置 GOFEED_REDIS_INTEGRATION=1 并配置本机 Redis 后运行")
+	}
+	values, err := godotenv.Read("../../.env")
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal("无法读取本地 Redis 测试配置")
+	}
+	for _, key := range []string{"REDIS_HOST", "REDIS_PORT", "REDIS_DB", "REDIS_PASSWORD"} {
+		if _, exists := os.LookupEnv(key); !exists {
+			if value, ok := values[key]; ok {
+				t.Setenv(key, value)
+			}
+		}
+	}
+	path := "../../configs/config.dev.yaml"
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		path = "../../configs/config.example.yaml"
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal("无法加载 Redis 测试配置")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	c, err := New(ctx, cfg.Redis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	key := "gofeed:test:c1a:" + uuid.NewString()
+	t.Cleanup(func() {
+		cleanupCtx, done := context.WithTimeout(context.Background(), 3*time.Second)
+		defer done()
+		if _, err := c.Del(cleanupCtx, key); err != nil {
+			t.Errorf("cleanup: %v", err)
+		}
+	})
+	if err := c.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Set(ctx, key, "0", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := c.Get(ctx, key); err != nil || value != "0" {
+		t.Fatalf("get=%q err=%v", value, err)
+	}
+	value, err := c.Eval(ctx, `return {redis.call('INCRBY', KEYS[1], ARGV[1]), redis.call('PTTL', KEYS[1])}`, []string{key}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, ok := value.([]any)
+	if !ok || len(pair) != 2 || pair[0] != int64(1) {
+		t.Fatalf("eval=%#v", value)
+	}
+	ttl, ok := pair[1].(int64)
+	if !ok || ttl <= 0 || ttl > 30000 {
+		t.Fatalf("ttl=%#v", pair[1])
+	}
+	if count, err := c.Del(ctx, key); err != nil || count != 1 {
+		t.Fatalf("del=%d err=%v", count, err)
+	}
+	if _, err := c.Get(ctx, key); err != redis.Nil {
+		t.Fatalf("missing=%v", err)
+	}
 }

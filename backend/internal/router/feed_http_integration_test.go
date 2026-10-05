@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -20,16 +21,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
 	applicationfeed "gofeed/internal/application/feed"
 	"gofeed/internal/config"
 	"gofeed/internal/db"
 	infracachefeed "gofeed/internal/infra/cache/feed"
+	infrafeed "gofeed/internal/infra/persistence/feed"
 	"gofeed/internal/middleware/cache"
 	"gofeed/internal/testutil"
 	videoModel "gofeed/internal/video"
-
-	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 // feedBaseTime 固定时间线用例的发布时间基准，避免断言依赖发布耗时
@@ -1219,5 +1221,513 @@ func TestFeedRejectsLegacyVideoCursor(t *testing.T) {
 	doJSON(t, client, http.MethodGet, base+"/api/video?limit=1&cursor="+url.QueryEscape(legacyPage.NextCursor), "", nil, http.StatusOK, &legacyNext)
 	if len(legacyNext.Items) != 1 || legacyNext.Items[0].ID != items[1].ID {
 		t.Fatalf("旧接口自身应继续接受该游标 got=%+v", legacyNext.Items)
+	}
+}
+
+type feedScriptRecorder struct {
+	base          *feedCacheRecorder
+	mu            sync.Mutex
+	reads, writes int
+}
+
+// 测试目标：观测真实 Redis 批量脚本并复用精确键清理
+// 预期效果：真实卡片访问有独立读写计数，不污染已有页缓存观测
+func (r *feedScriptRecorder) Eval(ctx context.Context, script string, keys []string, args ...any) (any, error) {
+	full := make([]string, len(keys))
+	for i, key := range keys {
+		full[i] = r.base.prefix + key
+		r.base.record(&r.base.writeKeys, key)
+	}
+	r.mu.Lock()
+	if strings.Contains(script, "redis.call('GET'") {
+		r.reads++
+	}
+	if strings.Contains(script, "redis.call('SET'") {
+		r.writes++
+	}
+	r.mu.Unlock()
+	return r.base.runtime.Eval(ctx, script, full, args...)
+}
+
+// 测试目标：装配与生产同构的卡片适配器和独立随机键空间
+// 预期效果：使用真实 Redis 且退出时检查全部精确键已删除
+func (e *feedTestEnv) liveCardCache(t *testing.T) (applicationfeed.CardCache, *feedScriptRecorder) {
+	t.Helper()
+	base := &feedCacheRecorder{runtime: e.runtime, prefix: feedTestNamespace(t)}
+	t.Cleanup(func() { base.cleanup(t) })
+	recorder := &feedScriptRecorder{base: base}
+	adapter, err := infracachefeed.NewCardCache(recorder, infracachefeed.CardCacheOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return adapter, recorder
+}
+
+// 测试目标：验证四种缓存组合、完整响应兼容和实际查询投影
+// 预期效果：仅两个开关都开启时读取卡片，首屏绕过，冷读五条 SQL、命中四条且视频仅查询三列
+func TestFeedCardCacheRealReadPath(t *testing.T) {
+	env := newFeedTestEnv(t)
+	cardCache, recorder := env.liveCardCache(t)
+	events := &timelineCacheEvents{event: "feed_card_cache", counts: make(map[string]int)}
+	original := log.Writer()
+	log.SetOutput(io.MultiWriter(original, events))
+	t.Cleanup(func() { log.SetOutput(original) })
+	plain, client := env.newServer(t, nil)
+	register(t, client, plain.URL, "card_reader_author", "card-reader-password-123")
+	session := login(t, client, plain.URL, "card_reader_author", "card-reader-password-123")
+	items := publishFeedVideos(t, env, plain.URL, session.AccessToken, client, 3)
+	var first feedTimelineResponse
+	doJSON(t, client, http.MethodGet, plain.URL+"/api/feed?scene=timeline&limit=1", "", nil, http.StatusOK, &first)
+	path := "/api/feed?scene=timeline&limit=1&cursor=" + url.QueryEscape(first.NextCursor)
+	_, oracle := rawStatusBody(t, client, plain.URL+path)
+	cardOnly, _ := env.newServer(t, nil, cardCache)
+	_, body := rawStatusBody(t, client, cardOnly.URL+path)
+	if !bytes.Equal(body, oracle) || recorder.reads != 0 || recorder.writes != 0 {
+		t.Fatal("只开卡片不得访问缓存")
+	}
+	pageOnly, _ := env.newServer(t, env.livePageCache(t))
+	for i := 0; i < 2; i++ {
+		_, body = rawStatusBody(t, client, pageOnly.URL+path)
+		if !bytes.Equal(body, oracle) {
+			t.Fatal("页缓存响应变化")
+		}
+	}
+	if recorder.reads != 0 || recorder.writes != 0 {
+		t.Fatal("页缓存不能隐式启用卡片")
+	}
+	both, _ := env.newServer(t, env.livePageCache(t), cardCache)
+	_, body = rawStatusBody(t, client, both.URL+"/api/feed?scene=timeline&limit=1")
+	if recorder.reads != 0 || recorder.writes != 0 {
+		t.Fatal("首屏访问卡片缓存")
+	}
+	for _, want := range []int64{5, 4} {
+		count := measuredQueryCount(t, env.capture, func() {
+			status, response := rawStatusBody(t, client, both.URL+path)
+			if status != 200 || !bytes.Equal(response, oracle) {
+				t.Fatalf("status=%d response=%s", status, response)
+			}
+		})
+		if count != want {
+			t.Fatalf("SQL=%d want=%d", count, want)
+		}
+	}
+	if recorder.reads != 2 || recorder.writes != 1 || events.snapshot()["hit"] != 1 {
+		t.Fatalf("reads=%d writes=%d events=%v", recorder.reads, recorder.writes, events.snapshot())
+	}
+	var sqlMu sync.Mutex
+	var projections []string
+	callback := "test:feed_card_projection"
+	if err := env.gdb.Callback().Query().After("gorm:query").Register(callback, func(tx *gorm.DB) {
+		if tx.Statement.Table != "videos" {
+			return
+		}
+		sqlMu.Lock()
+		defer sqlMu.Unlock()
+		projections = append(projections, tx.Statement.SQL.String())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = env.gdb.Callback().Query().Remove(callback) })
+	_, body = rawStatusBody(t, client, both.URL+path)
+	sqlMu.Lock()
+	captured := append([]string(nil), projections...)
+	sqlMu.Unlock()
+	if len(captured) != 1 || !strings.HasPrefix(captured[0], "SELECT `id`,`author_id`,`published_at` FROM `videos`") {
+		t.Fatalf("轻量投影未生效: %v", captured)
+	}
+	// 命中卡片也不能绕过 MySQL 可见性检查，公开数据读取失败须返回错误
+	env.faults.arm("videos", errors.New("injected public guard outage"))
+	status, _ := rawStatusBody(t, client, both.URL+path)
+	env.faults.disarm()
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("公开检查失败 status=%d", status)
+	}
+	// 仅破坏一条卡片，剩余探测记录应继续命中
+	key := fmt.Sprintf("gofeed:feed:card:v1:%d", items[1].ID)
+	recorder.base.writeValue(t, key, "broken")
+	_, body = rawStatusBody(t, client, both.URL+path)
+	if !bytes.Equal(body, oracle) || events.snapshot()["invalid_payload"] != 1 {
+		t.Fatalf("坏值回源不兼容 body=%s events=%v", body, events.snapshot())
+	}
+	// 旧请求在 MySQL 删除之后又回填，真实公开检查必须拦住
+	old := recorder.base.readValue(t, key)
+	if err := env.gdb.Exec("UPDATE videos SET deleted_at = ? WHERE id = ?", time.Now(), items[1].ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	recorder.base.writeValue(t, key, old)
+	var after feedTimelineResponse
+	doJSON(t, client, http.MethodGet, both.URL+path, "", nil, http.StatusOK, &after)
+	if len(after.Items) != 1 || after.Items[0].ID != items[2].ID {
+		t.Fatalf("已删除卡片复活: %+v", after)
+	}
+	t.Logf("真实卡片缓存事件=%v; SQL 冷读=5 命中=4; 视频命中投影=%s", events.snapshot(), captured[0])
+}
+
+// 测试目标：卡片已命中时验证作者更新、注销占位及实时互动统计
+// 预期效果：缓存不包含作者资料或统计，响应立即反映 MySQL 变化并保留原游标
+func TestFeedCardCacheRealAuthorAndEngagement(t *testing.T) {
+	env := newFeedTestEnv(t)
+	cards, recorder := env.liveCardCache(t)
+	server, client := env.newServer(t, env.livePageCache(t), cards)
+	base := server.URL
+	register(t, client, base, "card_live_author", "card-live-password-123")
+	author := login(t, client, base, "card_live_author", "card-live-password-123")
+	items, secondURL, initial := setupCachedFeedPage(t, env, base, author.AccessToken, client)
+	var warm feedTimelineResponse
+	doJSON(t, client, http.MethodGet, secondURL, "", nil, http.StatusOK, &warm)
+	if recorder.writes != 1 {
+		t.Fatalf("未回填卡片 writes=%d", recorder.writes)
+	}
+	register(t, client, base, "card_live_viewer", "card-viewer-password-123")
+	viewer := login(t, client, base, "card_live_viewer", "card-viewer-password-123")
+	doJSON(t, client, http.MethodPut, fmt.Sprintf("%s/api/video/auth/%d/like", base, items[1].ID), viewer.AccessToken, nil, http.StatusOK, nil)
+	doJSON(t, client, http.MethodPost, fmt.Sprintf("%s/api/video/auth/%d/comments", base, items[1].ID), viewer.AccessToken, map[string]string{"content": "实时评论"}, http.StatusCreated, nil)
+	if err := env.gdb.Exec("UPDATE users SET avatar_url = ? WHERE id = ?", "/static/changed-avatar.png", author.UserID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var updated feedTimelineResponse
+	doJSON(t, client, http.MethodGet, secondURL, "", nil, http.StatusOK, &updated)
+	if len(updated.Items) != 1 || updated.Items[0].Author.AvatarURL != "/static/changed-avatar.png" || updated.Items[0].LikesCount != 1 || updated.Items[0].CommentsCount != 1 || updated.NextCursor != initial.NextCursor {
+		t.Fatalf("更新未实时生效: %+v", updated)
+	}
+	doJSON(t, client, http.MethodDelete, base+"/api/user/auth", author.AccessToken, nil, http.StatusNoContent, nil)
+	doJSON(t, client, http.MethodGet, secondURL, "", nil, http.StatusOK, &updated)
+	if len(updated.Items) != 1 || updated.Items[0].Author.Username != "已注销用户" || updated.Items[0].LikesCount != 1 || recorder.writes != 1 {
+		t.Fatalf("注销占位不兼容: %+v writes=%d", updated, recorder.writes)
+	}
+}
+
+// 测试目标：真实页命中时注入独立 Redis 故障
+// 预期效果：卡片适配器不可用仍批量回源 MySQL，JSON 完全一致且不影响共享服务
+func TestFeedCardCacheRealRedisFailure(t *testing.T) {
+	env := newFeedTestEnv(t)
+	plain, client := env.newServer(t, env.livePageCache(t))
+	register(t, client, plain.URL, "card_failure_author", "card-failure-password-123")
+	session := login(t, client, plain.URL, "card_failure_author", "card-failure-password-123")
+	_, path, _ := setupCachedFeedPage(t, env, plain.URL, session.AccessToken, client)
+	path = strings.TrimPrefix(path, plain.URL)
+	_, oracle := rawStatusBody(t, client, plain.URL+path)
+	bad, err := infracachefeed.NewCardCache(newUnreachableRedisRuntime(t), infracachefeed.CardCacheOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	both, _ := env.newServer(t, env.livePageCache(t), bad)
+	for i := 0; i < 2; i++ {
+		status, body := rawStatusBody(t, client, both.URL+path)
+		if status != 200 || !bytes.Equal(body, oracle) {
+			t.Fatalf("status=%d body=%s", status, body)
+		}
+	}
+}
+
+// warmReadSentinelTitle 只存在于预热缓存载荷中，MySQL 中不存在该标题
+const warmReadSentinelTitle = "预热卡片哨兵标题"
+
+// 测试目标：构造卡片缓存使用的精确键名
+// 预期效果：与生产 cardKeys 的拼接规则一致，可直接用于 EXISTS 断言
+func warmReadCardKey(videoID uint) string {
+	return fmt.Sprintf("gofeed:feed:card:v1:%d", videoID)
+}
+
+// 测试目标：用生产同构的 CardWarmer 预热指定视频的卡片缓存
+// 预期效果：每个视频都返回 warmed 并给出实际写入的精确键
+func warmReadWarmCards(t *testing.T, warmer *applicationfeed.CardWarmer, videoIDs []uint) []string {
+	t.Helper()
+	keys := make([]string, 0, len(videoIDs))
+	for _, videoID := range videoIDs {
+		result, err := warmer.WarmCard(t.Context(), videoID)
+		if err != nil {
+			t.Fatalf("预热视频 %d 失败: %v", videoID, err)
+		}
+		if result != applicationfeed.CardWarmed {
+			t.Fatalf("预热结果应为 warmed got=%s video=%d", result, videoID)
+		}
+		keys = append(keys, warmReadCardKey(videoID))
+	}
+	return keys
+}
+
+// 测试目标：只改写预热卡片载荷中的展示标题
+// 预期效果：可见性校验字段（VideoID、AuthorID、PublishedAt）保持预热内容不变
+func warmReadRewriteTitle(t *testing.T, recorder *feedScriptRecorder, key, title string) {
+	t.Helper()
+	payload := recorder.base.readValue(t, key)
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		t.Fatalf("预热载荷不是合法 JSON: %v", err)
+	}
+	card, ok := decoded["card"].(map[string]any)
+	if !ok {
+		t.Fatalf("预热载荷缺少 card 对象: %s", payload)
+	}
+	for _, field := range []string{"VideoID", "AuthorID", "PublishedAt"} {
+		if _, ok := card[field]; !ok {
+			t.Fatalf("预热载荷缺少 %s: %s", field, payload)
+		}
+	}
+	if _, ok := card["Title"]; !ok {
+		t.Fatalf("预热载荷缺少 Title: %s", payload)
+	}
+	card["Title"] = title
+	mutated, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatalf("重新编码预热载荷失败: %v", err)
+	}
+	recorder.base.writeValue(t, key, string(mutated))
+}
+
+// 测试目标：验证预热写入的卡片被 HTTP 读路径真实使用
+// 预期效果：页缓存命中时响应标题取自预热键，且读路径没有回填卡片
+func TestCardWarmupRealCacheFeedsHTTPReadPath(t *testing.T) {
+	env := newFeedTestEnv(t)
+	cards, recorder := env.liveCardCache(t)
+	events := &timelineCacheEvents{event: "feed_card_cache", counts: make(map[string]int)}
+	original := log.Writer()
+	log.SetOutput(io.MultiWriter(original, events))
+	t.Cleanup(func() { log.SetOutput(original) })
+
+	// 先用只开页缓存的服务建立第二页游标位置，此时卡片缓存必须保持零访问
+	pageOnly, client := env.newServer(t, env.livePageCache(t))
+	register(t, client, pageOnly.URL, "card_warm_read_author", "card-warm-read-password-123")
+	session := login(t, client, pageOnly.URL, "card_warm_read_author", "card-warm-read-password-123")
+	items, secondURL, _ := setupCachedFeedPage(t, env, pageOnly.URL, session.AccessToken, client)
+	path := strings.TrimPrefix(secondURL, pageOnly.URL)
+	if recorder.reads != 0 || recorder.writes != 0 {
+		t.Fatalf("建立页缓存时不应访问卡片缓存 reads=%d writes=%d", recorder.reads, recorder.writes)
+	}
+
+	// 真实预热：由 CardWarmer 写入卡片缓存，并断言精确键存在
+	warmer, err := applicationfeed.NewCardWarmer(infrafeed.NewCardReader(videoModel.NewRepository(env.gdb)), cards)
+	if err != nil {
+		t.Fatalf("构造卡片预热器失败: %v", err)
+	}
+	keys := warmReadWarmCards(t, warmer, []uint{items[0].ID, items[1].ID, items[2].ID})
+	if recorder.reads != 0 || recorder.writes != len(keys) {
+		t.Fatalf("预热写入次数异常 reads=%d writes=%d want_writes=%d", recorder.reads, recorder.writes, len(keys))
+	}
+	for _, key := range keys {
+		if !recorder.base.keyExists(t, key) {
+			t.Fatalf("预热精确键不存在 key=%s", key)
+		}
+	}
+
+	// 把第二页视频的预热标题改成哨兵值，MySQL 中仍是原标题
+	target := items[1].ID
+	targetKey := warmReadCardKey(target)
+	if items[1].Title == warmReadSentinelTitle {
+		t.Fatalf("哨兵标题不得与 MySQL 标题相同: %s", items[1].Title)
+	}
+	warmReadRewriteTitle(t, recorder, targetKey, warmReadSentinelTitle)
+
+	// 页缓存与卡片缓存同时开启，第二页命中页缓存
+	both, _ := env.newServer(t, env.livePageCache(t), cards)
+	readsBefore, writesBefore := recorder.reads, recorder.writes
+	var page feedTimelineResponse
+	sqlCount := measuredQueryCount(t, env.capture, func() {
+		doJSON(t, client, http.MethodGet, both.URL+path, "", nil, http.StatusOK, &page)
+	})
+	if len(page.Items) != 1 || page.Items[0].ID != target {
+		t.Fatalf("第二页条目错误 got=%+v want=%d", page.Items, target)
+	}
+	if page.Items[0].Title != warmReadSentinelTitle {
+		t.Fatalf("HTTP 读路径未使用预热卡片 got=%q want=%q", page.Items[0].Title, warmReadSentinelTitle)
+	}
+	if recorder.reads != readsBefore+1 {
+		t.Fatalf("页命中应只读取一次卡片 got=%d want=%d", recorder.reads, readsBefore+1)
+	}
+	if recorder.writes != writesBefore {
+		t.Fatalf("读路径不得回填卡片 got=%d want=%d", recorder.writes, writesBefore)
+	}
+	if events.snapshot()["hit"] != 1 {
+		t.Fatalf("卡片命中事件错误 got=%v", events.snapshot())
+	}
+	if sqlCount != 4 {
+		t.Fatalf("页命中 SQL 预算错误 got=%d want=4", sqlCount)
+	}
+
+	// 重复读取必须继续使用同一预热来源，证明不是一次性回填
+	readsBefore, writesBefore = recorder.reads, recorder.writes
+	var repeated feedTimelineResponse
+	doJSON(t, client, http.MethodGet, both.URL+path, "", nil, http.StatusOK, &repeated)
+	if len(repeated.Items) != 1 || repeated.Items[0].Title != warmReadSentinelTitle {
+		t.Fatalf("重复读取未继续使用预热卡片 got=%+v", repeated.Items)
+	}
+	if recorder.reads != readsBefore+1 || recorder.writes != writesBefore {
+		t.Fatalf("重复读取缓存计数异常 reads=%d writes=%d", recorder.reads, recorder.writes)
+	}
+	if events.snapshot()["hit"] != 2 {
+		t.Fatalf("重复读取命中事件错误 got=%v", events.snapshot())
+	}
+	t.Logf("预热键=%v 第二页命中 SQL=%d 卡片事件=%v 响应标题=%q", keys, sqlCount, events.snapshot(), repeated.Items[0].Title)
+}
+
+// 测试目标：验证预热缓存不能让已不可见的视频重新出现在响应中
+// 预期效果：视频改为非公开后页命中剔除该视频，预热键仍存在而不是被删除
+func TestCardWarmupRealCacheKeepsInvisibleVideoHidden(t *testing.T) {
+	env := newFeedTestEnv(t)
+	cards, recorder := env.liveCardCache(t)
+
+	pageOnly, client := env.newServer(t, env.livePageCache(t))
+	register(t, client, pageOnly.URL, "card_warm_hidden_author", "card-warm-hidden-password-123")
+	session := login(t, client, pageOnly.URL, "card_warm_hidden_author", "card-warm-hidden-password-123")
+	items, secondURL, _ := setupCachedFeedPage(t, env, pageOnly.URL, session.AccessToken, client)
+	path := strings.TrimPrefix(secondURL, pageOnly.URL)
+
+	warmer, err := applicationfeed.NewCardWarmer(infrafeed.NewCardReader(videoModel.NewRepository(env.gdb)), cards)
+	if err != nil {
+		t.Fatalf("构造卡片预热器失败: %v", err)
+	}
+	keys := warmReadWarmCards(t, warmer, []uint{items[0].ID, items[1].ID, items[2].ID})
+	for _, key := range keys {
+		if !recorder.base.keyExists(t, key) {
+			t.Fatalf("预热精确键不存在 key=%s", key)
+		}
+	}
+
+	// 第二页视频改为非公开状态，预热的精确键必须保留
+	hiddenKey := warmReadCardKey(items[1].ID)
+	setFeedVideoStatus(t, env, items[1].ID, videoModel.VideoStatusRejected)
+	both, _ := env.newServer(t, env.livePageCache(t), cards)
+	var page feedTimelineResponse
+	doJSON(t, client, http.MethodGet, both.URL+path, "", nil, http.StatusOK, &page)
+	if len(page.Items) != 1 || page.Items[0].ID != items[2].ID {
+		t.Fatalf("不可见视频复现于响应 got=%+v want=%d", page.Items, items[2].ID)
+	}
+	if !recorder.base.keyExists(t, hiddenKey) {
+		t.Fatalf("预热键应由可见性检查拦截而不是被删除 key=%s", hiddenKey)
+	}
+	t.Logf("预热键=%v 不可见视频=%d 响应=%d 保留键=%s", keys, items[1].ID, page.Items[0].ID, hiddenKey)
+}
+
+// 测试目标：判断两个时间线游标是否指向同一读取位置
+// 预期效果：只比较版本、场景、排序版本与位置，忽略时间字段的时区渲染
+func sameFeedCursorPosition(a, b feedTimelineCursor) bool {
+	return a.Version == b.Version &&
+		a.Scene == b.Scene &&
+		a.SortVersion == b.SortVersion &&
+		a.VideoID == b.VideoID &&
+		a.PublishedAt.Equal(b.PublishedAt)
+}
+
+// 测试目标：比较两个装配下同一时间线请求的语义一致性
+// 预期效果：条目逐字节一致且游标指向同一位置，允许游标时间以不同时区渲染
+func assertSameTimelineResponse(t *testing.T, label string, wantStatus int, wantBody []byte, gotStatus int, gotBody []byte) {
+	t.Helper()
+	if gotStatus != wantStatus {
+		t.Fatalf("%s 状态码不一致 got=%d want=%d body=%s", label, gotStatus, wantStatus, gotBody)
+	}
+	var want, got struct {
+		Items      json.RawMessage `json:"items"`
+		NextCursor string          `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(wantBody, &want); err != nil {
+		t.Fatalf("%s 基准响应不是合法 JSON: %v", label, err)
+	}
+	if err := json.Unmarshal(gotBody, &got); err != nil {
+		t.Fatalf("%s 对比响应不是合法 JSON: %v", label, err)
+	}
+	if !bytes.Equal(want.Items, got.Items) {
+		t.Fatalf("%s 条目应逐字节一致 got=%s want=%s", label, got.Items, want.Items)
+	}
+	if (want.NextCursor == "") != (got.NextCursor == "") {
+		t.Fatalf("%s 游标有无应一致 got=%q want=%q", label, got.NextCursor, want.NextCursor)
+	}
+	if want.NextCursor != "" && !sameFeedCursorPosition(decodeFeedCursor(t, got.NextCursor), decodeFeedCursor(t, want.NextCursor)) {
+		t.Fatalf("%s 游标应指向同一位置 got=%q want=%q", label, got.NextCursor, want.NextCursor)
+	}
+}
+
+// 测试目标：验证页缓存开关不改变旧视频接口与新时间线的公开响应
+// 预期效果：同一批数据在关闭与启用缓存时响应一致且查询预算相同，旧接口从不触碰页缓存
+func TestFeedPageCacheSwitchKeepsLegacyContracts(t *testing.T) {
+	env := newFeedTestEnv(t)
+	uncached, uncachedClient := env.newServer(t, nil)
+	cached, cachedClient := env.newServer(t, env.livePageCache(t))
+	base := uncached.URL
+	register(t, uncachedClient, base, "feed_switch_author", "feed-switch-password-123")
+	session := login(t, uncachedClient, base, "feed_switch_author", "feed-switch-password-123")
+	items := publishFeedVideos(t, env, base, session.AccessToken, uncachedClient, 3)
+
+	var legacyFirst struct {
+		Items      []videoItem `json:"items"`
+		NextCursor string      `json:"next_cursor"`
+	}
+	doJSON(t, uncachedClient, http.MethodGet, base+"/api/video?limit=1", "", nil, http.StatusOK, &legacyFirst)
+	if legacyFirst.NextCursor == "" || legacyFirst.Items[0].ID != items[0].ID {
+		t.Fatalf("旧接口首屏应返回最新视频与游标 got=%+v", legacyFirst)
+	}
+	var feedFirst feedTimelineResponse
+	doJSON(t, uncachedClient, http.MethodGet, base+"/api/feed?limit=1", "", nil, http.StatusOK, &feedFirst)
+	if feedFirst.NextCursor == "" || feedFirst.Items[0].ID != items[0].ID {
+		t.Fatalf("时间线首屏应返回最新视频与游标 got=%+v", feedFirst)
+	}
+
+	legacyPaths := []string{
+		"/api/video",
+		"/api/video?limit=1",
+		"/api/video?limit=1&cursor=" + url.QueryEscape(legacyFirst.NextCursor),
+		"/api/video?author_id=" + strconv.FormatUint(uint64(session.UserID), 10),
+		"/api/video?limit=1&cursor=not-a-legacy-cursor",
+		"/api/video?limit=0",
+	}
+	for _, path := range legacyPaths {
+		uncachedStatus, uncachedBody := rawStatusBody(t, uncachedClient, base+path)
+		cachedStatus, cachedBody := rawStatusBody(t, cachedClient, cached.URL+path)
+		if cachedStatus != uncachedStatus || !bytes.Equal(cachedBody, uncachedBody) {
+			t.Fatalf("旧接口响应应不受页缓存开关影响 path=%s got=%d/%s want=%d/%s", path, cachedStatus, cachedBody, uncachedStatus, uncachedBody)
+		}
+	}
+
+	feedPaths := []string{
+		"/api/feed",
+		"/api/feed?limit=1",
+		"/api/feed?limit=1&cursor=" + url.QueryEscape(feedFirst.NextCursor),
+		"/api/feed?limit=0",
+		"/api/feed?limit=1&cursor=not-a-feed-cursor",
+	}
+	for _, path := range feedPaths {
+		uncachedStatus, uncachedBody := rawStatusBody(t, uncachedClient, base+path)
+		cachedStatus, cachedBody := rawStatusBody(t, cachedClient, cached.URL+path)
+		assertSameTimelineResponse(t, path, uncachedStatus, uncachedBody, cachedStatus, cachedBody)
+		// 第二轮请求命中已回填的页缓存，响应也必须保持同一语义
+		replayStatus, replayBody := rawStatusBody(t, cachedClient, cached.URL+path)
+		assertSameTimelineResponse(t, path+" 命中缓存", uncachedStatus, uncachedBody, replayStatus, replayBody)
+	}
+
+	uncachedLegacyBudget := measuredQueryCount(t, env.capture, func() {
+		doJSON(t, uncachedClient, http.MethodGet, base+"/api/video", "", nil, http.StatusOK, &struct {
+			Items []videoItem `json:"items"`
+		}{})
+	})
+	cachedLegacyBudget := measuredQueryCount(t, env.capture, func() {
+		doJSON(t, cachedClient, http.MethodGet, cached.URL+"/api/video", "", nil, http.StatusOK, &struct {
+			Items []videoItem `json:"items"`
+		}{})
+	})
+	if uncachedLegacyBudget != cachedLegacyBudget || cachedLegacyBudget < 1 {
+		t.Fatalf("页缓存开关不应改变旧接口查询预算 got=%d want=%d", cachedLegacyBudget, uncachedLegacyBudget)
+	}
+	cursorPath := "/api/feed?limit=1&cursor=" + url.QueryEscape(feedFirst.NextCursor)
+	uncachedFeedBudget := measuredQueryCount(t, env.capture, func() {
+		doJSON(t, uncachedClient, http.MethodGet, base+cursorPath, "", nil, http.StatusOK, &feedTimelineResponse{})
+	})
+	cachedFeedBudget := measuredQueryCount(t, env.capture, func() {
+		doJSON(t, cachedClient, http.MethodGet, cached.URL+cursorPath, "", nil, http.StatusOK, &feedTimelineResponse{})
+	})
+	if uncachedFeedBudget != cachedFeedBudget || cachedFeedBudget < 1 {
+		t.Fatalf("命中页缓存仍应查询 MySQL 且预算与关闭缓存一致 got=%d want=%d", cachedFeedBudget, uncachedFeedBudget)
+	}
+
+	readCount, writeCount := len(env.recorder.reads()), len(env.recorder.writes())
+	for _, path := range []string{
+		"/api/video",
+		fmt.Sprintf("/api/video/%d", items[0].ID),
+		fmt.Sprintf("/api/video/%d/comments", items[0].ID),
+		"/api/video?limit=1&cursor=" + url.QueryEscape(legacyFirst.NextCursor),
+	} {
+		rawStatusBody(t, cachedClient, cached.URL+path)
+	}
+	if reads, writes := len(env.recorder.reads()), len(env.recorder.writes()); reads != readCount || writes != writeCount {
+		t.Fatalf("旧视频接口不应触碰 Feed 页缓存 reads=%d->%d writes=%d->%d", readCount, reads, writeCount, writes)
 	}
 }

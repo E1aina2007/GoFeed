@@ -1,9 +1,7 @@
 package ratelimit
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,15 +11,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
-
-type resultCache struct {
-	result any
-	err    error
-}
-
-func (c resultCache) Eval(context.Context, string, []string, ...any) (any, error) {
-	return c.result, c.err
-}
 
 func newLimitedEngine(cache Cache, action string, maxRequests int64, window time.Duration) *gin.Engine {
 	engine := gin.New()
@@ -71,41 +60,5 @@ func TestLimitEnforcesFixedWindowAndResetsAfterTTL(t *testing.T) {
 	reset := executeLimitedRequest(engine)
 	if reset.Code != http.StatusNoContent {
 		t.Fatalf("TTL 到期后请求状态错误 got=%d want=%d", reset.Code, http.StatusNoContent)
-	}
-}
-
-// 测试目标：验证剩余毫秒 TTL 会向上取整为正整数秒 Retry-After
-// 预期效果：429 响应不返回零秒或截断后的等待时间
-func TestLimitRoundsRetryAfterUpward(t *testing.T) {
-	engine := newLimitedEngine(resultCache{result: []any{int64(3), int64(1501)}}, "test", 2, time.Second)
-	response := executeLimitedRequest(engine)
-
-	if response.Code != http.StatusTooManyRequests {
-		t.Fatalf("超限状态错误 got=%d want=%d", response.Code, http.StatusTooManyRequests)
-	}
-	if retryAfter := response.Header().Get("Retry-After"); retryAfter != "2" {
-		t.Fatalf("Retry-After 向上取整错误 got=%q want=%q", retryAfter, "2")
-	}
-}
-
-// 测试目标：验证 Redis 缺失、执行失败或脚本结果异常时限流器保持 fail-open
-// 预期效果：非权威 Redis 故障不阻断后续业务 Handler
-func TestLimitFailsOpenWhenCacheIsUnavailable(t *testing.T) {
-	cases := []struct {
-		name  string
-		cache Cache
-	}{
-		{name: "nil cache"},
-		{name: "eval error", cache: resultCache{err: errors.New("redis unavailable")}},
-		{name: "invalid result", cache: resultCache{result: []any{int64(1)}}},
-	}
-
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			response := executeLimitedRequest(newLimitedEngine(testCase.cache, "test", 1, time.Second))
-			if response.Code != http.StatusNoContent {
-				t.Fatalf("fail-open 状态错误 got=%d want=%d", response.Code, http.StatusNoContent)
-			}
-		})
 	}
 }

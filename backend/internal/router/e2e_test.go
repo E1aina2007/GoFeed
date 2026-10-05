@@ -2,7 +2,10 @@ package router
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -11,14 +14,17 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
+	"gofeed/internal/db"
 	"gofeed/internal/testutil"
 	"gofeed/internal/user"
 	videoModel "gofeed/internal/video"
-
-	"gorm.io/gorm"
 )
 
 // 测试目标：提供端到端媒体上传所需的最小文件头
@@ -869,4 +875,825 @@ func TestVideoEndToEndBadRequests(t *testing.T) {
 		"play_url":  "/static/videos/999/stolen.mp4",
 		"cover_url": "/static/covers/999/stolen.png",
 	}, http.StatusBadRequest, nil)
+}
+
+// 测试目标：构造绑定完整媒体的待发布草稿
+// 预期效果：发布语义用例不重复展开上传细节
+func prepareCompleteDraft(t *testing.T, client *http.Client, base, token, title string) draftItem {
+	t.Helper()
+	draft := createDraft(t, client, base, token, title, "", http.StatusCreated)
+	uploadMedia(t, client, base, token, fmt.Sprintf("/api/video/auth/drafts/%d/play", draft.ID), "file", "feed.mp4", mp4Bytes, http.StatusCreated)
+	uploadMedia(t, client, base, token, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draft.ID), "file", "feed.png", pngBytes, http.StatusCreated)
+	return draft
+}
+
+// 测试目标：验证发布事务将草稿原子转入 processing 并写入待派发 outbox 事件
+// 预期效果：响应返回 processing 草稿形体，数据库状态与事件字段满足 relay 派发契约
+func TestPublishEntersProcessingWithOutboxEvent(t *testing.T) {
+	srv, client, _, gdb := newResilienceTestServer(t)
+	base := srv.URL
+	register(t, client, base, "outbox_author", "outbox-password-123")
+	sess := login(t, client, base, "outbox_author", "outbox-password-123")
+
+	draft := prepareCompleteDraft(t, client, base, sess.AccessToken, "outbox 视频")
+	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusAccepted)
+	if item.ID == 0 || item.Status != videoModel.VideoStatusProcessing {
+		t.Fatalf("发布响应应为处理中草稿 got=%+v", item)
+	}
+
+	var row videoModel.Video
+	if err := gdb.First(&row, item.ID).Error; err != nil {
+		t.Fatalf("读取发布行失败: %v", err)
+	}
+	if row.Status != videoModel.VideoStatusProcessing || row.PublishedAt == nil || row.RejectedReason != "" {
+		t.Fatalf("发布行应处于 processing 且带发布时刻 got=%+v", row)
+	}
+
+	var events []videoModel.OutboxEvent
+	if err := gdb.Where("video_id = ?", item.ID).Find(&events).Error; err != nil {
+		t.Fatalf("读取 outbox 事件失败: %v", err)
+	}
+	if len(events) != 1 || events[0].EventType != videoModel.VideoProcessEventType ||
+		events[0].Status != videoModel.OutboxEventStatusPending || events[0].EventID == "" ||
+		events[0].Attempt != 0 || events[0].DispatchedAt != nil {
+		t.Fatalf("outbox 事件字段错误 got=%+v", events)
+	}
+
+	var status videoModel.VideoProcessingStatus
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/auth/%d/status", base, item.ID), sess.AccessToken, nil, http.StatusOK, &status)
+	if status.Status != videoModel.VideoStatusProcessing || status.PublishedAt == nil || status.RejectedAt != nil || status.RejectedReason != "" {
+		t.Fatalf("处理中状态响应错误 got=%+v", status)
+	}
+}
+
+// 测试目标：验证 processing 视频对外不可见，模拟处理完成后恢复公开可见
+// 预期效果：公开列表、详情与我的视频在处理期间不返回该视频
+func TestProcessingVideoInvisibleUntilCompleted(t *testing.T) {
+	srv, client, _, gdb := newResilienceTestServer(t)
+	base := srv.URL
+	register(t, client, base, "processing_author", "processing-password-123")
+	sess := login(t, client, base, "processing_author", "processing-password-123")
+
+	draft := prepareCompleteDraft(t, client, base, sess.AccessToken, "处理中视频")
+	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusAccepted)
+
+	var list struct {
+		Items []videoItem `json:"items"`
+	}
+	doJSON(t, client, http.MethodGet, base+"/api/video", "", nil, http.StatusOK, &list)
+	if len(list.Items) != 0 {
+		t.Fatalf("processing 视频不应进入公开列表 got=%+v", list.Items)
+	}
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, item.ID), "", nil, http.StatusNotFound, nil)
+	var mine struct {
+		Items []videoItem `json:"items"`
+	}
+	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", sess.AccessToken, nil, http.StatusOK, &mine)
+	if len(mine.Items) != 0 {
+		t.Fatalf("processing 视频不应进入我的视频 got=%+v", mine.Items)
+	}
+
+	// 模拟 worker 校验通过后的 CAS 状态流转
+	completeProcessing(t, gdb, item.ID)
+	var detail struct {
+		Video videoItem `json:"video"`
+	}
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, item.ID), "", nil, http.StatusOK, &detail)
+	if detail.Video.ID != item.ID {
+		t.Fatalf("处理完成后详情应可见 got=%+v", detail)
+	}
+	doJSON(t, client, http.MethodGet, base+"/api/video", "", nil, http.StatusOK, &list)
+	if len(list.Items) != 1 || list.Items[0].ID != item.ID {
+		t.Fatalf("处理完成后列表应可见 got=%+v", list.Items)
+	}
+}
+
+// 测试目标：验证 outbox 写入失败时发布事务整体回滚
+// 预期效果：视频保持 draft 可重试发布，注入解除后发布成功
+func TestPublishRollsBackWhenOutboxFails(t *testing.T) {
+	srv, client, faults, gdb := newResilienceTestServer(t)
+	base := srv.URL
+	register(t, client, base, "rollback_author", "rollback-password-123")
+	sess := login(t, client, base, "rollback_author", "rollback-password-123")
+	draft := prepareCompleteDraft(t, client, base, sess.AccessToken, "回滚视频")
+
+	faults.arm("video_outbox_events", errors.New("injected outbox outage"))
+	var errBody map[string]any
+	doJSON(t, client, http.MethodPost, fmt.Sprintf("%s/api/video/auth/drafts/%d/publish", base, draft.ID), sess.AccessToken, nil, http.StatusInternalServerError, &errBody)
+	faults.disarm()
+
+	var row videoModel.Video
+	if err := gdb.First(&row, draft.ID).Error; err != nil {
+		t.Fatalf("读取回滚行失败: %v", err)
+	}
+	if row.Status != videoModel.VideoStatusDraft || row.PublishedAt != nil {
+		t.Fatalf("outbox 失败应回滚为 draft got=%+v", row)
+	}
+	var events []videoModel.OutboxEvent
+	if err := gdb.Where("video_id = ?", draft.ID).Find(&events).Error; err != nil {
+		t.Fatalf("读取 outbox 事件失败: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("回滚后不应残留事件 got=%+v", events)
+	}
+
+	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusAccepted)
+	if item.ID == 0 {
+		t.Fatalf("解除注入后重试发布应成功 got=%+v", item)
+	}
+}
+
+type faultContextKey struct{}
+
+// faultTarget 描述一次注入故障的目标表与错误值
+type faultTarget struct {
+	table string
+	err   error
+}
+
+// faultInjection 按表名向真实 MySQL 语句注入暂态错误的测试夹具
+type faultInjection struct {
+	mu     sync.Mutex
+	target *faultTarget
+}
+
+// 测试目标：进入请求前按当前装配的故障目标改写请求上下文
+// 预期效果：命中目标表的语句被故障回调短路
+func (f *faultInjection) middleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		f.mu.Lock()
+		target := f.target
+		f.mu.Unlock()
+		if target != nil {
+			c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), faultContextKey{}, target))
+		}
+		c.Next()
+	}
+}
+
+// 测试目标：装配指定表的注入故障
+// 预期效果：后续请求中该表的语句返回注入错误
+func (f *faultInjection) arm(table string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.target = &faultTarget{table: table, err: err}
+}
+
+// 测试目标：解除故障注入
+// 预期效果：后续请求恢复真实路径
+func (f *faultInjection) disarm() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.target = nil
+}
+
+// 测试目标：注册按表名短路语句执行的故障注入回调
+// 预期效果：六类语句处理器均被覆盖，内置回调因语句携带错误而跳过实际 SQL
+// 互动聚合经 Scan 走 Row 处理器，outbox 插入走 Create 处理器，读写都要覆盖
+func registerFaultInjection(gdb *gorm.DB) error {
+	inject := func(tx *gorm.DB) {
+		if tx.Statement == nil || tx.Statement.Context == nil {
+			return
+		}
+		target, ok := tx.Statement.Context.Value(faultContextKey{}).(*faultTarget)
+		if !ok || target == nil || tx.Statement.Table != target.table {
+			return
+		}
+		tx.AddError(target.err)
+	}
+	for _, registration := range []struct {
+		register func() error
+	}{
+		{func() error {
+			return gdb.Callback().Query().Before("gorm:query").Register("gofeed:test_fault_query", inject)
+		}},
+		{func() error {
+			return gdb.Callback().Create().Before("gorm:create").Register("gofeed:test_fault_create", inject)
+		}},
+		{func() error {
+			return gdb.Callback().Update().Before("gorm:update").Register("gofeed:test_fault_update", inject)
+		}},
+		{func() error {
+			return gdb.Callback().Delete().Before("gorm:delete").Register("gofeed:test_fault_delete", inject)
+		}},
+		{func() error { return gdb.Callback().Raw().Before("gorm:raw").Register("gofeed:test_fault_raw", inject) }},
+		{func() error { return gdb.Callback().Row().Before("gorm:row").Register("gofeed:test_fault_row", inject) }},
+	} {
+		if err := registration.register(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// 测试目标：装配启用故障注入回调的完整路由服务
+// 预期效果：异常矩阵用例可在真实 MySQL 上按表注入暂态错误
+func newResilienceTestServer(t *testing.T) (*httptest.Server, *http.Client, *faultInjection, *gorm.DB) {
+	t.Helper()
+	gdb := testutil.DB(t)
+	if err := registerFaultInjection(gdb); err != nil {
+		t.Fatalf("注册故障注入回调失败: %v", err)
+	}
+	faults := &faultInjection{}
+	engine := New(gdb, false, Options{UploadDir: t.TempDir(), Middlewares: []gin.HandlerFunc{faults.middleware()}})
+	srv := httptest.NewServer(engine)
+	t.Cleanup(srv.Close)
+	return srv, srv.Client(), faults, gdb
+}
+
+// 测试目标：发送 GET 请求并返回原始响应体
+// 预期效果：幂等断言可以逐字节比较两次响应
+func getRawBody(t *testing.T, client *http.Client, rawURL string) []byte {
+	t.Helper()
+	resp, err := client.Get(rawURL)
+	if err != nil {
+		t.Fatalf("请求 %s 失败: %v", rawURL, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读取响应失败: %v", err)
+	}
+	return body
+}
+
+// 测试目标：验证同一发布时间下公开列表按标识倒序稳定翻页且不重不漏
+// 预期效果：同刻视频先返回较大标识，旧游标翻页补齐另一条，重复请求顺序一致
+func TestPublicListSameTimestampOrdering(t *testing.T) {
+	srv, client, _, gdb := newResilienceTestServer(t)
+	base := srv.URL
+	register(t, client, base, "same_ts_author", "same-ts-password-123")
+	sess := login(t, client, base, "same_ts_author", "same-ts-password-123")
+	first := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "同刻较早")
+	second := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "同刻较晚")
+
+	// 两条视频强制共享同一精确发布时间，排序只剩标识倒序决定
+	sameTime := time.Date(2026, 8, 1, 8, 0, 0, 0, time.Local)
+	if err := gdb.Exec("UPDATE videos SET published_at = ? WHERE id IN (?, ?)", sameTime, first.ID, second.ID).Error; err != nil {
+		t.Fatalf("对齐发布时间失败: %v", err)
+	}
+
+	var firstPage struct {
+		Items      []videoItem `json:"items"`
+		NextCursor string      `json:"next_cursor"`
+	}
+	doJSON(t, client, http.MethodGet, base+"/api/video?limit=1", "", nil, http.StatusOK, &firstPage)
+	if len(firstPage.Items) != 1 || firstPage.Items[0].ID != second.ID {
+		t.Fatalf("同刻视频应先返回较大标识 got=%+v want=%d", firstPage.Items, second.ID)
+	}
+
+	var secondPage struct {
+		Items []videoItem `json:"items"`
+	}
+	nextURL := base + "/api/video?limit=1&cursor=" + url.QueryEscape(firstPage.NextCursor)
+	doJSON(t, client, http.MethodGet, nextURL, "", nil, http.StatusOK, &secondPage)
+	if len(secondPage.Items) != 1 || secondPage.Items[0].ID != first.ID {
+		t.Fatalf("同刻翻页应补齐较小标识且不重复 got=%+v want=%d", secondPage.Items, first.ID)
+	}
+
+	replay := getRawBody(t, client, base+"/api/video?limit=1")
+	if !bytes.Contains(replay, []byte(fmt.Sprintf(`"id":%d`, second.ID))) {
+		t.Fatalf("重复请求应保持稳定排序 got=%s", replay)
+	}
+}
+
+// 测试目标：验证翻页期间新增与软删除视频不产生重复或跳漏
+// 预期效果：旧游标翻页只返回游标之后的既有记录，新视频和被删记录不混入
+func TestFeedPagingDuringMutations(t *testing.T) {
+	srv, client, _, gdb := newResilienceTestServer(t)
+	base := srv.URL
+	register(t, client, base, "mutation_author", "mutation-password-123")
+	sess := login(t, client, base, "mutation_author", "mutation-password-123")
+	oldest := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "翻页最旧")
+	middle := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "翻页中间")
+	newest := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "翻页最新")
+
+	var firstPage struct {
+		Items      []videoItem `json:"items"`
+		NextCursor string      `json:"next_cursor"`
+	}
+	doJSON(t, client, http.MethodGet, base+"/api/video?limit=1", "", nil, http.StatusOK, &firstPage)
+	if len(firstPage.Items) != 1 || firstPage.Items[0].ID != newest.ID {
+		t.Fatalf("首屏应返回最新视频 got=%+v", firstPage.Items)
+	}
+
+	// 翻页间隙新增更新的视频，旧游标之后不应出现该记录
+	during := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "翻页期间新增")
+	var secondPage struct {
+		Items      []videoItem `json:"items"`
+		NextCursor string      `json:"next_cursor"`
+	}
+	nextURL := base + "/api/video?limit=1&cursor=" + url.QueryEscape(firstPage.NextCursor)
+	doJSON(t, client, http.MethodGet, nextURL, "", nil, http.StatusOK, &secondPage)
+	if len(secondPage.Items) != 1 || secondPage.Items[0].ID != middle.ID || secondPage.Items[0].ID == during.ID {
+		t.Fatalf("旧游标翻页应返回中间记录且不含新增视频 got=%+v", secondPage.Items)
+	}
+
+	// 继续翻页前软删除中间记录，其游标之后不应再出现被删记录
+	doJSON(t, client, http.MethodDelete, fmt.Sprintf("%s/api/video/auth/%d", base, middle.ID), sess.AccessToken, nil, http.StatusNoContent, nil)
+	var thirdPage struct {
+		Items []videoItem `json:"items"`
+	}
+	thirdURL := base + "/api/video?limit=3&cursor=" + url.QueryEscape(secondPage.NextCursor)
+	doJSON(t, client, http.MethodGet, thirdURL, "", nil, http.StatusOK, &thirdPage)
+	if len(thirdPage.Items) != 1 || thirdPage.Items[0].ID != oldest.ID {
+		t.Fatalf("被删记录之后的翻页应只剩最旧记录 got=%+v", thirdPage.Items)
+	}
+}
+
+// 测试目标：验证互动统计查询失败时公开读路径整体返回服务不可用
+// 预期效果：列表与详情返回 503 固定文案，不出现零计数的半组装响应
+func TestEngagementFailureReturnsServiceUnavailable(t *testing.T) {
+	srv, client, faults, gdb := newResilienceTestServer(t)
+	base := srv.URL
+	register(t, client, base, "stats_fault_author", "stats-fault-password-123")
+	sess := login(t, client, base, "stats_fault_author", "stats-fault-password-123")
+	video := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "统计故障视频")
+
+	faults.arm("video_likes", errors.New("injected engagement outage"))
+	defer faults.disarm()
+
+	var listBody map[string]any
+	doJSON(t, client, http.MethodGet, base+"/api/video", "", nil, http.StatusServiceUnavailable, &listBody)
+	if _, hasItems := listBody["items"]; hasItems {
+		t.Fatalf("统计失败不应返回半组装列表 got=%v", listBody)
+	}
+	message, _ := listBody["error"].(string)
+	if !strings.Contains(message, "engagement stats temporarily unavailable") {
+		t.Fatalf("统计失败应返回固定文案 got=%v", listBody)
+	}
+
+	var detailBody map[string]any
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, video.ID), "", nil, http.StatusServiceUnavailable, &detailBody)
+	if _, hasVideo := detailBody["video"]; hasVideo {
+		t.Fatalf("统计失败不应返回半组装详情 got=%v", detailBody)
+	}
+}
+
+// 测试目标：验证数据库暂态失败时错误路径干净且无半组装响应
+// 预期效果：视频或作者读取被注入失败时统一返回 500 固定文案
+func TestInjectedDatabaseFailureYieldsCleanError(t *testing.T) {
+	srv, client, faults, gdb := newResilienceTestServer(t)
+	base := srv.URL
+	register(t, client, base, "db_fault_author", "db-fault-password-123")
+	sess := login(t, client, base, "db_fault_author", "db-fault-password-123")
+	video := publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "暂态故障视频")
+
+	faults.arm("videos", errors.New("injected database outage"))
+	var listBody map[string]any
+	doJSON(t, client, http.MethodGet, base+"/api/video", "", nil, http.StatusInternalServerError, &listBody)
+	if _, hasItems := listBody["items"]; hasItems {
+		t.Fatalf("视频读取失败不应返回半组装列表 got=%v", listBody)
+	}
+	var detailBody map[string]any
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, video.ID), "", nil, http.StatusInternalServerError, &detailBody)
+	if _, hasVideo := detailBody["video"]; hasVideo {
+		t.Fatalf("视频读取失败不应返回半组装详情 got=%v", detailBody)
+	}
+
+	faults.arm("users", errors.New("injected author outage"))
+	var authorFaultBody map[string]any
+	doJSON(t, client, http.MethodGet, base+"/api/video", "", nil, http.StatusInternalServerError, &authorFaultBody)
+	if _, hasItems := authorFaultBody["items"]; hasItems {
+		t.Fatalf("作者读取失败不应返回半组装列表 got=%v", authorFaultBody)
+	}
+	faults.disarm()
+
+	recovered := getRawBody(t, client, base+"/api/video")
+	if !bytes.Contains(recovered, []byte(`"items"`)) {
+		t.Fatalf("解除注入后列表应恢复正常 got=%s", recovered)
+	}
+}
+
+// queryCapture 按请求顺序记录请求内数据库查询次数，供预算断言读取
+type queryCapture struct {
+	mu     sync.Mutex
+	counts []int64
+}
+
+// 测试目标：在请求结束后读取请求上下文中的查询计数
+// 预期效果：计数与请求一一对应，读侧可安全并发
+func (q *queryCapture) middleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Next()
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		q.counts = append(q.counts, db.QueryCount(c.Request.Context()))
+	}
+}
+
+// 测试目标：清空已记录的计数序列
+// 预期效果：预算断言只覆盖明确测量的目标请求
+func (q *queryCapture) reset() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.counts = nil
+}
+
+// 测试目标：返回当前记录的计数副本
+// 预期效果：断言使用稳定快照，不受后续请求影响
+func (q *queryCapture) snapshot() []int64 {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return append([]int64(nil), q.counts...)
+}
+
+// 测试目标：装配启用查询计数回调并注入计数探针的完整路由服务
+// 预期效果：预算断言可以读取每个请求在真实 MySQL 上的语句数量
+func newCountingTestServer(t *testing.T) (*httptest.Server, *http.Client, *queryCapture, *gorm.DB) {
+	t.Helper()
+	gdb := testutil.DB(t)
+	if err := db.RegisterQueryCounter(gdb); err != nil {
+		t.Fatalf("注册查询计数回调失败: %v", err)
+	}
+	capture := &queryCapture{}
+	engine := New(gdb, false, Options{UploadDir: t.TempDir(), Middlewares: []gin.HandlerFunc{capture.middleware()}})
+	srv := httptest.NewServer(engine)
+	t.Cleanup(srv.Close)
+	return srv, srv.Client(), capture, gdb
+}
+
+// 测试目标：断言单个请求的查询次数落在预算范围内
+// 预期效果：次数不超过预算且至少发生一次语句，计数序列只新增一项
+func assertQueryBudget(t *testing.T, capture *queryCapture, before int, budget int64) int64 {
+	t.Helper()
+	counts := capture.snapshot()
+	if len(counts) != before+1 {
+		t.Fatalf("应只新增一次请求记录 got=%d want=%d", len(counts), before+1)
+	}
+	got := counts[len(counts)-1]
+	if got < 1 || got > budget {
+		t.Fatalf("查询预算超限 got=%d want 1..%d", got, budget)
+	}
+	return got
+}
+
+// 测试目标：验证公开 Feed 首页的数据库查询收敛在预算内
+// 预期效果：列表请求最多执行视频、作者、点赞、评论各一次共四条语句
+func TestPublicListQueryBudget(t *testing.T) {
+	srv, client, capture, gdb := newCountingTestServer(t)
+	base := srv.URL
+	register(t, client, base, "budget-author", "budget-author-password")
+	session := login(t, client, base, "budget-author", "budget-author-password")
+	publishCompleteVideo(t, gdb, client, base, session.AccessToken, "预算列表视频")
+
+	capture.reset()
+	before := len(capture.snapshot())
+	var list struct {
+		Items []videoItem `json:"items"`
+	}
+	doJSON(t, client, http.MethodGet, base+"/api/video", "", nil, http.StatusOK, &list)
+	if len(list.Items) == 0 {
+		t.Fatal("预算用例应至少返回一条已发布视频")
+	}
+	assertQueryBudget(t, capture, before, 4)
+}
+
+// 测试目标：验证公开视频详情的数据库查询收敛在预算内
+// 预期效果：详情请求最多执行视频、作者与两类聚合共四条语句
+func TestPublicDetailQueryBudget(t *testing.T) {
+	srv, client, capture, gdb := newCountingTestServer(t)
+	base := srv.URL
+	register(t, client, base, "budget-detail-author", "budget-detail-password")
+	session := login(t, client, base, "budget-detail-author", "budget-detail-password")
+	video := publishCompleteVideo(t, gdb, client, base, session.AccessToken, "预算详情视频")
+
+	capture.reset()
+	before := len(capture.snapshot())
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, video.ID), "", nil, http.StatusOK, &videoItem{})
+	assertQueryBudget(t, capture, before, 4)
+}
+
+// 测试目标：提交刷新令牌并读取轮换后的会话信息
+// 预期效果：按指定状态返回新的凭据或空结果
+func refreshSession(t *testing.T, client *http.Client, base, refreshToken string, wantStatus int) authSession {
+	t.Helper()
+	var out struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		User         struct {
+			ID       uint   `json:"id"`
+			Username string `json:"username"`
+		} `json:"user"`
+	}
+	if wantStatus == http.StatusOK {
+		doJSON(t, client, http.MethodPost, base+"/api/user/refresh", "", map[string]string{
+			"refresh_token": refreshToken,
+		}, wantStatus, &out)
+	} else {
+		doJSON(t, client, http.MethodPost, base+"/api/user/refresh", "", map[string]string{
+			"refresh_token": refreshToken,
+		}, wantStatus, nil)
+	}
+	return authSession{
+		AccessToken:  out.AccessToken,
+		RefreshToken: out.RefreshToken,
+		UserID:       out.User.ID,
+		Username:     out.User.Username,
+	}
+}
+
+// 测试目标：验证刷新令牌轮换不会使同一会话的访问令牌提前失效
+// 预期效果：旧刷新令牌不能重放，新刷新令牌可继续轮换，轮换前后访问令牌均可使用
+func TestSessionRefreshRotation(t *testing.T) {
+	srv, client, _ := newTestServer(t)
+	base := srv.URL
+
+	register(t, client, base, "refresh_user", "refresh-password-123")
+	sess := login(t, client, base, "refresh_user", "refresh-password-123")
+
+	refreshed := refreshSession(t, client, base, sess.RefreshToken, http.StatusOK)
+	if refreshed.RefreshToken == "" || refreshed.RefreshToken == sess.RefreshToken {
+		t.Fatal("refresh 应返回新的 refresh token")
+	}
+
+	// 新访问令牌可用
+	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", refreshed.AccessToken, nil, http.StatusOK, nil)
+	// 旧刷新令牌重放返回未认证状态
+	refreshSession(t, client, base, sess.RefreshToken, http.StatusUnauthorized)
+	// 旧访问令牌仍有效，预期刷新仅轮换刷新令牌且会话标识不变
+	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", sess.AccessToken, nil, http.StatusOK, nil)
+	// 新刷新令牌可继续轮换
+	refreshSession(t, client, base, refreshed.RefreshToken, http.StatusOK)
+}
+
+// 测试目标：验证退出登录仅撤销当前会话而不会影响同用户其他会话
+// 预期效果：已退出会话不可访问，另一会话保持可用，重复退出被拒绝
+func TestSessionLogoutIsolation(t *testing.T) {
+	srv, client, _ := newTestServer(t)
+	base := srv.URL
+
+	register(t, client, base, "logout_user", "logout-password-123")
+	a := login(t, client, base, "logout_user", "logout-password-123")
+	b := login(t, client, base, "logout_user", "logout-password-123")
+
+	doJSON(t, client, http.MethodPost, base+"/api/user/auth/logout", a.AccessToken, nil, http.StatusNoContent, nil)
+	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", a.AccessToken, nil, http.StatusUnauthorized, nil)
+	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", b.AccessToken, nil, http.StatusOK, nil)
+
+	// 已撤销会话再次退出，预期返回未认证状态
+	doJSON(t, client, http.MethodPost, base+"/api/user/auth/logout", a.AccessToken, nil, http.StatusUnauthorized, nil)
+
+	doJSON(t, client, http.MethodPost, base+"/api/user/auth/logout", b.AccessToken, nil, http.StatusNoContent, nil)
+	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", b.AccessToken, nil, http.StatusUnauthorized, nil)
+}
+
+// 测试目标：验证修改密码会撤销该用户的全部现有会话
+// 预期效果：两个访问令牌均失效，旧密码不能登录而新密码可以登录
+func TestSessionPasswordChangeRevokesAll(t *testing.T) {
+	srv, client, _ := newTestServer(t)
+	base := srv.URL
+
+	register(t, client, base, "pw_user", "old-password-123")
+	a := login(t, client, base, "pw_user", "old-password-123")
+	b := login(t, client, base, "pw_user", "old-password-123")
+
+	doJSON(t, client, http.MethodPatch, base+"/api/user/auth/password", b.AccessToken, map[string]string{
+		"old_password": "old-password-123",
+		"new_password": "new-password-456",
+	}, http.StatusOK, nil)
+
+	// 修改密码后两个会话的访问令牌全部失效
+	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", a.AccessToken, nil, http.StatusUnauthorized, nil)
+	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", b.AccessToken, nil, http.StatusUnauthorized, nil)
+
+	// 旧密码登录返回未认证状态，新密码登录成功
+	doJSON(t, client, http.MethodPost, base+"/api/user/login", "", map[string]string{
+		"username": "pw_user",
+		"password": "old-password-123",
+	}, http.StatusUnauthorized, nil)
+	login(t, client, base, "pw_user", "new-password-456")
+}
+
+// 测试目标：验证注销账号会撤销会话并禁止后续身份访问
+// 预期效果：原访问令牌和密码登录均失效，公开读取已删除用户返回未找到状态
+func TestSessionDeleteUserRevokesAll(t *testing.T) {
+	srv, client, _ := newTestServer(t)
+	base := srv.URL
+
+	register(t, client, base, "del_user", "del-password-123")
+	sess := login(t, client, base, "del_user", "del-password-123")
+
+	doJSON(t, client, http.MethodDelete, base+"/api/user/auth", sess.AccessToken, nil, http.StatusNoContent, nil)
+	doJSON(t, client, http.MethodGet, base+"/api/video/auth/mine", sess.AccessToken, nil, http.StatusUnauthorized, nil)
+
+	// 公开读取已删除用户，预期仓储过滤软删除记录后返回未找到状态
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/user/%d", base, sess.UserID), "", nil, http.StatusNotFound, nil)
+
+	doJSON(t, client, http.MethodPost, base+"/api/user/login", "", map[string]string{
+		"username": "del_user",
+		"password": "del-password-123",
+	}, http.StatusUnauthorized, nil)
+}
+
+// 测试目标：验证用户认证接口对重复数据、非法输入和冲突操作的边界处理
+// 预期效果：各场景返回冲突、请求无效或禁止状态，软删除用户名仍不可重新注册
+func TestUserAuthBoundaries(t *testing.T) {
+	srv, client, _ := newTestServer(t)
+	base := srv.URL
+
+	// 重复注册，预期返回冲突状态
+	register(t, client, base, "dup_user", "dup-password-123")
+	doJSON(t, client, http.MethodPost, base+"/api/user/register", "", map[string]string{
+		"username": "dup_user",
+		"password": "dup-password-123",
+	}, http.StatusConflict, nil)
+
+	// 用户名或密码长度不足，预期返回请求无效状态
+	doJSON(t, client, http.MethodPost, base+"/api/user/register", "", map[string]string{
+		"username": "ab",
+		"password": "short",
+	}, http.StatusBadRequest, nil)
+
+	// 使用错误密码登录，预期返回未认证状态
+	doJSON(t, client, http.MethodPost, base+"/api/user/login", "", map[string]string{
+		"username": "dup_user",
+		"password": "wrong-password-123",
+	}, http.StatusUnauthorized, nil)
+
+	// 改名碰撞已有用户名，预期返回冲突状态
+	register(t, client, base, "another_user", "another-password-123")
+	sess := login(t, client, base, "dup_user", "dup-password-123")
+	doJSON(t, client, http.MethodPatch, base+"/api/user/auth/name", sess.AccessToken, map[string]string{
+		"new_username": "another_user",
+	}, http.StatusConflict, nil)
+
+	// 提交错误旧密码，预期返回禁止状态
+	doJSON(t, client, http.MethodPatch, base+"/api/user/auth/password", sess.AccessToken, map[string]string{
+		"old_password": "wrong-password-123",
+		"new_password": "new-password-456",
+	}, http.StatusForbidden, nil)
+
+	// 注销后原用户名仍被唯一约束占用，预期不能重新注册
+	doJSON(t, client, http.MethodDelete, base+"/api/user/auth", sess.AccessToken, nil, http.StatusNoContent, nil)
+	doJSON(t, client, http.MethodPost, base+"/api/user/register", "", map[string]string{
+		"username": "dup_user",
+		"password": "dup-password-123",
+	}, http.StatusConflict, nil)
+}
+
+// 测试目标：验证视频列表游标绑定全局、作者和当前用户查询范围
+// 预期效果：跨范围复用游标以及升级前旧格式均返回 400
+func TestVideoCursorScopeContract(t *testing.T) {
+	srv, client, gdb := newTestServer(t)
+	base := srv.URL
+
+	register(t, client, base, "cursor_contract", "cursor-contract-password-123")
+	sess := login(t, client, base, "cursor_contract", "cursor-contract-password-123")
+	publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "游标范围视频一")
+	publishCompleteVideo(t, gdb, client, base, sess.AccessToken, "游标范围视频二")
+
+	var globalPage struct {
+		Items      []videoItem `json:"items"`
+		NextCursor string      `json:"next_cursor"`
+	}
+	doJSON(t, client, http.MethodGet, base+"/api/video?limit=1", "", nil, http.StatusOK, &globalPage)
+	if len(globalPage.Items) != 1 || globalPage.NextCursor == "" {
+		t.Fatalf("全局列表应返回可继续分页的游标 got=%+v", globalPage)
+	}
+	globalCursor := url.QueryEscape(globalPage.NextCursor)
+
+	// 全局游标不能用于作者范围或当前用户范围
+	doJSON(t, client, http.MethodGet,
+		fmt.Sprintf("%s/api/video?author_id=%d&limit=1&cursor=%s", base, sess.UserID, globalCursor),
+		"", nil, http.StatusBadRequest, nil)
+	doJSON(t, client, http.MethodGet,
+		base+"/api/video/auth/mine?limit=1&cursor="+globalCursor,
+		sess.AccessToken, nil, http.StatusBadRequest, nil)
+
+	var authorPage struct {
+		Items      []videoItem `json:"items"`
+		NextCursor string      `json:"next_cursor"`
+	}
+	doJSON(t, client, http.MethodGet,
+		fmt.Sprintf("%s/api/video?author_id=%d&limit=1", base, sess.UserID),
+		"", nil, http.StatusOK, &authorPage)
+	if authorPage.NextCursor == "" {
+		t.Fatal("作者列表存在下一页时必须返回游标")
+	}
+	wrongAuthorCursor := url.QueryEscape(authorPage.NextCursor)
+	doJSON(t, client, http.MethodGet,
+		base+"/api/video?author_id=999999&limit=1&cursor="+wrongAuthorCursor,
+		"", nil, http.StatusBadRequest, nil)
+
+	oldPayload := `{"published_at":"2026-08-29T08:00:00Z","id":100}`
+	oldCursor := url.QueryEscape(base64.RawURLEncoding.EncodeToString([]byte(oldPayload)))
+	doJSON(t, client, http.MethodGet,
+		base+"/api/video?limit=1&cursor="+oldCursor,
+		"", nil, http.StatusBadRequest, nil)
+}
+
+// 测试目标：验证 social 三类列表游标只能在生成它的资源和列表范围内复用
+// 预期效果：正常翻页成功，旧格式、跨视频、跨用户和跨粉丝关注列表均返回 400
+func TestSocialCursorScopeContract(t *testing.T) {
+	srv, client, gdb := newTestServer(t)
+	base := srv.URL
+
+	register(t, client, base, "cursor_social_target", "cursor-social-password-123")
+	target := login(t, client, base, "cursor_social_target", "cursor-social-password-123")
+	firstVideo := publishCompleteVideo(t, gdb, client, base, target.AccessToken, "评论游标范围视频一")
+	secondVideo := publishCompleteVideo(t, gdb, client, base, target.AccessToken, "评论游标范围视频二")
+
+	register(t, client, base, "cursor_social_commenter1", "cursor-social-password-123")
+	commenterOne := login(t, client, base, "cursor_social_commenter1", "cursor-social-password-123")
+	register(t, client, base, "cursor_social_commenter2", "cursor-social-password-123")
+	commenterTwo := login(t, client, base, "cursor_social_commenter2", "cursor-social-password-123")
+	for _, commenter := range []authSession{commenterOne, commenterTwo} {
+		doJSON(t, client, http.MethodPost,
+			fmt.Sprintf("%s/api/video/auth/%d/comments", base, firstVideo.ID),
+			commenter.AccessToken, map[string]string{"content": "游标范围评论"}, http.StatusCreated, nil)
+	}
+
+	type commentPage struct {
+		Items []struct {
+			ID uint `json:"id"`
+		} `json:"items"`
+		NextCursor string `json:"next_cursor"`
+	}
+	var firstCommentPage commentPage
+	doJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d/comments?limit=1", base, firstVideo.ID), "", nil, http.StatusOK, &firstCommentPage)
+	if len(firstCommentPage.Items) != 1 || firstCommentPage.NextCursor == "" {
+		t.Fatalf("评论首页应返回下一页游标 got=%+v", firstCommentPage)
+	}
+	commentCursor := url.QueryEscape(firstCommentPage.NextCursor)
+	var secondCommentPage commentPage
+	doJSON(t, client, http.MethodGet,
+		fmt.Sprintf("%s/api/video/%d/comments?limit=1&cursor=%s", base, firstVideo.ID, commentCursor),
+		"", nil, http.StatusOK, &secondCommentPage)
+	if len(secondCommentPage.Items) != 1 || secondCommentPage.Items[0].ID == firstCommentPage.Items[0].ID {
+		t.Fatalf("评论下一页应无重复 got first=%+v second=%+v", firstCommentPage, secondCommentPage)
+	}
+	doJSON(t, client, http.MethodGet,
+		fmt.Sprintf("%s/api/video/%d/comments?limit=1&cursor=%s", base, secondVideo.ID, commentCursor),
+		"", nil, http.StatusBadRequest, nil)
+
+	register(t, client, base, "cursor_social_follower1", "cursor-social-password-123")
+	followerOne := login(t, client, base, "cursor_social_follower1", "cursor-social-password-123")
+	register(t, client, base, "cursor_social_follower2", "cursor-social-password-123")
+	followerTwo := login(t, client, base, "cursor_social_follower2", "cursor-social-password-123")
+	for _, follower := range []authSession{followerOne, followerTwo} {
+		doJSON(t, client, http.MethodPut,
+			fmt.Sprintf("%s/api/user/auth/%d/follow", base, target.UserID),
+			follower.AccessToken, nil, http.StatusOK, nil)
+	}
+
+	register(t, client, base, "cursor_social_followee1", "cursor-social-password-123")
+	followeeOne := login(t, client, base, "cursor_social_followee1", "cursor-social-password-123")
+	register(t, client, base, "cursor_social_followee2", "cursor-social-password-123")
+	followeeTwo := login(t, client, base, "cursor_social_followee2", "cursor-social-password-123")
+	for _, followee := range []authSession{followeeOne, followeeTwo} {
+		doJSON(t, client, http.MethodPut,
+			fmt.Sprintf("%s/api/user/auth/%d/follow", base, followee.UserID),
+			target.AccessToken, nil, http.StatusOK, nil)
+	}
+
+	type followPage struct {
+		Items []struct {
+			User struct {
+				ID uint `json:"id"`
+			} `json:"user"`
+		} `json:"items"`
+		NextCursor string `json:"next_cursor"`
+	}
+	var firstFollowerPage followPage
+	doJSON(t, client, http.MethodGet,
+		fmt.Sprintf("%s/api/user/%d/followers?limit=1", base, target.UserID), "", nil, http.StatusOK, &firstFollowerPage)
+	if len(firstFollowerPage.Items) != 1 || firstFollowerPage.NextCursor == "" {
+		t.Fatalf("粉丝首页应返回下一页游标 got=%+v", firstFollowerPage)
+	}
+	followerCursor := url.QueryEscape(firstFollowerPage.NextCursor)
+	var secondFollowerPage followPage
+	doJSON(t, client, http.MethodGet,
+		fmt.Sprintf("%s/api/user/%d/followers?limit=1&cursor=%s", base, target.UserID, followerCursor), "", nil, http.StatusOK, &secondFollowerPage)
+	if len(secondFollowerPage.Items) != 1 || secondFollowerPage.Items[0].User.ID == firstFollowerPage.Items[0].User.ID {
+		t.Fatalf("粉丝下一页应无重复 got first=%+v second=%+v", firstFollowerPage, secondFollowerPage)
+	}
+	doJSON(t, client, http.MethodGet,
+		fmt.Sprintf("%s/api/user/%d/following?limit=1&cursor=%s", base, target.UserID, followerCursor), "", nil, http.StatusBadRequest, nil)
+	doJSON(t, client, http.MethodGet,
+		fmt.Sprintf("%s/api/user/%d/followers?limit=1&cursor=%s", base, commenterOne.UserID, followerCursor), "", nil, http.StatusBadRequest, nil)
+
+	var firstFollowingPage followPage
+	doJSON(t, client, http.MethodGet,
+		fmt.Sprintf("%s/api/user/%d/following?limit=1", base, target.UserID), "", nil, http.StatusOK, &firstFollowingPage)
+	if len(firstFollowingPage.Items) != 1 || firstFollowingPage.NextCursor == "" {
+		t.Fatalf("关注首页应返回下一页游标 got=%+v", firstFollowingPage)
+	}
+	followingCursor := url.QueryEscape(firstFollowingPage.NextCursor)
+	var secondFollowingPage followPage
+	doJSON(t, client, http.MethodGet,
+		fmt.Sprintf("%s/api/user/%d/following?limit=1&cursor=%s", base, target.UserID, followingCursor), "", nil, http.StatusOK, &secondFollowingPage)
+	if len(secondFollowingPage.Items) != 1 || secondFollowingPage.Items[0].User.ID == firstFollowingPage.Items[0].User.ID {
+		t.Fatalf("关注下一页应无重复 got first=%+v second=%+v", firstFollowingPage, secondFollowingPage)
+	}
+	doJSON(t, client, http.MethodGet,
+		fmt.Sprintf("%s/api/user/%d/followers?limit=1&cursor=%s", base, target.UserID, followingCursor), "", nil, http.StatusBadRequest, nil)
+
+	oldCursor := url.QueryEscape(base64.RawURLEncoding.EncodeToString([]byte(`{"created_at":"2026-09-05T08:00:00Z","id":1}`)))
+	doJSON(t, client, http.MethodGet,
+		fmt.Sprintf("%s/api/video/%d/comments?cursor=%s", base, firstVideo.ID, oldCursor), "", nil, http.StatusBadRequest, nil)
+	doJSON(t, client, http.MethodGet,
+		fmt.Sprintf("%s/api/user/%d/followers?cursor=%s", base, target.UserID, oldCursor), "", nil, http.StatusBadRequest, nil)
+	doJSON(t, client, http.MethodGet,
+		fmt.Sprintf("%s/api/user/%d/following?cursor=%s", base, target.UserID, oldCursor), "", nil, http.StatusBadRequest, nil)
 }

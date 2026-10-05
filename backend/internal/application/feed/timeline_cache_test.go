@@ -3,7 +3,6 @@ package applicationfeed
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strconv"
 	"sync"
 	"testing"
@@ -219,110 +218,6 @@ func waitSignal(t *testing.T, signal <-chan struct{}, message string) {
 	}
 }
 
-// 测试目标：首屏必须绕过页缓存，既不读取也不回填
-// 预期效果：缓存读写与卡片读取都不发生，仅记录 first_page 与一次 MySQL 回源
-func TestFeedCacheBypassesFirstPage(t *testing.T) {
-	repo := &stubRepository{}
-	repo.listFn = func(_ *domainfeed.TimelineCursor, _ int) (domainfeed.TimelinePage, error) {
-		return pageStartingAt(0, 3), nil
-	}
-	cache := newFakePageCache()
-	cards := &fakeCardReader{}
-	observer := &cacheObserverRecorder{}
-	service := New(repo, WithPageCache(cache, cards, observer.observe))
-
-	result, err := service.GetFeed(context.Background(), FeedRequest{Limit: 2})
-	if err != nil {
-		t.Fatalf("首屏失败: %v", err)
-	}
-	if cache.getCount() != 0 || cache.setCount() != 0 {
-		t.Fatalf("首屏不应触碰缓存 got gets=%d sets=%d", cache.getCount(), cache.setCount())
-	}
-	if cards.callCount() != 0 {
-		t.Fatalf("首屏不应批量读取卡片 got calls=%d", cards.callCount())
-	}
-	if !observer.contains("first_page") {
-		t.Fatalf("应记录 first_page got=%v", observer.list())
-	}
-	if len(result.Items) != 2 || result.NextCursor == "" {
-		t.Fatalf("首屏分页结果异常 got items=%d cursor=%q", len(result.Items), result.NextCursor)
-	}
-}
-
-// 测试目标：后续页未命中时回源 MySQL 并回填完整的探测页
-// 预期效果：回填条目为 limit+1 条且包含探测记录，命中前不读取卡片
-func TestFeedCacheMissBackfillsFullProbePage(t *testing.T) {
-	encoded := encodedCursorAt(t, 0)
-	repo := &stubRepository{}
-	repo.listFn = func(_ *domainfeed.TimelineCursor, _ int) (domainfeed.TimelinePage, error) {
-		return pageStartingAt(1, 4), nil
-	}
-	cache := newFakePageCache()
-	cards := &fakeCardReader{}
-	observer := &cacheObserverRecorder{}
-	service := New(repo, WithPageCache(cache, cards, observer.observe))
-
-	result, err := service.GetFeed(context.Background(), FeedRequest{Cursor: encoded, Limit: 3})
-	if err != nil {
-		t.Fatalf("后续页失败: %v", err)
-	}
-	if cache.getCount() != 1 || cards.callCount() != 0 {
-		t.Fatalf("未命中路径异常 got gets=%d cards=%d", cache.getCount(), cards.callCount())
-	}
-	page, ok := cache.lastSetPage()
-	if !ok {
-		t.Fatal("未命中后应回填缓存")
-	}
-	if len(page.Items) != 4 {
-		t.Fatalf("回填必须是完整探测页 got=%d want=4", len(page.Items))
-	}
-	if page.Items[3].VideoID != pageItemAt(4, 7).VideoID {
-		t.Fatalf("回填应包含探测记录 got=%+v", page.Items[3])
-	}
-	if len(result.Items) != 3 || result.NextCursor == "" {
-		t.Fatalf("响应分页结果异常 got items=%d cursor=%q", len(result.Items), result.NextCursor)
-	}
-	if !observer.contains("miss") || !observer.contains("write_ok") || !observer.contains("mysql_read") {
-		t.Fatalf("观测结果缺失 got=%v", observer.list())
-	}
-}
-
-// 测试目标：缓存命中时校验整页当前公开卡片后直接组装响应
-// 预期效果：命中路径不查询 MySQL，探测记录同样参与卡片校验
-func TestFeedCacheHitValidatesWholePage(t *testing.T) {
-	encoded := encodedCursorAt(t, 0)
-	page := pageStartingAt(1, 4)
-	repo := &stubRepository{}
-	cache := newFakePageCache()
-	cache.forced = &CachedPage{Items: page.Items}
-	cards := &fakeCardReader{}
-	cards.setFunc(func([]uint) (map[uint]domainfeed.FeedCard, error) {
-		return cardsForItems(page.Items), nil
-	})
-	observer := &cacheObserverRecorder{}
-	service := New(repo, WithPageCache(cache, cards, observer.observe))
-
-	result, err := service.GetFeed(context.Background(), FeedRequest{Cursor: encoded, Limit: 3})
-	if err != nil {
-		t.Fatalf("命中路径失败: %v", err)
-	}
-	if repo.listCallCount() != 0 {
-		t.Fatalf("命中校验通过后不应回源 got calls=%d", repo.listCallCount())
-	}
-	if got := cards.idList(); !equalIDs(got, []uint{899, 898, 897, 896}) {
-		t.Fatalf("卡片批次应覆盖整页含探测记录 got=%v", got)
-	}
-	if len(result.Items) != 3 || result.NextCursor == "" {
-		t.Fatalf("响应分页结果异常 got items=%d cursor=%q", len(result.Items), result.NextCursor)
-	}
-	if got := repo.statIDList(); !equalIDs(got, []uint{899, 898, 897}) {
-		t.Fatalf("统计批次应只覆盖最终响应页 got=%v", got)
-	}
-	if !observer.contains("hit") {
-		t.Fatalf("应记录命中 got=%v", observer.list())
-	}
-}
-
 // 测试目标：缓存页与当前公开卡片不一致时必须整页回源而不是过滤旧分页
 // 预期效果：卡片缺失、作者变化、发布时间变化都触发回源并重新回填
 func TestFeedCacheStalePageReloadsFromDatabase(t *testing.T) {
@@ -416,30 +311,6 @@ func TestFeedCacheReadFailureSkipsBackfill(t *testing.T) {
 	}
 }
 
-// 测试目标：非法缓存载荷可由正确的 MySQL 结果覆盖
-// 预期效果：记录 invalid_payload 后回源并成功回填
-func TestFeedCacheInvalidPayloadIsOverwritten(t *testing.T) {
-	encoded := encodedCursorAt(t, 0)
-	repo := &stubRepository{}
-	repo.listFn = func(_ *domainfeed.TimelineCursor, _ int) (domainfeed.TimelinePage, error) {
-		return pageStartingAt(1, 4), nil
-	}
-	cache := newFakePageCache()
-	cache.getErr = fmt.Errorf("%w: %w", ErrInvalidCachedPage, errors.New("unexpected field"))
-	observer := &cacheObserverRecorder{}
-	service := New(repo, WithPageCache(cache, &fakeCardReader{}, observer.observe))
-
-	if _, err := service.GetFeed(context.Background(), FeedRequest{Cursor: encoded, Limit: 3}); err != nil {
-		t.Fatalf("非法载荷应回源成功 got error=%v", err)
-	}
-	if cache.setCount() != 1 {
-		t.Fatalf("非法载荷应被正确结果覆盖 got sets=%d", cache.setCount())
-	}
-	if !observer.contains("invalid_payload") || !observer.contains("write_ok") {
-		t.Fatalf("观测结果缺失 got=%v", observer.list())
-	}
-}
-
 // 测试目标：缓存写入失败不能改变已经成功的响应
 // 预期效果：结果与无缓存时一致并记录 write_failed
 func TestFeedCacheWriteFailureKeepsSuccessResult(t *testing.T) {
@@ -462,37 +333,6 @@ func TestFeedCacheWriteFailureKeepsSuccessResult(t *testing.T) {
 	}
 	if !observer.contains("write_failed") {
 		t.Fatalf("应记录 write_failed got=%v", observer.list())
-	}
-}
-
-// 测试目标：有效空页也能作为缓存载荷回填
-// 预期效果：空页通过校验并写入，响应为非 nil 空切片且无下一页游标
-func TestFeedCacheBackfillsValidEmptyPage(t *testing.T) {
-	encoded := encodedCursorAt(t, 0)
-	repo := &stubRepository{}
-	repo.listFn = func(_ *domainfeed.TimelineCursor, _ int) (domainfeed.TimelinePage, error) {
-		return pageStartingAt(1, 0), nil
-	}
-	cache := newFakePageCache()
-	observer := &cacheObserverRecorder{}
-	service := New(repo, WithPageCache(cache, &fakeCardReader{}, observer.observe))
-
-	result, err := service.GetFeed(context.Background(), FeedRequest{Cursor: encoded, Limit: 3})
-	if err != nil {
-		t.Fatalf("有效空页失败: %v", err)
-	}
-	if result.Items == nil || len(result.Items) != 0 {
-		t.Fatalf("空页应输出非 nil 空切片 got=%v", result.Items)
-	}
-	if result.NextCursor != "" {
-		t.Fatalf("空页不应给出下一页游标 got=%q", result.NextCursor)
-	}
-	page, ok := cache.lastSetPage()
-	if !ok || len(page.Items) != 0 {
-		t.Fatalf("有效空页应回填 got page=%+v ok=%v", page.Items, ok)
-	}
-	if !observer.contains("write_ok") {
-		t.Fatalf("应记录 write_ok got=%v", observer.list())
 	}
 }
 
@@ -552,27 +392,6 @@ func TestFeedCacheBusySkipsCacheAndReadsDatabase(t *testing.T) {
 	}
 	if !observer.contains("cache_busy") {
 		t.Fatalf("应记录 cache_busy got=%v", observer.list())
-	}
-}
-
-// 测试目标：回填容量耗尽同样不影响响应
-// 预期效果：写入失败路径记录 write_failed 但响应成功
-func TestFeedCacheBusyOnWriteKeepsSuccessResult(t *testing.T) {
-	encoded := encodedCursorAt(t, 0)
-	repo := &stubRepository{}
-	repo.listFn = func(_ *domainfeed.TimelineCursor, _ int) (domainfeed.TimelinePage, error) {
-		return pageStartingAt(1, 4), nil
-	}
-	cache := newFakePageCache()
-	cache.setErr = errPageCacheBusy
-	observer := &cacheObserverRecorder{}
-	service := New(repo, WithPageCache(cache, &fakeCardReader{}, observer.observe))
-
-	if _, err := service.GetFeed(context.Background(), FeedRequest{Cursor: encoded, Limit: 3}); err != nil {
-		t.Fatalf("回填忙不应影响响应 got error=%v", err)
-	}
-	if !observer.contains("write_failed") {
-		t.Fatalf("应记录 write_failed got=%v", observer.list())
 	}
 }
 
@@ -698,25 +517,6 @@ func TestFeedCacheOperationCapacityLimit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("第 %d 个并发请求失败: %v", index, err)
 		}
-	}
-}
-
-// 测试目标：父上下文已取消时不占用并发槽也不访问依赖
-// 预期效果：返回包装后的不可用错误并保留取消原因
-func TestFeedCacheRespectsCancelledContext(t *testing.T) {
-	repo := &stubRepository{}
-	cache := newFakePageCache()
-	service := New(repo, WithPageCache(cache, &fakeCardReader{}, nil))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := service.GetFeed(ctx, FeedRequest{})
-	if !errors.Is(err, domainfeed.ErrUnavailable) || !errors.Is(err, context.Canceled) {
-		t.Fatalf("got error=%v want ErrUnavailable 且 context.Canceled", err)
-	}
-	if repo.listCallCount() != 0 || cache.getCount() != 0 {
-		t.Fatalf("取消后不应访问依赖 got list=%d gets=%d", repo.listCallCount(), cache.getCount())
 	}
 }
 

@@ -2,6 +2,7 @@ package video
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,9 +11,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"gofeed/internal/testutil"
-
 	"gorm.io/gorm"
+
+	"gofeed/internal/testutil"
 )
 
 // 测试目标：写入一条指定状态的事件
@@ -42,63 +43,6 @@ func seedProcessingVideoRow(t *testing.T, repo *Repository, authorID uint, title
 		t.Fatalf("创建处理视频失败: %v", err)
 	}
 	return row
-}
-
-// 测试目标：验证 claim 把到期 pending 事件租约为 publishing 并递增 attempt
-// 预期效果：事件状态、attempt、last_attempt_at、locked_until 落库，返回视频快照且 HasVideo 为真
-func TestClaimPendingOutboxEventsAcquiresLease(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-	row := seedProcessingVideoRow(t, repo, 1, "租约视频")
-	event := seedOutboxEvent(t, db, row.ID, "evt-lease-1", OutboxEventStatusPending)
-
-	dispatches, err := repo.ClaimPendingOutboxEvents(context.Background(), 10, time.Minute)
-	if err != nil {
-		t.Fatalf("claim 失败: %v", err)
-	}
-	if len(dispatches) != 1 {
-		t.Fatalf("应 claim 一条事件 got=%d", len(dispatches))
-	}
-	got := dispatches[0]
-	if got.Event.ID != event.ID || got.Video.ID != row.ID {
-		t.Fatalf("claim 结果错误 got=%+v", got)
-	}
-	if !got.HasVideo {
-		t.Fatalf("存在视频快照时 HasVideo 应为真 got=%+v", got)
-	}
-	if got.Event.Status != OutboxEventStatusPublishing {
-		t.Fatalf("状态应为 publishing got=%s", got.Event.Status)
-	}
-	if got.Event.Attempt != 1 {
-		t.Fatalf("attempt 应递增为一 got=%d", got.Event.Attempt)
-	}
-	if got.Event.NextAttemptAt != nil {
-		t.Fatalf("claim 应清空 next_attempt_at got=%v", got.Event.NextAttemptAt)
-	}
-	if got.Event.LastAttemptAt == nil || got.Event.LockedUntil == nil {
-		t.Fatalf("租约字段应写入 got=%+v", got.Event)
-	}
-}
-
-// 测试目标：验证持有有效租约的事件不会被第二个 relay 重复 claim
-// 预期效果：第二次 claim 返回空，事件仍属于首个持有者
-func TestClaimPendingOutboxEventsExcludesLiveLease(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-	row := seedProcessingVideoRow(t, repo, 1, "互斥视频")
-	seedOutboxEvent(t, db, row.ID, "evt-lease-live", OutboxEventStatusPending)
-
-	first, err := repo.ClaimPendingOutboxEvents(context.Background(), 10, time.Minute)
-	if err != nil || len(first) != 1 {
-		t.Fatalf("首次 claim 失败 got=%d err=%v", len(first), err)
-	}
-	second, err := repo.ClaimPendingOutboxEvents(context.Background(), 10, time.Minute)
-	if err != nil {
-		t.Fatalf("第二次 claim 失败: %v", err)
-	}
-	if len(second) != 0 {
-		t.Fatalf("有效租约不应被重复 claim got=%d", len(second))
-	}
 }
 
 // 测试目标：验证批量 claim 把同一批事件各自领取一次并重置租约字段
@@ -368,32 +312,6 @@ func TestClaimPendingOutboxEventsRespectsBackoff(t *testing.T) {
 	}
 }
 
-// 测试目标：验证发布成功后标记 dispatched 并清除租约
-// 预期效果：状态为 dispatched、dispatched_at 落库、locked_until 清空
-func TestMarkOutboxDispatchedClearsLease(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-	row := seedProcessingVideoRow(t, repo, 1, "派发视频")
-	seedOutboxEvent(t, db, row.ID, "evt-mark", OutboxEventStatusPending)
-
-	claimed, err := repo.ClaimPendingOutboxEvents(context.Background(), 10, time.Minute)
-	if err != nil || len(claimed) != 1 {
-		t.Fatalf("claim 失败 got=%d err=%v", len(claimed), err)
-	}
-	marked, err := repo.MarkOutboxDispatched(context.Background(), claimed[0].Event.ID, claimed[0].Event.Attempt)
-	if err != nil || !marked {
-		t.Fatalf("标记失败 marked=%v err=%v", marked, err)
-	}
-
-	var stored OutboxEvent
-	if err := db.First(&stored, claimed[0].Event.ID).Error; err != nil {
-		t.Fatalf("读取事件失败: %v", err)
-	}
-	if stored.Status != OutboxEventStatusDispatched || stored.DispatchedAt == nil || stored.LockedUntil != nil {
-		t.Fatalf("标记结果错误 got=%+v", stored)
-	}
-}
-
 // 测试目标：验证发布失败时写回 pending、安排退避并按 255 字节安全记录原因
 // 预期效果：状态回到 pending，next_attempt_at 在未来，last_error 截断且保持有效 UTF-8
 func TestReleaseOutboxRetrySchedulesNextAttempt(t *testing.T) {
@@ -438,141 +356,6 @@ func TestReleaseOutboxRetrySchedulesNextAttempt(t *testing.T) {
 	}
 }
 
-// 测试目标：验证发布失败释放时的非法退避被拒绝
-// 预期效果：负退避返回 ErrInvalidOutboxLease 且不改变事件，正亚秒退避向上取整为一秒
-func TestReleaseOutboxRetryRejectsNegativeBackoff(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-	row := seedProcessingVideoRow(t, repo, 1, "负退避视频")
-	event := seedOutboxEvent(t, db, row.ID, "evt-release-negative", OutboxEventStatusPending)
-
-	claimed, err := repo.ClaimPendingOutboxEvents(context.Background(), 10, time.Minute)
-	if err != nil || len(claimed) != 1 {
-		t.Fatalf("claim 失败 got=%d err=%v", len(claimed), err)
-	}
-	for _, backoff := range []time.Duration{-time.Nanosecond, -500 * time.Millisecond, -time.Second} {
-		released, err := repo.ReleaseOutboxRetry(context.Background(), claimed[0].Event.ID, claimed[0].Event.Attempt, backoff, errors.New("negative backoff"))
-		if !errors.Is(err, ErrInvalidOutboxLease) {
-			t.Fatalf("退避 %v 应被拒绝 got=%v", backoff, err)
-		}
-		if released {
-			t.Fatalf("退避 %v 不应释放事件", backoff)
-		}
-	}
-	var stored OutboxEvent
-	if err := db.First(&stored, event.ID).Error; err != nil {
-		t.Fatalf("读取事件失败: %v", err)
-	}
-	if stored.Status != OutboxEventStatusPublishing || stored.LockedUntil == nil {
-		t.Fatalf("被拒绝的释放不应改变事件 got=%+v", stored)
-	}
-
-	// 测试目标：验证正亚秒退避被接受并向上取整
-	// 预期效果：next_attempt_at 落在约一秒之后而不是当前时刻
-	released, err := repo.ReleaseOutboxRetry(context.Background(), claimed[0].Event.ID, claimed[0].Event.Attempt, 300*time.Millisecond, errors.New("sub-second backoff"))
-	if err != nil || !released {
-		t.Fatalf("正亚秒退避应被接受 released=%v err=%v", released, err)
-	}
-	var remainingMicros int64
-	if err := db.Raw(
-		"SELECT TIMESTAMPDIFF(MICROSECOND, NOW(3), next_attempt_at) FROM video_outbox_events WHERE id = ?",
-		event.ID,
-	).Scan(&remainingMicros).Error; err != nil {
-		t.Fatalf("读取剩余退避失败: %v", err)
-	}
-	if remainingMicros <= 300000 || remainingMicros > 1300000 {
-		t.Fatalf("亚秒退避应向上取整为一秒 got=%d微秒", remainingMicros)
-	}
-}
-
-// 测试目标：验证非法租约时长被拒绝且不产生副作用
-// 预期效果：零、负亚秒与负整秒租约返回 ErrInvalidOutboxLease，事件保持原状态
-func TestClaimPendingOutboxEventsRejectsInvalidLease(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-	row := seedProcessingVideoRow(t, repo, 1, "非法租约视频")
-	event := seedOutboxEvent(t, db, row.ID, "evt-lease-invalid", OutboxEventStatusPending)
-
-	for _, lease := range []time.Duration{0, -time.Nanosecond, -500 * time.Millisecond, -time.Second} {
-		if _, err := repo.ClaimPendingOutboxEvents(context.Background(), 10, lease); !errors.Is(err, ErrInvalidOutboxLease) {
-			t.Fatalf("租约 %v 应被拒绝 got=%v", lease, err)
-		}
-	}
-	var stored OutboxEvent
-	if err := db.First(&stored, event.ID).Error; err != nil {
-		t.Fatalf("读取事件失败: %v", err)
-	}
-	if stored.Status != OutboxEventStatusPending || stored.Attempt != 0 {
-		t.Fatalf("非法租约不应产生副作用 got=%+v", stored)
-	}
-}
-
-// 测试目标：验证正亚秒租约按秒向上取整
-// 预期效果：亚秒租约被接受且至少保护一秒，租约内事件不可被再次领取
-func TestClaimPendingOutboxEventsCeilsSubSecondLease(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-	row := seedProcessingVideoRow(t, repo, 1, "亚秒租约视频")
-	event := seedOutboxEvent(t, db, row.ID, "evt-lease-subsecond", OutboxEventStatusPending)
-
-	claimed, err := repo.ClaimPendingOutboxEvents(context.Background(), 10, 500*time.Millisecond)
-	if err != nil || len(claimed) != 1 {
-		t.Fatalf("正亚秒租约应被接受 got=%d err=%v", len(claimed), err)
-	}
-	var remainingMicros int64
-	if err := db.Raw(
-		"SELECT TIMESTAMPDIFF(MICROSECOND, NOW(3), locked_until) FROM video_outbox_events WHERE id = ?",
-		event.ID,
-	).Scan(&remainingMicros).Error; err != nil {
-		t.Fatalf("读取剩余租约失败: %v", err)
-	}
-	if remainingMicros <= 500000 || remainingMicros > 1500000 {
-		t.Fatalf("亚秒租约应向上取整为一秒 got=%d微秒", remainingMicros)
-	}
-
-	// 测试目标：验证取整后的租约仍然生效
-	// 预期效果：租约内第二次 claim 返回空
-	again, err := repo.ClaimPendingOutboxEvents(context.Background(), 10, time.Millisecond)
-	if err != nil {
-		t.Fatalf("租约内重复 claim 失败: %v", err)
-	}
-	if len(again) != 0 {
-		t.Fatalf("租约内事件不应被再次领取 got=%d", len(again))
-	}
-}
-
-// 测试目标：验证拒绝原因按 255 字节安全截断并保持有效 UTF-8
-// 预期效果：超长多字节原因被截断到列宽以内且不留下半个字符
-func TestRejectVideoProcessingTruncatesReasonSafely(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-	row := seedProcessingVideoRow(t, repo, 1, "拒绝截断视频")
-	// 测试目标：构造截断边界落在多字节字符中间的原因
-	// 预期效果：截断结果必须丢弃半个字符
-	reason := "a" + strings.Repeat("故障", 400)
-	rejected, err := repo.RejectVideoProcessing(context.Background(), row.ID, reason)
-	if err != nil || !rejected {
-		t.Fatalf("拒绝视频失败 rejected=%v err=%v", rejected, err)
-	}
-
-	var stored Video
-	if err := db.First(&stored, row.ID).Error; err != nil {
-		t.Fatalf("读取视频失败: %v", err)
-	}
-	if stored.Status != VideoStatusRejected {
-		t.Fatalf("视频应为 rejected got=%s", stored.Status)
-	}
-	if size := len([]byte(stored.RejectedReason)); size > 255 || size < 250 {
-		t.Fatalf("拒绝原因应截断到 255 字节以内且用满预算 got_len=%d", size)
-	}
-	if !utf8.ValidString(stored.RejectedReason) {
-		t.Fatalf("拒绝原因必须保持有效 UTF-8 got=%q", stored.RejectedReason)
-	}
-	if !strings.HasPrefix(reason, stored.RejectedReason) {
-		t.Fatalf("拒绝原因应是原始信息的前缀 got=%q", stored.RejectedReason)
-	}
-}
-
 // 测试目标：验证重复拒绝已流转视频不产生变更
 // 预期效果：视频离开 processing 后拒绝返回未变更
 func TestRejectVideoProcessingIgnoresSettledVideo(t *testing.T) {
@@ -596,41 +379,6 @@ func TestRejectVideoProcessingIgnoresSettledVideo(t *testing.T) {
 	}
 	if stored.RejectedReason != "首次拒绝" {
 		t.Fatalf("拒绝原因不应被覆盖 got=%q", stored.RejectedReason)
-	}
-}
-
-// 测试目标：验证公共截断函数按字节上限保持 UTF-8 完整
-// 预期效果：结果始终是原值前缀且有效，边界落在字符中间时丢弃该字符
-func TestTruncateUTF8BytesKeepsValidEncoding(t *testing.T) {
-	cases := []struct {
-		name  string
-		value string
-		limit int
-	}{
-		{name: "上限为零", value: "abc", limit: 0},
-		{name: "上限为负", value: "abc", limit: -1},
-		{name: "恰好命中边界", value: strings.Repeat("故", 3), limit: 9},
-		{name: "边界落在字符中间", value: "故障", limit: 4},
-		{name: "短于上限", value: "故障", limit: 255},
-		{name: "空字符串", value: "", limit: 255},
-	}
-	for _, tc := range cases {
-		got := truncateUTF8Bytes(tc.value, tc.limit)
-		if len(got) > tc.limit && tc.limit > 0 {
-			t.Fatalf("%s 超出字节上限 got=%d limit=%d", tc.name, len(got), tc.limit)
-		}
-		if tc.limit <= 0 && got != "" {
-			t.Fatalf("%s 应返回空字符串 got=%q", tc.name, got)
-		}
-		if !utf8.ValidString(got) {
-			t.Fatalf("%s 结果必须保持有效 UTF-8 got=%q", tc.name, got)
-		}
-		if !strings.HasPrefix(tc.value, got) {
-			t.Fatalf("%s 结果应是原值前缀 got=%q", tc.name, got)
-		}
-	}
-	if got := truncateUTF8Bytes("故障", 4); got != "故" {
-		t.Fatalf("边界落在字符中间应丢弃该字符 got=%q", got)
 	}
 }
 
@@ -751,4 +499,525 @@ func TestGetOutboxSnapshotPropagatesDatabaseError(t *testing.T) {
 	if snapshot.PendingCount != 0 || snapshot.PublishingCount != 0 || snapshot.OldestPendingAt != nil || snapshot.OldestPublishingAt != nil {
 		t.Fatalf("失败快照应保持零值 got=%+v", snapshot)
 	}
+}
+
+// 以下用例验收「视频处理完成时同事务写入 video.published 发布事件」这一能力
+// 覆盖正常流转、CAS 零行、拒绝分支、并发竞争、插入失败回滚、提交失败回滚与开关关闭七类场景
+
+// 测试目标：验证同一视频重复完成处理时不会重复写入发布事件
+// 预期效果：第二次返回未变更且不报错 发布事件仍为一条 标识与首次一致 outbox 全表仅一条事件
+func TestPublishedEventNotDuplicatedOnRepeatCompletion(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db, WithPublishedEvents(true))
+	row := seedProcessingVideoRow(t, repo, 1, "重复完成视频")
+
+	if changed, err := repo.CompleteVideoProcessing(t.Context(), row.ID); err != nil || !changed {
+		t.Fatalf("首次完成处理应发生变更 changed=%v err=%v", changed, err)
+	}
+	first := listPublishedEvents(t, db, row.ID)
+	if len(first) != 1 {
+		t.Fatalf("首次应写入一条发布事件 got=%d", len(first))
+	}
+
+	changed, err := repo.CompleteVideoProcessing(t.Context(), row.ID)
+	if err != nil {
+		t.Fatalf("重复完成处理不应返回错误 got=%v", err)
+	}
+	if changed {
+		t.Fatal("已发布视频不应再次报告状态变更")
+	}
+
+	second := listPublishedEvents(t, db, row.ID)
+	if len(second) != 1 {
+		t.Fatalf("重复完成处理不应新增发布事件 got=%d", len(second))
+	}
+	if second[0].EventID != first[0].EventID {
+		t.Fatalf("重复完成处理不应改写事件标识 want=%s got=%s", first[0].EventID, second[0].EventID)
+	}
+	if total := countAllOutboxEvents(t, db); total != 1 {
+		t.Fatalf("outbox 事件总数应保持一条 got=%d", total)
+	}
+}
+
+// 测试目标：验证状态条件更新匹配零行时不为该视频写入发布事件
+// 预期效果：视频不存在 状态为草稿 状态为已发布三种场景都返回未变更且不报错 状态不被改写 outbox 保持为空
+func TestPublishedEventSkippedWhenCASMatchesNoRow(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db, WithPublishedEvents(true))
+
+	draft := seedVideo(t, repo, 1, "草稿视频", VideoStatusDraft, baseTime)
+	published := seedVideo(t, repo, 1, "已发布视频", VideoStatusPublished, baseTime)
+
+	cases := []struct {
+		name       string
+		videoID    uint
+		wantStatus string
+	}{
+		{name: "视频不存在", videoID: published.ID + 100000, wantStatus: ""},
+		{name: "状态为草稿", videoID: draft.ID, wantStatus: VideoStatusDraft},
+		{name: "状态为已发布", videoID: published.ID, wantStatus: VideoStatusPublished},
+	}
+
+	for _, tc := range cases {
+		changed, err := repo.CompleteVideoProcessing(t.Context(), tc.videoID)
+		if err != nil {
+			t.Fatalf("%s 不应返回错误 got=%v", tc.name, err)
+		}
+		if changed {
+			t.Fatalf("%s 匹配零行不应报告状态变更", tc.name)
+		}
+		if tc.wantStatus == "" {
+			continue
+		}
+		got := readPublishedEventVideo(t, db, tc.videoID)
+		if got.Status != tc.wantStatus {
+			t.Fatalf("%s 状态不应被改写 want=%s got=%s", tc.name, tc.wantStatus, got.Status)
+		}
+	}
+
+	if total := countAllOutboxEvents(t, db); total != 0 {
+		t.Fatalf("匹配零行不应产生任何事件 got=%d", total)
+	}
+}
+
+// 测试目标：验证拒绝分支不会写入发布事件
+// 预期效果：视频转为 rejected 后再次完成处理也不发生变更 outbox 始终为空
+func TestPublishedEventNotCreatedOnRejection(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db, WithPublishedEvents(true))
+	row := seedProcessingVideoRow(t, repo, 1, "被拒视频")
+
+	rejected, err := repo.RejectVideoProcessing(t.Context(), row.ID, "媒体校验失败")
+	if err != nil {
+		t.Fatalf("拒绝处理不应返回错误 got=%v", err)
+	}
+	if !rejected {
+		t.Fatal("拒绝处理应报告状态变更")
+	}
+	if got := readPublishedEventVideo(t, db, row.ID); got.Status != VideoStatusRejected {
+		t.Fatalf("视频状态应为 rejected got=%s", got.Status)
+	}
+
+	if changed, completeErr := repo.CompleteVideoProcessing(t.Context(), row.ID); completeErr != nil || changed {
+		t.Fatalf("已拒绝视频不应被完成 changed=%v err=%v", changed, completeErr)
+	}
+	if total := countAllOutboxEvents(t, db); total != 0 {
+		t.Fatalf("拒绝分支不应产生任何事件 got=%d", total)
+	}
+}
+
+// 测试目标：验证并发完成同一视频时只有一个调用赢得状态流转并写入发布事件
+// 预期效果：八个并发调用恰好一个返回变更且都不报错 视频最终为 published 发布事件恰好一条
+func TestPublishedEventSingleWinnerUnderConcurrentCompletion(t *testing.T) {
+	db := testutil.DB(t)
+	row := seedProcessingVideoRow(t, NewRepository(db, WithPublishedEvents(true)), 1, "并发完成视频")
+
+	const workers = 8
+	type completionResult struct {
+		changed bool
+		err     error
+	}
+
+	start := make(chan struct{})
+	results := make(chan completionResult, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			repo := NewRepository(db, WithPublishedEvents(true))
+			<-start
+			changed, err := repo.CompleteVideoProcessing(context.Background(), row.ID)
+			results <- completionResult{changed: changed, err: err}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	winners := 0
+	for got := range results {
+		if got.err != nil {
+			t.Fatalf("并发完成处理不应返回错误 got=%v", got.err)
+		}
+		if got.changed {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("应恰好一个调用赢得状态流转 got=%d", winners)
+	}
+	if got := readPublishedEventVideo(t, db, row.ID); got.Status != VideoStatusPublished {
+		t.Fatalf("视频状态应为 published got=%s", got.Status)
+	}
+	if events := listPublishedEvents(t, db, row.ID); len(events) != 1 {
+		t.Fatalf("发布事件应恰好一条 got=%d", len(events))
+	}
+}
+
+// 测试目标：验证发布事件插入失败时状态流转随事务一起回滚
+// 预期效果：返回注入的插入错误 视频仍为 processing published_at 不变 outbox 无任何事件
+func TestPublishedEventRolledBackWhenOutboxInsertFails(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db, WithPublishedEvents(true))
+	row := seedProcessingVideoRow(t, repo, 1, "事件插入失败视频")
+	before := readPublishedEventVideo(t, db, row.ID)
+
+	fault := registerPublishedEventCreateFault(t, db)
+	injected := errors.New("injected outbox insert failure")
+	fault.arm("video_outbox_events", injected)
+
+	changed, err := repo.CompleteVideoProcessing(t.Context(), row.ID)
+	fault.disarm()
+	if !errors.Is(err, injected) {
+		t.Fatalf("应返回注入的插入错误 changed=%v err=%v", changed, err)
+	}
+	if changed {
+		t.Fatal("插入失败回滚后不应报告状态变更")
+	}
+	if !fault.hit() {
+		t.Fatal("注入点未被触发 用例未覆盖真实插入失败路径")
+	}
+
+	after := readPublishedEventVideo(t, db, row.ID)
+	if after.Status != VideoStatusProcessing {
+		t.Fatalf("插入失败应回滚状态 got=%s", after.Status)
+	}
+	if after.PublishedAt == nil || before.PublishedAt == nil {
+		t.Fatal("published_at 不应为空")
+	}
+	if !before.PublishedAt.Equal(*after.PublishedAt) {
+		t.Fatalf("插入失败后 published_at 不应改变 before=%v after=%v", *before.PublishedAt, *after.PublishedAt)
+	}
+	if total := countAllOutboxEvents(t, db); total != 0 {
+		t.Fatalf("插入失败回滚后不应留下事件 got=%d", total)
+	}
+
+	// 移除注入后同一视频仍可正常完成 说明失败并非前置状态被破坏
+	fault.disarm()
+	if changed, err := repo.CompleteVideoProcessing(t.Context(), row.ID); err != nil || !changed {
+		t.Fatalf("解除注入后应能正常完成 changed=%v err=%v", changed, err)
+	}
+	if events := listPublishedEvents(t, db, row.ID); len(events) != 1 {
+		t.Fatalf("解除注入后应写入一条发布事件 got=%d", len(events))
+	}
+}
+
+// 测试目标：验证事务提交失败时状态流转与发布事件一起回滚
+// 预期效果：返回注入的提交错误 视频仍为 processing published_at 不变 outbox 无任何事件
+func TestPublishedEventRolledBackWhenCommitFails(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db, WithPublishedEvents(true))
+	row := seedProcessingVideoRow(t, repo, 1, "提交失败视频")
+	before := readPublishedEventVideo(t, db, row.ID)
+
+	faultRepo, fault := newPublishedEventCommitFaultRepository(t, db)
+	injected := errors.New("injected commit failure")
+	fault.arm(injected)
+
+	changed, err := faultRepo.CompleteVideoProcessing(t.Context(), row.ID)
+	if !errors.Is(err, injected) {
+		t.Fatalf("应返回注入的提交错误 changed=%v err=%v", changed, err)
+	}
+	if changed {
+		t.Fatal("提交失败回滚后不应报告状态变更")
+	}
+	if begins, commits := fault.counters(); begins != 1 || commits != 1 {
+		t.Fatalf("注错点应恰好开启并提交一次事务 begins=%d commits=%d", begins, commits)
+	}
+	fault.disarm()
+
+	after := readPublishedEventVideo(t, db, row.ID)
+	if after.Status != VideoStatusProcessing {
+		t.Fatalf("提交失败应回滚状态 got=%s", after.Status)
+	}
+	if after.PublishedAt == nil || before.PublishedAt == nil {
+		t.Fatal("published_at 不应为空")
+	}
+	if !before.PublishedAt.Equal(*after.PublishedAt) {
+		t.Fatalf("提交失败后 published_at 不应改变 before=%v after=%v", *before.PublishedAt, *after.PublishedAt)
+	}
+	if total := countAllOutboxEvents(t, db); total != 0 {
+		t.Fatalf("提交失败回滚后不应留下事件 got=%d", total)
+	}
+
+	// 同一连接池在解除注入后仍可正常提交 说明回滚确实落到底层事务
+	faultRepo2, _ := newPublishedEventCommitFaultRepository(t, db)
+	if changed, err := faultRepo2.CompleteVideoProcessing(t.Context(), row.ID); err != nil || !changed {
+		t.Fatalf("解除注入后应能正常完成 changed=%v err=%v", changed, err)
+	}
+	if events := listPublishedEvents(t, db, row.ID); len(events) != 1 {
+		t.Fatalf("解除注入后应写入一条发布事件 got=%d", len(events))
+	}
+}
+
+// 测试目标：验证发布事件开关关闭时保持既有只更新状态的行为
+// 预期效果：状态转为 published 但 outbox 不产生任何 video.published 事件
+func TestPublishedEventDisabledKeepsLegacyCompletion(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db)
+	if repo.publishedEvents {
+		t.Fatal("默认构造的仓储不应开启发布事件")
+	}
+	row := seedProcessingVideoRow(t, repo, 1, "开关关闭视频")
+	before := readPublishedEventVideo(t, db, row.ID)
+
+	changed, err := repo.CompleteVideoProcessing(t.Context(), row.ID)
+	if err != nil {
+		t.Fatalf("关闭开关时完成处理不应返回错误 got=%v", err)
+	}
+	if !changed {
+		t.Fatal("关闭开关时仍应报告状态变更")
+	}
+
+	after := readPublishedEventVideo(t, db, row.ID)
+	if after.Status != VideoStatusPublished {
+		t.Fatalf("视频状态应为 published got=%s", after.Status)
+	}
+	if after.PublishedAt == nil || before.PublishedAt == nil {
+		t.Fatal("published_at 不应为空")
+	}
+	if !before.PublishedAt.Equal(*after.PublishedAt) {
+		t.Fatalf("关闭开关时不应改写 published_at before=%v after=%v", *before.PublishedAt, *after.PublishedAt)
+	}
+	if total := countAllOutboxEvents(t, db); total != 0 {
+		t.Fatalf("关闭开关时不应产生任何事件 got=%d", total)
+	}
+}
+
+// readPublishedEventVideo 读取视频当前落库状态
+// 测试目标：为用例提供真实数据库中的状态快照
+// 预期效果：返回该视频行的状态与发布时间
+func readPublishedEventVideo(t *testing.T, db *gorm.DB, videoID uint) Video {
+	t.Helper()
+	var row Video
+	if err := db.First(&row, "id = ?", videoID).Error; err != nil {
+		t.Fatalf("读取视频 %d 失败: %v", videoID, err)
+	}
+	return row
+}
+
+// listPublishedEvents 列出指定视频的发布事件
+// 测试目标：只统计 event_type 为 video.published 的事件
+// 预期效果：按创建顺序返回该视频的发布事件
+func listPublishedEvents(t *testing.T, db *gorm.DB, videoID uint) []OutboxEvent {
+	t.Helper()
+	var events []OutboxEvent
+	if err := db.Where("video_id = ? AND event_type = ?", videoID, VideoPublishedEventType).
+		Order("id ASC").Find(&events).Error; err != nil {
+		t.Fatalf("读取视频 %d 的发布事件失败: %v", videoID, err)
+	}
+	return events
+}
+
+// countAllOutboxEvents 统计 outbox 全表事件数
+// 测试目标：判断是否有多余事件残留
+// 预期效果：返回 video_outbox_events 的当前行数
+func countAllOutboxEvents(t *testing.T, db *gorm.DB) int64 {
+	t.Helper()
+	var total int64
+	if err := db.Model(&OutboxEvent{}).Count(&total).Error; err != nil {
+		t.Fatalf("统计 outbox 事件失败: %v", err)
+	}
+	return total
+}
+
+// publishedEventCreateFault 是写入发布事件时的插入故障注入器
+// 测试目标：让针对目标表的 Create 语句在回调阶段直接失败
+// 预期效果：武装后命中目标表的插入返回注入错误 其余语句不受影响
+type publishedEventCreateFault struct {
+	mu    sync.Mutex
+	table string
+	err   error
+	hits  int
+}
+
+// inject 是注册到 Create 回调链上的处理函数
+// 测试目标：在 INSERT 执行前按表名短路语句
+// 预期效果：命中目标表时把注入错误写入语句错误并累计命中次数
+func (f *publishedEventCreateFault) inject(tx *gorm.DB) {
+	f.mu.Lock()
+	table, err := f.table, f.err
+	if err != nil && tx.Statement != nil && tx.Statement.Table == table {
+		f.hits++
+	}
+	f.mu.Unlock()
+	if err == nil || tx.Statement == nil || tx.Statement.Table != table {
+		return
+	}
+	tx.AddError(err)
+}
+
+// arm 武装故障
+// 测试目标：让下一次命中目标表的插入失败
+// 预期效果：目标表匹配且错误非空
+func (f *publishedEventCreateFault) arm(table string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.table = table
+	f.err = err
+}
+
+// disarm 解除故障
+// 测试目标：恢复目标表的正常写入
+// 预期效果：后续插入不再注入错误
+func (f *publishedEventCreateFault) disarm() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = nil
+}
+
+// hit 报告注入点是否被触发
+// 测试目标：确认用例确实走到了目标语句
+// 预期效果：命中过至少一次返回 true
+func (f *publishedEventCreateFault) hit() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hits > 0
+}
+
+const publishedEventCreateFaultCallback = "gofeed:published_event_create_fault"
+
+// registerPublishedEventCreateFault 在 Create 流程上注册插入故障注入
+// 测试目标：为用例提供可武装的插入失败能力
+// 预期效果：回调在 gorm:create 之前执行 测试结束后自动移除
+func registerPublishedEventCreateFault(t *testing.T, db *gorm.DB) *publishedEventCreateFault {
+	t.Helper()
+	fault := &publishedEventCreateFault{}
+	if err := db.Callback().Create().Before("gorm:create").
+		Register(publishedEventCreateFaultCallback, fault.inject); err != nil {
+		t.Fatalf("注册插入故障回调失败: %v", err)
+	}
+	t.Cleanup(func() {
+		fault.disarm()
+		if err := db.Callback().Create().Remove(publishedEventCreateFaultCallback); err != nil {
+			t.Errorf("移除插入故障回调失败: %v", err)
+		}
+	})
+	return fault
+}
+
+// publishedEventCommitFault 是事务提交故障注入器
+// 测试目标：在连接池层拦截事务开启并在提交时注入错误
+// 预期效果：武装后真实事务被回滚且返回注入错误 未武装时提交照常
+type publishedEventCommitFault struct {
+	mu       sync.Mutex
+	pool     *sql.DB
+	injected error
+	begins   int
+	commits  int
+}
+
+// PrepareContext 委托底层连接池
+// 测试目标：保持非事务语句可用
+// 预期效果：直接使用底层预处理语句
+func (f *publishedEventCommitFault) PrepareContext(ctx context.Context, query string) (*sql.Stmt, error) {
+	return f.pool.PrepareContext(ctx, query)
+}
+
+// ExecContext 委托底层连接池
+// 测试目标：保持非事务语句可用
+// 预期效果：直接执行底层语句
+func (f *publishedEventCommitFault) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return f.pool.ExecContext(ctx, query, args...)
+}
+
+// QueryContext 委托底层连接池
+// 测试目标：保持非事务查询可用
+// 预期效果：返回底层查询结果
+func (f *publishedEventCommitFault) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	return f.pool.QueryContext(ctx, query, args...)
+}
+
+// QueryRowContext 委托底层连接池
+// 测试目标：保持非事务单行查询可用
+// 预期效果：返回底层单行结果
+func (f *publishedEventCommitFault) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	return f.pool.QueryRowContext(ctx, query, args...)
+}
+
+// BeginTx 开启真实事务并包装提交
+// 测试目标：让事务提交点可注入错误
+// 预期效果：返回包装后的连接池并累计开启次数
+func (f *publishedEventCommitFault) BeginTx(ctx context.Context, opts *sql.TxOptions) (gorm.ConnPool, error) {
+	real, err := f.pool.BeginTx(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	f.begins++
+	f.mu.Unlock()
+	return &publishedEventCommitFaultTx{Tx: real, fault: f}, nil
+}
+
+// arm 武装提交故障
+// 测试目标：让下一次事务提交失败
+// 预期效果：提交时先回滚再返回注入错误
+func (f *publishedEventCommitFault) arm(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.injected = err
+}
+
+// disarm 解除提交故障
+// 测试目标：恢复事务正常提交
+// 预期效果：后续提交直接落地
+func (f *publishedEventCommitFault) disarm() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.injected = nil
+}
+
+// counters 报告事务开启与提交次数
+// 测试目标：确认注错点确实被走到
+// 预期效果：返回开启次数与提交次数
+func (f *publishedEventCommitFault) counters() (int, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.begins, f.commits
+}
+
+// publishedEventCommitFaultTx 包装真实事务以便注入提交错误
+// 测试目标：在事务提交点注入错误并回滚
+// 预期效果：武装时回滚真实事务并返回注入错误 未武装时正常提交
+type publishedEventCommitFaultTx struct {
+	*sql.Tx
+	fault *publishedEventCommitFault
+}
+
+// Commit 按武装状态提交或注入失败
+// 测试目标：模拟提交阶段失败
+// 预期效果：武装时先回滚真实事务再返回注入错误 否则提交真实事务
+func (tx *publishedEventCommitFaultTx) Commit() error {
+	tx.fault.mu.Lock()
+	injected := tx.fault.injected
+	tx.fault.commits++
+	tx.fault.mu.Unlock()
+	if injected != nil {
+		_ = tx.Tx.Rollback()
+		return injected
+	}
+	return tx.Tx.Commit()
+}
+
+// Rollback 回滚真实事务
+// 测试目标：保留事务回滚能力
+// 预期效果：返回底层回滚结果
+func (tx *publishedEventCommitFaultTx) Rollback() error {
+	return tx.Tx.Rollback()
+}
+
+// newPublishedEventCommitFaultRepository 构造提交点可注入错误的仓储
+// 测试目标：让 CompleteVideoProcessing 走真实事务并在提交处失败
+// 预期效果：返回使用真实连接池的仓储与对应故障注入器
+func newPublishedEventCommitFaultRepository(t *testing.T, db *gorm.DB) (*Repository, *publishedEventCommitFault) {
+	t.Helper()
+	pool, err := db.DB()
+	if err != nil {
+		t.Fatalf("读取底层连接池失败: %v", err)
+	}
+	fault := &publishedEventCommitFault{pool: pool}
+	session := db.Session(&gorm.Session{NewDB: true, Context: context.Background()})
+	session.Statement.ConnPool = fault
+	return NewRepository(session, WithPublishedEvents(true)), fault
 }

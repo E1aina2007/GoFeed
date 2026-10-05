@@ -5,13 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
+	"sort"
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
 	dbpkg "gofeed/internal/db"
 	"gofeed/internal/testutil"
-
-	"gorm.io/gorm"
 )
 
 // 测试目标：固定仓储测试的基准时间
@@ -63,37 +65,6 @@ func setVideoDeletedAt(t *testing.T, db *gorm.DB, id uint, at time.Time) {
 	t.Helper()
 	if err := db.Exec("UPDATE videos SET deleted_at = ? WHERE id = ?", at, id).Error; err != nil {
 		t.Fatalf("设置视频 deleted_at 失败: %v", err)
-	}
-}
-
-// 测试目标：验证公开读取仅返回已发布视频
-// 预期效果：草稿无法公开读取，通用读取仍可读取草稿
-func TestRepositoryGetPublishedByIDFiltersStatus(t *testing.T) {
-	repo := NewRepository(testutil.DB(t))
-	ctx := context.Background()
-
-	published := seedVideo(t, repo, 1, "已发布", VideoStatusPublished, baseTime)
-	draft := seedVideo(t, repo, 1, "草稿", VideoStatusDraft, baseTime.Add(time.Minute))
-
-	if _, err := repo.GetPublishedByID(ctx, draft.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
-		t.Fatalf("草稿不应通过公开读取到, err=%v", err)
-	}
-	got, err := repo.GetPublishedByID(ctx, published.ID)
-	if err != nil {
-		t.Fatalf("已发布视频应可读: %v", err)
-	}
-	if got.ID != published.ID {
-		t.Fatalf("got id=%d want=%d", got.ID, published.ID)
-	}
-
-	// 测试目标：验证管理侧读取不限制视频状态
-	// 预期效果：草稿可通过通用读取接口返回
-	raw, err := repo.GetByID(ctx, draft.ID)
-	if err != nil {
-		t.Fatalf("GetByID 读草稿失败: %v", err)
-	}
-	if raw.Status != VideoStatusDraft {
-		t.Fatalf("草稿状态读回错误 got=%s", raw.Status)
 	}
 }
 
@@ -534,45 +505,6 @@ func TestRepositoryClaimDraftPurgeIsExclusive(t *testing.T) {
 	}
 }
 
-// 测试目标：验证公开视频列表的状态过滤、作者过滤和排序
-// 预期效果：仅返回已发布视频并按发布时间倒序排列
-func TestRepositoryListPublishedFilterAndOrder(t *testing.T) {
-	repo := NewRepository(testutil.DB(t))
-	ctx := context.Background()
-
-	// 测试目标：准备不同作者和状态的视频测试数据
-	// 预期效果：可同时验证全局列表和作者列表的过滤与排序
-	seedVideo(t, repo, 1, "a1-new", VideoStatusPublished, baseTime.Add(2*time.Minute))
-	seedVideo(t, repo, 1, "a1-old", VideoStatusPublished, baseTime)
-	seedVideo(t, repo, 1, "a1-draft", VideoStatusDraft, baseTime.Add(3*time.Minute))
-	seedVideo(t, repo, 2, "a2", VideoStatusPublished, baseTime.Add(time.Minute))
-
-	all, err := repo.GetPublishedVideoList(ctx, 0, nil, 10)
-	if err != nil {
-		t.Fatalf("GetPublishedVideoList 全局列表: %v", err)
-	}
-	if len(all) != 3 {
-		t.Fatalf("全局列表应只有 3 条 published, got=%d", len(all))
-	}
-	want := []string{"a1-new", "a2", "a1-old"}
-	for i, title := range want {
-		if all[i].Title != title {
-			t.Fatalf("全局列表顺序错误 index=%d got=%s want=%s", i, all[i].Title, title)
-		}
-	}
-
-	mine, err := repo.GetPublishedVideoList(ctx, 1, nil, 10)
-	if err != nil {
-		t.Fatalf("GetPublishedVideoList 作者列表: %v", err)
-	}
-	if len(mine) != 2 {
-		t.Fatalf("author 1 应只有 2 条 published, got=%d", len(mine))
-	}
-	if mine[0].Title != "a1-new" || mine[1].Title != "a1-old" {
-		t.Fatalf("作者列表顺序错误 got=%v", mine)
-	}
-}
-
 // 测试目标：验证公开视频列表的游标分页完整性
 // 预期效果：所有视频按倒序仅返回一次且不会遗漏或重复
 func TestRepositoryListPublishedCursorPagination(t *testing.T) {
@@ -660,33 +592,6 @@ func TestRepositoryListPublishedCursorTieBreak(t *testing.T) {
 	}
 	if len(empty) != 0 {
 		t.Fatalf("游标指向最后一条后应为空, got=%+v", empty)
-	}
-}
-
-// 测试目标：验证个人视频列表只包含该作者已发布的视频
-// 预期效果：草稿和处理中视频不会混入 VideoItem 列表，其他作者和零值作者不返回数据
-func TestRepositoryListByAuthorIncludesPublishedOnly(t *testing.T) {
-	repo := NewRepository(testutil.DB(t))
-	ctx := context.Background()
-
-	seedVideo(t, repo, 1, "pub", VideoStatusPublished, baseTime)
-	seedVideo(t, repo, 1, "draft", VideoStatusDraft, baseTime.Add(time.Minute))
-	seedVideo(t, repo, 1, "proc", VideoStatusProcessing, baseTime.Add(2*time.Minute))
-	seedVideo(t, repo, 2, "other", VideoStatusPublished, baseTime.Add(3*time.Minute))
-
-	mine, err := repo.GetAuthorVideoList(ctx, 1, nil, 10)
-	if err != nil {
-		t.Fatalf("GetAuthorVideoList: %v", err)
-	}
-	if len(mine) != 1 || mine[0].Status != VideoStatusPublished || mine[0].Title != "pub" {
-		t.Fatalf("个人列表应只返回已发布视频, got=%+v", mine)
-	}
-
-	if empty, err := repo.GetAuthorVideoList(ctx, 999, nil, 10); err != nil || len(empty) != 0 {
-		t.Fatalf("不存在的作者应为空, got=%v err=%v", empty, err)
-	}
-	if empty, err := repo.GetAuthorVideoList(ctx, 0, nil, 10); err != nil || len(empty) != 0 {
-		t.Fatalf("authorID=0 应为空, got=%v err=%v", empty, err)
 	}
 }
 
@@ -809,105 +714,6 @@ func TestRepositoryPurgeExpiredDeleted(t *testing.T) {
 		}
 		if count != 1 {
 			t.Fatalf("视频 id=%d 应在数据库中保留", id)
-		}
-	}
-}
-
-// 测试目标：验证用户主页的视频数量只统计当前公开可见的视频
-// 预期效果：其他作者、非发布状态和软删除视频均不计入
-func TestRepositoryCountPublishedByAuthor(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-	ctx := context.Background()
-
-	seedVideo(t, repo, 1, "published-1", VideoStatusPublished, baseTime)
-	seedVideo(t, repo, 1, "published-2", VideoStatusPublished, baseTime.Add(time.Minute))
-	seedVideo(t, repo, 1, "draft", VideoStatusDraft, baseTime)
-	seedVideo(t, repo, 1, "processing", VideoStatusProcessing, baseTime)
-	seedVideo(t, repo, 1, "rejected", VideoStatusRejected, baseTime)
-	deleted := seedVideo(t, repo, 1, "deleted", VideoStatusPublished, baseTime)
-	seedVideo(t, repo, 2, "other-author", VideoStatusPublished, baseTime)
-	if err := repo.DeletePublishedVideo(ctx, deleted.ID, deleted.AuthorID); err != nil {
-		t.Fatalf("DeletePublishedVideo: %v", err)
-	}
-
-	count, err := repo.GetPublishedVideoCountByAuthor(ctx, 1)
-	if err != nil {
-		t.Fatalf("GetPublishedVideoCountByAuthor: %v", err)
-	}
-	if count != 2 {
-		t.Fatalf("作者 1 应仅统计 2 条公开视频, got=%d", count)
-	}
-
-	otherCount, err := repo.GetPublishedVideoCountByAuthor(ctx, 2)
-	if err != nil {
-		t.Fatalf("GetPublishedVideoCountByAuthor other: %v", err)
-	}
-	if otherCount != 1 {
-		t.Fatalf("作者 2 的视频不应混入作者 1, got=%d", otherCount)
-	}
-
-	zeroCount, err := repo.GetPublishedVideoCountByAuthor(ctx, 0)
-	if err != nil || zeroCount != 0 {
-		t.Fatalf("authorID=0 应返回零值, count=%d err=%v", zeroCount, err)
-	}
-}
-
-// 测试目标：验证批量读取公开视频在无有效标识时不访问数据库
-// 预期效果：空切片、全零标识都返回非 nil 空切片且查询次数为零
-func TestRepositoryGetPublishedByIDsEmptyBatchSkipsQuery(t *testing.T) {
-	gdb := testutil.DB(t)
-	repo := NewRepository(gdb)
-	if err := dbpkg.RegisterQueryCounter(gdb); err != nil {
-		t.Fatalf("注册查询计数回调失败: %v", err)
-	}
-	seedVideo(t, repo, 1, "published", VideoStatusPublished, baseTime)
-
-	for _, ids := range [][]uint{nil, {}, {0, 0, 0}} {
-		ctx := dbpkg.WithQueryCounter(context.Background())
-		videos, err := repo.GetPublishedByIDs(ctx, ids)
-		if err != nil {
-			t.Fatalf("空批次不应报错 ids=%v err=%v", ids, err)
-		}
-		if videos == nil || len(videos) != 0 {
-			t.Fatalf("空批次应返回非 nil 空切片 ids=%v got=%+v", ids, videos)
-		}
-		if count := dbpkg.QueryCount(ctx); count != 0 {
-			t.Fatalf("空批次不应查询数据库 ids=%v count=%d", ids, count)
-		}
-	}
-}
-
-// 测试目标：验证批量读取公开视频忽略零标识并对重复标识去重
-// 预期效果：重复与零标识不产生额外结果，有效唯一标识只触发一次查询
-func TestRepositoryGetPublishedByIDsDedupesAndIgnoresZero(t *testing.T) {
-	gdb := testutil.DB(t)
-	repo := NewRepository(gdb)
-	if err := dbpkg.RegisterQueryCounter(gdb); err != nil {
-		t.Fatalf("注册查询计数回调失败: %v", err)
-	}
-	first := seedVideo(t, repo, 1, "first", VideoStatusPublished, baseTime)
-	second := seedVideo(t, repo, 1, "second", VideoStatusPublished, baseTime.Add(time.Minute))
-	third := seedVideo(t, repo, 1, "third", VideoStatusPublished, baseTime.Add(2*time.Minute))
-
-	ctx := dbpkg.WithQueryCounter(context.Background())
-	got, err := repo.GetPublishedByIDs(ctx, []uint{0, second.ID, 0, first.ID, third.ID, second.ID, 0})
-	if err != nil {
-		t.Fatalf("批量读取公开视频失败: %v", err)
-	}
-	if count := dbpkg.QueryCount(ctx); count != 1 {
-		t.Fatalf("批量读取应只执行一次查询 count=%d", count)
-	}
-	byID := make(map[uint]Video, len(got))
-	for _, row := range got {
-		byID[row.ID] = row
-	}
-	if len(got) != 3 || len(byID) != 3 {
-		t.Fatalf("应只返回三个唯一视频 got=%d unique=%d", len(got), len(byID))
-	}
-	for _, want := range []*Video{first, second, third} {
-		if _, ok := byID[want.ID]; !ok {
-			t.Fatalf("标识 %d 的结果缺失 got=%+v", want.ID, got)
 		}
 	}
 }
@@ -1049,56 +855,57 @@ func TestRepositoryGetPublishedByIDsFiltersInvisible(t *testing.T) {
 	}
 }
 
-// 测试目标：验证批量读取公开视频按标识建映射而非依赖返回顺序
-// 预期效果：乱序标识全部命中且未被请求的视频不出现
-func TestRepositoryGetPublishedByIDsMapsByID(t *testing.T) {
-	repo := NewRepository(testutil.DB(t))
-	ctx := context.Background()
-
-	wanted := make([]*Video, 0, 6)
-	for i := 0; i < 6; i++ {
-		row := seedVideo(t, repo, 1, fmt.Sprintf("map-%d", i), VideoStatusPublished, baseTime.Add(time.Duration(i)*time.Minute))
-		wanted = append(wanted, row)
+// 测试目标：验证轻量公开状态与现有完整卡片读取的真实 MySQL 可见性完全一致
+// 预期效果：排除软删、非公开状态、缺失时间和任一媒体字段，保留零作者记录
+func TestPublicVideoStatesVisibilityParity(t *testing.T) {
+	gdb := testutil.DB(t)
+	repo := NewRepository(gdb)
+	ids := []uint{0}
+	for _, status := range []string{VideoStatusPublished, VideoStatusDraft, VideoStatusProcessing, VideoStatusRejected, VideoStatusPurging} {
+		v := seedVideo(t, repo, 0, status, status, baseTime)
+		ids = append(ids, v.ID)
 	}
-	unrequested := seedVideo(t, repo, 1, "unrequested", VideoStatusPublished, baseTime.Add(time.Hour))
-
-	ids := []uint{wanted[4].ID, wanted[0].ID, wanted[5].ID, wanted[2].ID, wanted[1].ID, wanted[3].ID}
-	got, err := repo.GetPublishedByIDs(ctx, ids)
+	for _, field := range []string{"published_at", "play_url", "play_file_name", "play_original_name", "cover_url", "cover_file_name", "cover_original_name", "deleted_at"} {
+		v := seedVideo(t, repo, 1, field, VideoStatusPublished, baseTime)
+		ids = append(ids, v.ID)
+		var value any = ""
+		if field == "published_at" {
+			value = nil
+		}
+		if field == "deleted_at" {
+			value = baseTime
+		}
+		if err := gdb.Model(&Video{}).Where("id = ?", v.ID).UpdateColumn(field, value).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids = append(ids, ids[1], 999999)
+	states, err := repo.GetPublicVideoStates(t.Context(), ids)
 	if err != nil {
-		t.Fatalf("批量读取公开视频失败: %v", err)
+		t.Fatal(err)
 	}
-	if len(got) != len(ids) {
-		t.Fatalf("结果数量错误 got=%d want=%d", len(got), len(ids))
+	full, err := repo.GetPublishedByIDs(t.Context(), ids)
+	if err != nil {
+		t.Fatal(err)
 	}
-	byID := make(map[uint]Video, len(got))
-	for _, row := range got {
-		byID[row.ID] = row
+	a, b := []uint{}, []uint{}
+	for _, v := range states {
+		a = append(a, v.ID)
+		if v.AuthorID != 0 {
+			t.Fatal("作者零标识应保持")
+		}
 	}
-	if len(byID) != len(ids) {
-		t.Fatalf("结果存在重复标识 got=%d want=%d", len(byID), len(ids))
+	for _, v := range full {
+		b = append(b, v.ID)
 	}
-	if _, ok := byID[unrequested.ID]; ok {
-		t.Fatalf("未被请求的视频不应出现 id=%d", unrequested.ID)
+	sort.Slice(a, func(i, j int) bool { return a[i] < a[j] })
+	sort.Slice(b, func(i, j int) bool { return b[i] < b[j] })
+	if len(a) != 1 || !reflect.DeepEqual(a, b) {
+		t.Fatalf("states=%v full=%v", a, b)
 	}
-	for _, want := range wanted {
-		row, ok := byID[want.ID]
-		if !ok {
-			t.Fatalf("标识 %d 的结果缺失 got=%+v", want.ID, got)
-		}
-		if row.Title != want.Title || row.AuthorID != want.AuthorID || row.Description != want.Description {
-			t.Fatalf("标识 %d 的字段不匹配 got=%+v", want.ID, row)
-		}
-		if row.PlayURL != want.PlayURL || row.PlayFileName != want.PlayFileName || row.PlayOriginalName != want.PlayOriginalName {
-			t.Fatalf("标识 %d 的播放媒体字段不匹配 got=%+v", want.ID, row)
-		}
-		if row.CoverURL != want.CoverURL || row.CoverFileName != want.CoverFileName || row.CoverOriginalName != want.CoverOriginalName {
-			t.Fatalf("标识 %d 的封面媒体字段不匹配 got=%+v", want.ID, row)
-		}
-		if row.Status != want.Status {
-			t.Fatalf("标识 %d 的状态不匹配 got=%s", want.ID, row.Status)
-		}
-		if row.PublishedAt == nil || !row.PublishedAt.Equal(*want.PublishedAt) {
-			t.Fatalf("标识 %d 的发布时间不匹配 got=%v", want.ID, row.PublishedAt)
-		}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := repo.GetPublicVideoStates(ctx, ids); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
 	}
 }

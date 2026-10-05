@@ -3,56 +3,17 @@ package infrafeed
 import (
 	"context"
 	"errors"
-	"fmt"
-	"slices"
+	"os"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 
 	dbpkg "gofeed/internal/db"
 	domainfeed "gofeed/internal/domain/feed"
 	"gofeed/internal/testutil"
 	"gofeed/internal/video"
-
-	"gorm.io/gorm"
 )
-
-// fakePublishedBatchReader 记录批量读取的调用次数与标识集合，并按预设结果返回
-type fakePublishedBatchReader struct {
-	calls int
-	ids   [][]uint
-	rows  []video.Video
-	err   error
-}
-
-func (f *fakePublishedBatchReader) GetPublishedByIDs(ctx context.Context, ids []uint) ([]video.Video, error) {
-	f.calls++
-	f.ids = append(f.ids, append([]uint(nil), ids...))
-	if f.err != nil {
-		return nil, f.err
-	}
-	return f.rows, nil
-}
-
-// lastIDs 返回最近一次批量读取收到的标识集合
-func (f *fakePublishedBatchReader) lastIDs() []uint {
-	if len(f.ids) == 0 {
-		return nil
-	}
-	return f.ids[len(f.ids)-1]
-}
-
-// 测试目标：构造指定数量的公开完整视频实体及其标识集合
-// 预期效果：标识从起始值连续递增，发布时间互不相同
-func newPublicFeedVideoRows(startID uint, count int) ([]video.Video, []uint) {
-	rows := make([]video.Video, 0, count)
-	ids := make([]uint, 0, count)
-	for i := 0; i < count; i++ {
-		id := startID + uint(i)
-		rows = append(rows, newPublicFeedVideoRow(id, 1, feedBaseTime.Add(time.Duration(i)*time.Second)))
-		ids = append(ids, id)
-	}
-	return rows, ids
-}
 
 // 测试目标：通过真实仓储写入视频实体
 // 预期效果：写入失败时终止用例并回填自增标识
@@ -60,177 +21,6 @@ func persistFeedVideo(t *testing.T, repo *video.Repository, row *video.Video) {
 	t.Helper()
 	if err := repo.Create(context.Background(), row); err != nil {
 		t.Fatalf("写入视频 %q 失败: %v", row.Title, err)
-	}
-}
-
-var _ PublishedVideoBatchReader = (*fakePublishedBatchReader)(nil)
-
-// 测试目标：验证卡片批量读取忽略零标识并按首次出现去重
-// 预期效果：底层仓储只收到一次调用且标识集合保持首次出现顺序
-func TestBatchGetCardsDedupesAndIgnoresZero(t *testing.T) {
-	rows, _ := newPublicFeedVideoRows(3, 3)
-	reader := &fakePublishedBatchReader{rows: rows}
-	cards, err := NewCardReader(reader).BatchGetCards(context.Background(), []uint{3, 0, 5, 3, 5, 0, 4})
-	if err != nil {
-		t.Fatalf("批量读取卡片失败: %v", err)
-	}
-	if reader.calls != 1 {
-		t.Fatalf("批量读取应只调用一次底层仓储 calls=%d", reader.calls)
-	}
-	if !slices.Equal(reader.lastIDs(), []uint{3, 5, 4}) {
-		t.Fatalf("去重后的标识集合错误 got=%v", reader.lastIDs())
-	}
-	if len(cards) != 3 {
-		t.Fatalf("卡片数量应等于有效唯一标识数 got=%d", len(cards))
-	}
-	for _, id := range []uint{3, 4, 5} {
-		if card, ok := cards[id]; !ok || card.VideoID != id {
-			t.Fatalf("标识 %d 的卡片缺失或错位 got=%+v", id, card)
-		}
-	}
-}
-
-// 测试目标：验证卡片批量读取的有效标识数量上限
-// 预期效果：上限内一次参数化查询成功，超出一个有效标识即整体失败且不查询底层仓储
-func TestBatchGetCardsBatchSizeBoundary(t *testing.T) {
-	ctx := context.Background()
-	rows, ids := newPublicFeedVideoRows(1, domainfeed.MaxCardBatchSize)
-	reader := &fakePublishedBatchReader{rows: rows}
-
-	cards, err := NewCardReader(reader).BatchGetCards(ctx, ids)
-	if err != nil {
-		t.Fatalf("上限内批量读取失败: %v", err)
-	}
-	if len(cards) != domainfeed.MaxCardBatchSize {
-		t.Fatalf("上限内应返回全部卡片 got=%d", len(cards))
-	}
-	if reader.calls != 1 || len(reader.lastIDs()) != domainfeed.MaxCardBatchSize {
-		t.Fatalf("上限内应一次传全部标识 calls=%d ids=%d", reader.calls, len(reader.lastIDs()))
-	}
-
-	duplicated := append(append([]uint{}, ids...), ids[0])
-	dupReader := &fakePublishedBatchReader{rows: rows}
-	if got, err := NewCardReader(dupReader).BatchGetCards(ctx, duplicated); err != nil || len(got) != domainfeed.MaxCardBatchSize {
-		t.Fatalf("重复标识去重后不应超限 got=%d err=%v", len(got), err)
-	}
-
-	overRows, overIDs := newPublicFeedVideoRows(1, domainfeed.MaxCardBatchSize+1)
-	overReader := &fakePublishedBatchReader{rows: overRows}
-	got, err := NewCardReader(overReader).BatchGetCards(ctx, overIDs)
-	if !errors.Is(err, domainfeed.ErrInvalidCardBatch) {
-		t.Fatalf("超限应返回 ErrInvalidCardBatch, err=%v", err)
-	}
-	if got != nil {
-		t.Fatalf("超限不应返回卡片 got=%v", got)
-	}
-	if overReader.calls != 0 {
-		t.Fatalf("超限不应查询底层仓储 calls=%d", overReader.calls)
-	}
-}
-
-// 测试目标：验证卡片按标识对齐而非依赖返回顺序
-// 预期效果：乱序结果仍按标识建 map，未被请求的行被忽略
-func TestBatchGetCardsMapsByIDAndIgnoresUnrequested(t *testing.T) {
-	reader := &fakePublishedBatchReader{rows: []video.Video{
-		newPublicFeedVideoRow(9, 1, feedBaseTime),
-		newPublicFeedVideoRow(77, 1, feedBaseTime),
-		newPublicFeedVideoRow(4, 1, feedBaseTime),
-	}}
-	cards, err := NewCardReader(reader).BatchGetCards(context.Background(), []uint{4, 9})
-	if err != nil {
-		t.Fatalf("批量读取卡片失败: %v", err)
-	}
-	if len(cards) != 2 {
-		t.Fatalf("结果应只包含被请求的标识 got=%+v", cards)
-	}
-	if _, ok := cards[77]; ok {
-		t.Fatalf("未被请求的行不应出现在结果中 got=%+v", cards)
-	}
-	if card, ok := cards[4]; !ok || card.VideoID != 4 {
-		t.Fatalf("标识 4 的卡片缺失或错位 got=%+v", card)
-	}
-	if card, ok := cards[9]; !ok || card.VideoID != 9 {
-		t.Fatalf("标识 9 的卡片缺失或错位 got=%+v", card)
-	}
-}
-
-// 测试目标：验证卡片批量读取只收录公开完整视频
-// 预期效果：缺失、软删除、非公开状态、媒体不完整和发布时间为空的行都不出现在结果中
-func TestBatchGetCardsSkipsInvisibleRows(t *testing.T) {
-	ctx := context.Background()
-	invisible := []struct {
-		id     uint
-		mutate func(*video.Video)
-	}{
-		{id: 21, mutate: func(row *video.Video) { row.Status = video.VideoStatusDraft }},
-		{id: 22, mutate: func(row *video.Video) { row.Status = video.VideoStatusProcessing }},
-		{id: 23, mutate: func(row *video.Video) { row.Status = video.VideoStatusRejected }},
-		{id: 24, mutate: func(row *video.Video) { row.Status = video.VideoStatusPurging }},
-		{id: 25, mutate: func(row *video.Video) { row.DeletedAt = gorm.DeletedAt{Time: feedBaseTime, Valid: true} }},
-		{id: 26, mutate: func(row *video.Video) { row.PublishedAt = nil }},
-		{id: 27, mutate: func(row *video.Video) { row.PublishedAt = feedTimePtr(time.Time{}) }},
-		{id: 28, mutate: func(row *video.Video) { row.PlayURL = "" }},
-		{id: 29, mutate: func(row *video.Video) { row.PlayFileName = "" }},
-		{id: 30, mutate: func(row *video.Video) { row.PlayOriginalName = "" }},
-		{id: 31, mutate: func(row *video.Video) { row.CoverURL = "" }},
-		{id: 32, mutate: func(row *video.Video) { row.CoverFileName = "" }},
-		{id: 33, mutate: func(row *video.Video) { row.CoverOriginalName = "" }},
-	}
-
-	public := newPublicFeedVideoRow(20, 1, feedBaseTime)
-	rows := []video.Video{public}
-	ids := []uint{public.ID}
-	for _, item := range invisible {
-		row := newPublicFeedVideoRow(item.id, 1, feedBaseTime)
-		item.mutate(&row)
-		rows = append(rows, row)
-		ids = append(ids, row.ID)
-	}
-	ids = append(ids, 34)
-
-	reader := &fakePublishedBatchReader{rows: rows}
-	cards, err := NewCardReader(reader).BatchGetCards(ctx, ids)
-	if err != nil {
-		t.Fatalf("批量读取卡片失败: %v", err)
-	}
-	if len(cards) != 1 {
-		t.Fatalf("结果应只收录一条公开完整视频 got=%+v", cards)
-	}
-	if _, ok := cards[public.ID]; !ok {
-		t.Fatalf("公开完整视频应被收录 got=%+v", cards)
-	}
-	for _, item := range invisible {
-		if _, ok := cards[item.id]; ok {
-			t.Fatalf("标识 %d 不应出现在结果中", item.id)
-		}
-	}
-}
-
-// 测试目标：验证卡片批量读取的错误语义与 cause 保留
-// 预期效果：批上限错误映射为 ErrInvalidCardBatch，其余错误映射为 ErrUnavailable 并保留原始错误
-func TestBatchGetCardsErrorSemantics(t *testing.T) {
-	ctx := context.Background()
-
-	cause := errors.New("批量读取失败")
-	_, err := NewCardReader(&fakePublishedBatchReader{err: cause}).BatchGetCards(ctx, []uint{1})
-	if !errors.Is(err, domainfeed.ErrUnavailable) || !errors.Is(err, cause) {
-		t.Fatalf("底层错误应包装为 ErrUnavailable 且保留 cause, err=%v", err)
-	}
-
-	_, err = NewCardReader(&fakePublishedBatchReader{err: video.ErrInvalidPublishedVideoBatch}).BatchGetCards(ctx, []uint{1})
-	if !errors.Is(err, domainfeed.ErrInvalidCardBatch) {
-		t.Fatalf("批上限错误应映射为 ErrInvalidCardBatch, err=%v", err)
-	}
-
-	wrapped := fmt.Errorf("批量读取包装: %w", video.ErrInvalidPublishedVideoBatch)
-	_, err = NewCardReader(&fakePublishedBatchReader{err: wrapped}).BatchGetCards(ctx, []uint{1})
-	if !errors.Is(err, domainfeed.ErrInvalidCardBatch) {
-		t.Fatalf("包装后的批上限错误应映射为 ErrInvalidCardBatch, err=%v", err)
-	}
-
-	_, err = NewCardReader(nil).BatchGetCards(ctx, []uint{1})
-	if !errors.Is(err, domainfeed.ErrUnavailable) {
-		t.Fatalf("nil 读取器应返回 ErrUnavailable, err=%v", err)
 	}
 }
 
@@ -364,5 +154,96 @@ func TestBatchGetCardsRealRepositoryBatchBoundary(t *testing.T) {
 	}
 	if count := dbpkg.QueryCount(overCtx); count != 0 {
 		t.Fatalf("超限不应查询数据库 got=%d", count)
+	}
+}
+
+// 测试目标：配置 Feed 持久化适配器测试进程
+// 预期效果：运行前创建独立测试库并在全部用例结束后清理
+func TestMain(m *testing.M) {
+	os.Exit(testutil.Main(m))
+}
+
+// 测试目标：固定适配器测试的基准发布时间
+// 预期效果：所有用例使用同一时区的可比较时间
+var feedBaseTime = time.Date(2026, 8, 1, 12, 0, 0, 0, time.Local)
+
+// feedTimePtr 返回时间的指针副本，便于构造发布时刻
+func feedTimePtr(value time.Time) *time.Time {
+	return &value
+}
+
+// 测试目标：构造字段齐全的视频实体
+// 预期效果：调用方可指定作者、状态与发布时间，媒体字段满足公开不变量
+func newFeedVideoEntity(authorID uint, status string, publishedAt *time.Time) video.Video {
+	return video.Video{
+		AuthorID:          authorID,
+		Title:             "集成标题",
+		Description:       "集成描述",
+		PlayURL:           "/static/videos/1/a.mp4",
+		PlayFileName:      "a.mp4",
+		PlayOriginalName:  "原始视频.mp4",
+		CoverURL:          "/static/covers/1/a.webp",
+		CoverFileName:     "a.webp",
+		CoverOriginalName: "原始封面.webp",
+		Status:            status,
+		PublishedAt:       publishedAt,
+	}
+}
+
+// 测试目标：构造指定标识的公开完整视频实体
+// 预期效果：实体满足 IsPublicVideo 判断，可直接用于适配器映射断言
+func newPublicFeedVideoRow(id, authorID uint, publishedAt time.Time) video.Video {
+	row := newFeedVideoEntity(authorID, video.VideoStatusPublished, feedTimePtr(publishedAt))
+	row.ID = id
+	return row
+}
+
+type followingReaderStub struct {
+	activeErr, videoErr            error
+	rows                           []video.Video
+	viewer                         uint
+	cursor                         *video.Cursor
+	limit, activeCalls, videoCalls int
+	ctx                            context.Context
+}
+
+func (f *followingReaderStub) GetActiveUser(ctx context.Context, viewer uint) error {
+	f.activeCalls++
+	f.viewer = viewer
+	f.ctx = ctx
+	return f.activeErr
+}
+
+func (f *followingReaderStub) GetFollowingVideoList(ctx context.Context, viewer uint, cursor *video.Cursor, limit int) ([]video.Video, error) {
+	f.videoCalls++
+	f.viewer = viewer
+	f.cursor = cursor
+	f.limit = limit
+	f.ctx = ctx
+	return f.rows, f.videoErr
+}
+
+// 测试目标：异常公开查询结果不能在 LIMIT 后静默丢行
+// 预期效果：零值时间、缺媒体或不可见行均报不可用并保留异常读模型原因
+func TestFollowingReaderRejectsInvalidRows(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*video.Video)
+	}{
+		{"zero_time", func(v *video.Video) { v.PublishedAt = new(time.Time) }},
+		{"nil_time", func(v *video.Video) { v.PublishedAt = nil }},
+		{"missing_media", func(v *video.Video) { v.CoverOriginalName = "" }},
+		{"draft", func(v *video.Video) { v.Status = video.VideoStatusDraft }},
+		{"deleted", func(v *video.Video) { v.DeletedAt = gorm.DeletedAt{Time: feedBaseTime, Valid: true} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := newPublicFeedVideoRow(11, 7, feedBaseTime)
+			tc.mutate(&row)
+			fake := &followingReaderStub{rows: []video.Video{row}}
+			_, err := NewFollowingReader(fake, fake).ListFollowingPage(t.Context(), 42, nil, 2)
+			if !errors.Is(err, domainfeed.ErrUnavailable) || !errors.Is(err, domainfeed.ErrInvalidReadResult) {
+				t.Fatalf("异常行 err=%v", err)
+			}
+		})
 	}
 }

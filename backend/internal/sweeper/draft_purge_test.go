@@ -3,9 +3,12 @@ package sweeper
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
+	"gofeed/internal/testutil"
+	"gofeed/internal/user"
 	"gofeed/internal/video"
 )
 
@@ -210,17 +213,194 @@ func TestDraftPurgeJobRunSkipsCompletedMediaAndLostLease(t *testing.T) {
 	}
 }
 
-// 测试目标：验证新到期草稿不能挤占清扫中草稿的重试配额
-// 预期效果：候选交错合并且去重，达到批次上限后两类均有机会执行
-func TestInterleaveDraftPurgeCandidates(t *testing.T) {
-	got := interleaveDraftPurgeCandidates([]uint{1, 2, 3}, []uint{2, 4, 5}, 4)
-	want := []uint{1, 2, 4, 3}
-	if len(got) != len(want) {
-		t.Fatalf("候选数量错误 got=%v want=%v", got, want)
+type fakeVideoPurger struct {
+	cutoff       time.Time
+	videos       []video.Video
+	listErr      error
+	hardDelete   []uint
+	deleteResult map[uint]bool
+	deleteErr    error
+}
+
+func (f *fakeVideoPurger) GetExpiredDeletedVideoList(_ context.Context, cutoff time.Time) ([]video.Video, error) {
+	f.cutoff = cutoff
+	return f.videos, f.listErr
+}
+
+func (f *fakeVideoPurger) RemoveExpiredVideo(_ context.Context, id uint, cutoff time.Time) (bool, error) {
+	f.cutoff = cutoff
+	f.hardDelete = append(f.hardDelete, id)
+	return f.deleteResult[id], f.deleteErr
+}
+
+type fakeMediaRemover struct {
+	urls   []string
+	errFor map[string]error
+}
+
+func (f *fakeMediaRemover) Remove(_ context.Context, publicURL string) error {
+	f.urls = append(f.urls, publicURL)
+	return f.errFor[publicURL]
+}
+
+// 测试目标：验证到期视频先清理两类媒体，再硬删除记录
+// 预期效果：任务传递正确截止时间并统计实际删除的记录数
+func TestVideoPurgeJobRunRemovesMediaThenHardDeletes(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	purger := &fakeVideoPurger{
+		videos: []video.Video{
+			{ID: 1, PlayURL: "/static/videos/1/20260810/a.mp4", CoverURL: "/static/covers/1/20260810/a.png"},
+			{ID: 2, PlayURL: "/static/videos/2/20260810/b.mp4", CoverURL: "/static/covers/2/20260810/b.png"},
+		},
+		deleteResult: map[uint]bool{1: true, 2: true},
 	}
-	for index := range want {
-		if got[index] != want[index] {
-			t.Fatalf("候选顺序错误 got=%v want=%v", got, want)
+	remover := &fakeMediaRemover{}
+	job := NewVideoPurgeJob(purger, remover, 7*24*time.Hour)
+	job.now = func() time.Time { return now }
+
+	purged, err := job.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if purged != 2 {
+		t.Fatalf("应硬删除 2 条视频 got=%d", purged)
+	}
+	if want := now.Add(-7 * 24 * time.Hour); !purger.cutoff.Equal(want) {
+		t.Fatalf("cutoff 错误 got=%v want=%v", purger.cutoff, want)
+	}
+	if got, want := purger.hardDelete, []uint{1, 2}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("硬删除顺序错误 got=%v want=%v", got, want)
+	}
+	if got, want := remover.urls, []string{
+		"/static/videos/1/20260810/a.mp4", "/static/covers/1/20260810/a.png",
+		"/static/videos/2/20260810/b.mp4", "/static/covers/2/20260810/b.png",
+	}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] || got[3] != want[3] {
+		t.Fatalf("媒体删除顺序错误 got=%v want=%v", got, want)
+	}
+}
+
+// 测试目标：验证媒体删除失败时视频记录会保留以便下次重试
+// 预期效果：任务返回错误且不调用对应视频的硬删除
+func TestVideoPurgeJobRunRetainsRecordWhenMediaRemovalFails(t *testing.T) {
+	coverURL := "/static/covers/1/20260810/a.png"
+	purger := &fakeVideoPurger{
+		videos:       []video.Video{{ID: 1, PlayURL: "/static/videos/1/20260810/a.mp4", CoverURL: coverURL}},
+		deleteResult: map[uint]bool{1: true},
+	}
+	want := errors.New("disk unavailable")
+	remover := &fakeMediaRemover{errFor: map[string]error{coverURL: want}}
+
+	purged, err := NewVideoPurgeJob(purger, remover, time.Hour).Run(context.Background())
+	if !errors.Is(err, want) {
+		t.Fatalf("应透传媒体删除错误 got=%v", err)
+	}
+	if purged != 0 || len(purger.hardDelete) != 0 {
+		t.Fatalf("删除媒体失败时不应硬删除记录 purged=%d hardDelete=%v", purged, purger.hardDelete)
+	}
+}
+
+type fakeMediaReferenceReader struct {
+	urls []string
+	err  error
+}
+
+func (f *fakeMediaReferenceReader) ListReferencedMediaURLs(context.Context) ([]string, error) {
+	return f.urls, f.err
+}
+
+type fakeMediaCandidateLister struct {
+	urls   []string
+	cutoff time.Time
+	err    error
+}
+
+func (f *fakeMediaCandidateLister) ListMediaCandidates(_ context.Context, cutoff time.Time, _ int) ([]string, error) {
+	f.cutoff = cutoff
+	return f.urls, f.err
+}
+
+// 测试目标：验证孤儿清扫保留所有数据库引用并继续处理后续候选
+// 预期效果：引用对象不删除，单个删除失败会汇总返回且其他未引用对象仍被回收
+func TestMediaOrphanPurgeJobRunPreservesReferencesAndContinues(t *testing.T) {
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	referenced := "/static/videos/1/20260927/kept_0123456789abcdef0123456789abcdef.mp4"
+	reclaimed := "/static/covers/1/20260927/reclaimed_0123456789abcdef0123456789abcdef.png"
+	failed := "/static/avatars/1/20260927/failed_0123456789abcdef0123456789abcdef.png"
+	removeErr := errors.New("disk unavailable")
+	candidates := &fakeMediaCandidateLister{urls: []string{referenced, reclaimed, failed}}
+	remover := &fakeMediaRemover{errFor: map[string]error{failed: removeErr}}
+	job := NewMediaOrphanPurgeJob(
+		&fakeMediaReferenceReader{urls: []string{"https://example.test" + referenced}},
+		candidates,
+		remover,
+		24*time.Hour,
+	)
+	job.now = func() time.Time { return now }
+
+	purged, err := job.Run(context.Background())
+	if !errors.Is(err, removeErr) {
+		t.Fatalf("应汇总删除失败 got=%v", err)
+	}
+	if purged != 1 {
+		t.Fatalf("应只回收一个成功对象 got=%d", purged)
+	}
+	if want := now.Add(-24 * time.Hour); !candidates.cutoff.Equal(want) {
+		t.Fatalf("候选截止时间错误 got=%v want=%v", candidates.cutoff, want)
+	}
+	if got, want := remover.urls, []string{reclaimed, failed}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("删除列表错误 got=%v want=%v", got, want)
+	}
+}
+
+// 测试目标：为 sweeper 仓储用例初始化隔离的真实 MySQL 数据库
+// 预期效果：媒体引用查询与迁移后的 users/videos 表结构保持一致
+func TestMain(m *testing.M) {
+	os.Exit(testutil.Main(m))
+}
+
+// 测试目标：验证媒体引用查询包含视频和头像，并保留软删除保留期中的引用
+// 预期效果：孤儿清扫不会删除活跃或尚未硬删除记录仍持有的本地媒体
+func TestMediaReferenceRepositoryListReferencedMediaURLsIncludesSoftDeletedRecords(t *testing.T) {
+	db := testutil.DB(t)
+	ctx := context.Background()
+	activeAvatar := "/static/avatars/1/20260928/active_0123456789abcdef0123456789abcdef.png"
+	deletedAvatar := "/static/avatars/2/20260928/deleted_0123456789abcdef0123456789abcdef.png"
+	if err := db.Create(&user.User{Username: "active", Password: "hash", AvatarURL: activeAvatar}).Error; err != nil {
+		t.Fatalf("创建活跃用户失败: %v", err)
+	}
+	deletedUser := &user.User{Username: "deleted", Password: "hash", AvatarURL: deletedAvatar}
+	if err := db.Create(deletedUser).Error; err != nil {
+		t.Fatalf("创建软删用户失败: %v", err)
+	}
+	if err := db.Delete(deletedUser).Error; err != nil {
+		t.Fatalf("软删除用户失败: %v", err)
+	}
+
+	activePlay := "/static/videos/1/20260928/play_0123456789abcdef0123456789abcdef.mp4"
+	deletedCover := "/static/covers/2/20260928/cover_0123456789abcdef0123456789abcdef.png"
+	activeVideo := &video.Video{AuthorID: 1, Title: "active", PlayURL: activePlay, Status: video.VideoStatusDraft}
+	if err := db.Create(activeVideo).Error; err != nil {
+		t.Fatalf("创建活跃视频失败: %v", err)
+	}
+	deletedVideo := &video.Video{AuthorID: 2, Title: "deleted", CoverURL: deletedCover, Status: video.VideoStatusDraft}
+	if err := db.Create(deletedVideo).Error; err != nil {
+		t.Fatalf("创建软删视频失败: %v", err)
+	}
+	if err := db.Delete(deletedVideo).Error; err != nil {
+		t.Fatalf("软删除视频失败: %v", err)
+	}
+
+	urls, err := NewMediaReferenceRepository(db).ListReferencedMediaURLs(ctx)
+	if err != nil {
+		t.Fatalf("ListReferencedMediaURLs: %v", err)
+	}
+	got := make(map[string]struct{}, len(urls))
+	for _, value := range urls {
+		got[value] = struct{}{}
+	}
+	for _, want := range []string{activeAvatar, deletedAvatar, activePlay, deletedCover} {
+		if _, exists := got[want]; !exists {
+			t.Fatalf("媒体引用缺失 want=%s got=%v", want, urls)
 		}
 	}
 }

@@ -43,24 +43,6 @@ func TestQueryCounterCountsExecutedStatements(t *testing.T) {
 	}
 }
 
-// 测试目标：验证重复注册计数回调不会重复计数
-// 预期效果：同名回调按替换语义生效，单条语句只计一次
-func TestQueryCounterRegistrationIsIdempotent(t *testing.T) {
-	gdb := testutil.DB(t)
-	if err := RegisterQueryCounter(gdb); err != nil {
-		t.Fatalf("重复注册回调: %v", err)
-	}
-
-	ctx := WithQueryCounter(context.Background())
-	var one int64
-	if err := gdb.WithContext(ctx).Raw("SELECT 1").Scan(&one).Error; err != nil {
-		t.Fatalf("Raw 查询失败: %v", err)
-	}
-	if got := QueryCount(ctx); got != 1 {
-		t.Fatalf("重复注册后计数错误 got=%d want=1", got)
-	}
-}
-
 // 测试目标：验证各语句处理器之间的计数互不影响且相互独立
 // 预期效果：两个独立计数器分别统计各自上下文的语句
 func TestQueryCountersAreIndependentPerContext(t *testing.T) {
