@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	applicationfeed "gofeed/internal/application/feed"
 	domainfeed "gofeed/internal/domain/feed"
@@ -16,14 +17,36 @@ import (
 )
 
 type Handler struct {
-	service       *applicationfeed.Service
-	followingAuth gin.HandlerFunc
+	service         *applicationfeed.Service
+	followingAuth   gin.HandlerFunc
+	requestObserver RequestObserver
 }
 
 type Option func(*Handler)
 
 func WithFollowingAuth(auth gin.HandlerFunc) Option {
 	return func(h *Handler) { h.followingAuth = auth }
+}
+
+// RequestObservation 携带一次 Feed 请求的原始观测事实
+// 场景与状态保留原始输入，指标标签的归一化由装配方负责
+type RequestObservation struct {
+	Scene         string
+	CursorPresent bool
+	Status        int
+	Items         int
+	Duration      time.Duration
+}
+
+// RequestObserver 在请求结束后收到一次观测，不得改变请求本身的行为
+type RequestObserver func(RequestObservation)
+
+func WithRequestObserver(observer RequestObserver) Option {
+	return func(h *Handler) {
+		if observer != nil {
+			h.requestObserver = observer
+		}
+	}
 }
 
 func New(service *applicationfeed.Service, options ...Option) *Handler {
@@ -36,6 +59,24 @@ func New(service *applicationfeed.Service, options ...Option) *Handler {
 
 // GetFeed 按场景处理公开 Timeline 与认证 Following
 func (h *Handler) GetFeed(c *gin.Context) {
+	started := time.Now()
+	var observedItems int
+	if h.requestObserver != nil {
+		defer func() {
+			status := c.Writer.Status()
+			if recovered := recover(); recovered != nil {
+				status = http.StatusInternalServerError
+				defer panic(recovered)
+			}
+			h.requestObserver(RequestObservation{
+				Scene:         c.Query("scene"),
+				CursorPresent: c.Query("cursor") != "",
+				Status:        status,
+				Items:         observedItems,
+				Duration:      time.Since(started),
+			})
+		}()
+	}
 	values, err := url.ParseQuery(c.Request.URL.RawQuery)
 	for _, scene := range values["scene"] {
 		if scene == string(domainfeed.SceneFollowing) {
@@ -98,6 +139,7 @@ func (h *Handler) GetFeed(c *gin.Context) {
 		)
 		return
 	}
+	observedItems = len(result.Items)
 	c.JSON(http.StatusOK, feedItemsResponseFromResult(result))
 }
 

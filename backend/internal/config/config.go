@@ -18,6 +18,7 @@ type Config struct {
 	RabbitMQ    RabbitMQConfig    `yaml:"rabbitmq"`
 	Retention   RetentionConfig   `yaml:"retention"`
 	Sweeper     SweeperConfig     `yaml:"sweeper"`
+	Observe     ObserveConfig     `yaml:"observe"`
 
 	// Dev is controlled by MODE and is intentionally not loaded from YAML.
 	Dev bool `yaml:"-"`
@@ -63,6 +64,18 @@ type InteractionConfig struct {
 	// EventsEnabled 开启四种互动写入的同事务事实记录；默认关闭
 	EventsEnabled bool `yaml:"events_enabled"`
 	RelayEnabled  bool `yaml:"relay_enabled"`
+}
+
+type ObserveConfig struct {
+	// Metrics 控制指标出口；默认关闭，启用时只接受字面量回环地址
+	Metrics MetricsConfig `yaml:"metrics"`
+}
+
+type MetricsConfig struct {
+	// Enabled 默认关闭；开启后指标出口使用独立回环监听
+	Enabled bool `yaml:"enabled"`
+	// Addr 只接受 127.0.0.1 或 ::1 加端口，留空时使用默认回环地址
+	Addr string `yaml:"addr"`
 }
 
 // ErrPublishedWithoutCardWarmup 表示开启了发布事件却没有让本进程承担预热消费
@@ -196,6 +209,15 @@ func OverrideWithEnv(cfg *Config) {
 	if v := os.Getenv("INTERACTION_RELAY_ENABLED"); v != "" {
 		enabled, err := strconv.ParseBool(v)
 		cfg.Interaction.RelayEnabled = err == nil && enabled
+	}
+
+	// 读取观测出口配置；非法布尔值按关闭处理
+	if v := os.Getenv("OBSERVE_METRICS_ENABLED"); v != "" {
+		enabled, err := strconv.ParseBool(v)
+		cfg.Observe.Metrics.Enabled = err == nil && enabled
+	}
+	if v := os.Getenv("OBSERVE_METRICS_ADDR"); v != "" {
+		cfg.Observe.Metrics.Addr = v
 	}
 
 	// 读取 RabbitMQ 配置
