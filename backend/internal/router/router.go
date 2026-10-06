@@ -127,7 +127,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	videos := api.Group("/video")
 	videos.GET("", videoCtl.GetVideoList)
 	videos.GET("/:id", videoCtl.GetVideo)
-	videos.GET("/:id/comments", socialCtl.GetCommentList)
+	videos.GET("/:id/comments", interactionHandler.GetCommentList)
 
 	protectedVideos := videos.Group("/auth")
 	protectedVideos.Use(jwt.Auth(sessionService))
@@ -140,7 +140,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		protectedVideos.DELETE("/drafts/:id", videoCtl.DiscardDraft)
 		protectedVideos.GET("/mine", videoCtl.GetMyVideoList)
 		protectedVideos.GET("/:id/status", videoCtl.GetVideoStatus)
-		protectedVideos.GET("/:id/like", socialCtl.GetLikeState)
+		protectedVideos.GET("/:id/like", interactionHandler.GetLikeState)
 		protectedVideos.PUT("/:id/like", interactionHandler.CreateLike)
 		protectedVideos.DELETE("/:id/like", interactionHandler.RemoveLike)
 		protectedVideos.POST("/:id/comments", interactionHandler.CreateComment)

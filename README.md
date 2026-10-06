@@ -4,7 +4,7 @@
 
 系统阅读项目可从 [`GoFeed 源码导读`](./docs/SOURCE_CODE_GUIDE.md) 开始，包含 Timeline/Following、页与卡片缓存、Outbox 发布与预热、故障恢复，以及向量推荐的当前边界和扩展位置。
 
-后续任务、Feed F0–F6 演进和待补验收统一维护在 [`docs/DEVELOPMENT_PLAN.md`](./docs/DEVELOPMENT_PLAN.md)。已完成事项只在本文简述，不再保留独立完成方案。
+后续任务、全后端四层重构、Feed F0–F6 演进和待补验收统一维护在 [`docs/DEVELOPMENT_PLAN.md`](./docs/DEVELOPMENT_PLAN.md)。[四层重构路线](./docs/DEVELOPMENT_PLAN.md#6-全后端四层架构演进) 见第 6 节，R1-A 互动 HTTP 读侧已实现，保留改动等待 review。下一最小模块建议为 R1-B1 互动持久化归属，再独立处理 R1-B2 批量统计；[实施 Prompt](./docs/DEVELOPMENT_PLAN.md#68-r1-b1-可直接使用的实施-prompt) 已准备，当前均未开始。已完成事项只在本文简述，不再保留独立完成方案。
 
 ## 快速开始（Docker）
 
@@ -89,7 +89,7 @@ WHERE status IN ('draft', 'purging')
 ```bash
 cd backend
 go run ./cmd            # API
-# 另开一个 backend 终端；先应用到 000009，验证异步发布闭环时需要 RabbitMQ
+# 另开一个 backend 终端；先应用到 000010，worker 需要 RabbitMQ，热度写入还需要 Redis
 # go run ./cmd/worker
 # go run ./cmd/sweeper  # 按需启动注销用户和到期视频清扫任务
 ```
@@ -165,7 +165,7 @@ Worker 参照 GCFeed 的入口编排，在 [cmd/worker/main.go](./backend/cmd/wo
 
 F2-B2 的 worker 在实际 `processing → published` 变更时同事务写 `video.published`，经 `feed.card.warm` 预热当前 MySQL 公开卡片。独立消费使用 5 秒上下文、100ms 缓存操作超时、`1s/5s/30s` 重试与 DLQ；重复投递可覆盖当前卡片，不可见视频清理精确键，超大载荷跳过。首次连接和重连均声明 `video.process` 与预热拓扑，发布沿用 mandatory/Return 检查。
 
-启动新版 API/worker 前须应用仓库迁移至 `000010_interaction_outbox`；建议先启动能够识别全部事件的 worker，再启动 API。历史隔离验收见开发计划第 5.10、5.11 节；本次仅完成生产编译与静态检查，没有执行部署、迁移或真实链路验收。
+启动新版 API/worker 前须应用仓库迁移至 `000010_interaction_outbox`；建议先启动能够识别全部事件的 worker，再启动 API。2026-10-05 本机 `feedsystem` 已完成版本 9→10 的迁移与结构核对，其他部署目标仍须单独确认。默认装配变更仅完成生产编译与静态检查，真实链路验收待补；历史隔离验收见开发计划第 5.10、5.11 节，迁移记录见第 5.20 节。
 
 ### Docker 部署
 
@@ -209,7 +209,7 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 ## 已完成能力概述
 
-以下为源码实现、提交状态与本轮测试验收结论；未完成的验收缺口另列在开发计划中。
+以下为源码实现、提交状态与历史验收摘要；未完成的验收缺口另列在开发计划中。
 
 - 账户与会话、匿名视频流、草稿上传/异步发布、公开详情、个人主页、我的视频、头像、点赞/评论/关注及对应前端页面；接口契约见 [API.md](./API.md)。
 - 视频与 social 列表使用带版本和范围的游标；用户列表兼容分页已提交为 `455849e`，保留旧的无参数读取。
@@ -235,11 +235,13 @@ RABBITMQ_DEFAULT_PASS=replace-with-a-long-random-rabbitmq-password
 
 F4-A1 互动事实存储已提交为 `82c01d5`，F4-A2 可靠派发已提交为 `65cebf6`。当前点赞、取消点赞、创建评论和删除评论直接通过互动四层提交业务行与 `interaction_outbox_events`，仅真实变更写事件；插入失败使同一事务失败，提交后统计/作者读取失败不撤销事实。接口与认证契约不变。
 
+2026-10-06 R1-A 将点赞状态和匿名评论列表接入同一 Interaction 四层。Domain/Application 只使用独立读模型与端口，持久化适配器复用 social 的 SQL；旧 v1 评论游标、响应、作者占位与查询预算保持兼容。R1-A 阶段实测评论读取 2 条 SQL，点赞状态含会话校验 5 条。新增互动专项已按精简要求移除，当前另有跨模块测试精简，保留的 HTTP/预算和 Feed 流程须按当前测试集重新验证，历史 PASS 不代表这批改动已验收。执行记录与当前范围见开发计划第 6.4、6.6 节；本轮仅更新文档和下一步分析，改动尚未提交。
+
 当前 API 互动写入和 worker Relay 都依赖迁移 `000010_interaction_outbox`，启动前必须确认已应用。2026-10-05 已使用当前后端配置将本机 `localhost:3306/feedsystem` 从版本 9 迁移至 10，dirty=false；互动事实表的 18 个字段、7 个索引已核对，原有七张业务表记录数未变。这只证明迁移与结构，不代表真实互动/消费链路验收。worker 直接运行独立互动 Relay 与 F4-B1 热度消费（实现提交 `26a3f95`），沿用持久载荷、租约/attempt 围栏、publisher confirm、mandatory/Return、`1s/5s/30s` 重试/DLQ、重连与关闭生命周期。coverage 保持 unverified，真实依赖验收仍待补齐。
 
-热度新增与撤销都计入原互动创建分钟。Lua 在状态 Hash 中同时记录 event_id 收据与绝对分数，再写分钟 ZSET；重复投递可修复未完成的 ZSET 写入而不再次累加，负贡献不在写入时截断。分钟桶按原始时间到期，过期桶不重建；同一代际锁定权重/时间/容量规则，覆盖标记始终为 `unverified`。没有 MySQL 热榜快照、自动重建或完整消费水位，`scene=hot` 仍为 501，派发完成也不表示热榜完整。
+热度新增与撤销都计入原互动创建分钟。Lua 在状态 Hash 中同时记录 event_id 收据与绝对分数，再写分钟 ZSET；重复投递可修复未完成的 ZSET 写入而不再次累加，负贡献不在写入时截断。分钟桶按原始时间到期，过期桶不重建；同一代际锁定权重/时间/容量规则。`unverified` 表示尚未证明整个窗口的事实与消费覆盖，当前代码没有将它改为完整的路径；它不是 Redis 连接状态。没有 MySQL 热榜快照、自动重建或完整消费水位，`scene=hot` 仍为 501，派发完成也不表示热榜完整。
 
-现有指标配置与 Feed 请求回调已单独提交为 `2ff0364`，采集器/监听出口仍未装配，容量工具继续暂缓。F4-B1 本轮不碰前端、测试或单元测试代码，只做生产编译与静态检查；下一模块在 review 及专项验收后推进 F4-B2 事实重建与 MySQL 快照，再接 F4-C Hot。Following 混合推拉仍需容量收益证据。详细范围与待补验收见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 3.5–3.7、5.18 节。每次只实施一个可独立 review 的模块，完成后先等待 review，明确指令后提交。
+现有指标配置与 Feed 请求回调已单独提交为 `2ff0364`，采集器/监听出口仍未装配，容量工具继续暂缓。F4-A/B1 的并发、投递与消费专项仍待补；删除前的四种互动写入事实失败回滚/恢复记录不代表整个热度链路已验收。Feed 功能路线后续按独立模块推进 F4-B2 的覆盖契约、有界事实扫描、代际重建与 MySQL 快照，再接 F4-C Hot。Following 混合推拉仍需容量收益证据。详细范围与待补验收见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 3.5–3.8、5.18–5.23、6.4 节；R1-A 已实现待 review，R1-B 未开始。每次只实施一个可独立 review 的模块，完成后先等待 review，明确指令后提交。
 
 F3-A 后端支持 `GET /api/feed?scene=following`：复用 JWT/session 与活动观看者校验，在 MySQL 内关联当前关注关系、活动作者和完整公开视频，使用绑定观看者的独立 keyset 游标，并批量读取作者与当前统计。Following 响应为私有且不使用 Timeline 缓存；Timeline 保持匿名，Hot/Recommend 保持 501。真实 MySQL 用例验证非空页 6 次 SQL、空页 3 次，0/1/32/128 个关注作者下已执行 EXPLAIN ANALYZE；样本不代表生产容量或 p95。已提交的 F3-B 页面支持场景切换、独立分页、`/?scene=following` 与登录回跳；接口见 [API](./API.md)，历史验证、本轮提交和剩余范围见开发计划第 5.12、5.15、3.4 节。
 

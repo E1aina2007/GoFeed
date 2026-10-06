@@ -16,11 +16,62 @@ type CommentResult struct {
 	Author  domaininteraction.Author
 }
 
+type CommentListResult struct {
+	Items      []domaininteraction.CommentWithAuthor
+	NextCursor string
+}
+
 func New(reader domaininteraction.Reader, writer domaininteraction.MutationWriter) *Service {
 	return &Service{
 		reader: reader,
 		writer: writer,
 	}
+}
+
+func (s *Service) GetLikeState(ctx context.Context, videoID, userID uint) (domaininteraction.LikeState, error) {
+	if err := s.requireVideoAndUser(ctx, videoID, userID); err != nil {
+		return domaininteraction.LikeState{}, err
+	}
+	liked, err := s.reader.GetLikeState(ctx, videoID, userID)
+	if err != nil {
+		return domaininteraction.LikeState{}, err
+	}
+	return s.likeState(ctx, videoID, liked)
+}
+
+// GetCommentList 保留公开视频校验、范围游标及多读一条的分页边界
+func (s *Service) GetCommentList(ctx context.Context, videoID uint, rawCursor string, limit int) (CommentListResult, error) {
+	if s == nil || s.reader == nil {
+		return CommentListResult{}, domaininteraction.ErrUnavailable
+	}
+	if videoID == 0 {
+		return CommentListResult{}, domaininteraction.ErrInvalidVideoID
+	}
+	if err := s.reader.RequirePublicVideo(ctx, videoID); err != nil {
+		return CommentListResult{}, err
+	}
+	limit, err := normalizeLimit(limit)
+	if err != nil {
+		return CommentListResult{}, err
+	}
+	position, err := decodeCommentCursor(rawCursor, videoID)
+	if err != nil {
+		return CommentListResult{}, err
+	}
+	items, err := s.reader.GetCommentList(ctx, videoID, position, limit+1)
+	if err != nil {
+		return CommentListResult{}, err
+	}
+	result := CommentListResult{Items: items}
+	if len(items) > limit {
+		result.Items = items[:limit]
+		last := result.Items[len(result.Items)-1].Comment
+		result.NextCursor, err = encodeCommentCursor(videoID, domaininteraction.CommentPosition{CreatedAt: last.CreatedAt, ID: last.ID})
+		if err != nil {
+			return CommentListResult{}, err
+		}
+	}
+	return result, nil
 }
 
 // CreateLike 编排幂等点赞写入并读取现有响应需要的实时统计

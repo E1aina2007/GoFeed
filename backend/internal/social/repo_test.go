@@ -1,4 +1,4 @@
-package social
+package social_test
 
 import (
 	"bytes"
@@ -17,7 +17,8 @@ import (
 
 	authn "gofeed/internal/auth"
 	dbpkg "gofeed/internal/db"
-	jwtmw "gofeed/internal/middleware/jwt"
+	"gofeed/internal/router"
+	"gofeed/internal/social"
 	"gofeed/internal/testutil"
 	"gofeed/internal/user"
 	"gofeed/internal/video"
@@ -70,13 +71,13 @@ func socialTimePtr(value time.Time) *time.Time {
 // 预期效果：残缺、非发布和软删除视频均返回不存在且不计入作者获赞数
 func TestRepositoryPublicVideoBoundary(t *testing.T) {
 	db := testutil.DB(t)
-	repo := NewRepository(db)
+	repo := social.NewRepository(db)
 	ctx := context.Background()
 	author := seedUser(t, db, "boundary-author")
 	viewer := seedUser(t, db, "boundary-viewer")
 
 	valid := seedPublishedVideo(t, db, author.ID)
-	if err := db.Create(&VideoLike{VideoID: valid.ID, UserID: viewer.ID}).Error; err != nil {
+	if err := db.Create(&social.VideoLike{VideoID: valid.ID, UserID: viewer.ID}).Error; err != nil {
 		t.Fatalf("创建完整视频点赞失败: %v", err)
 	}
 
@@ -98,7 +99,7 @@ func TestRepositoryPublicVideoBoundary(t *testing.T) {
 			t.Fatalf("创建 %s 视频失败: %v", title, err)
 		}
 		invalidIDs[item.ID] = true
-		if err := db.Create(&VideoLike{VideoID: item.ID, UserID: viewer.ID}).Error; err != nil {
+		if err := db.Create(&social.VideoLike{VideoID: item.ID, UserID: viewer.ID}).Error; err != nil {
 			t.Fatalf("创建 %s 视频点赞失败: %v", title, err)
 		}
 		return item
@@ -128,7 +129,7 @@ func TestRepositoryPublicVideoBoundary(t *testing.T) {
 	}
 
 	deleted := seedPublishedVideo(t, db, author.ID)
-	if err := db.Create(&VideoLike{VideoID: deleted.ID, UserID: viewer.ID}).Error; err != nil {
+	if err := db.Create(&social.VideoLike{VideoID: deleted.ID, UserID: viewer.ID}).Error; err != nil {
 		t.Fatalf("创建软删除视频点赞失败: %v", err)
 	}
 	if err := db.Delete(&video.Video{}, deleted.ID).Error; err != nil {
@@ -158,7 +159,7 @@ func TestRepositoryPublicVideoBoundary(t *testing.T) {
 // 预期效果：外键级联后点赞和评论不再保留孤儿数据
 func TestRepositoryHardDeleteVideoCascadesInteractions(t *testing.T) {
 	db := testutil.DB(t)
-	repo := NewRepository(db)
+	repo := social.NewRepository(db)
 	ctx := context.Background()
 	author := seedUser(t, db, "cascade-author")
 	viewer := seedUser(t, db, "cascade-viewer")
@@ -166,7 +167,7 @@ func TestRepositoryHardDeleteVideoCascadesInteractions(t *testing.T) {
 	if _, err := repo.CreateLike(ctx, item.ID, viewer.ID); err != nil {
 		t.Fatalf("创建点赞失败: %v", err)
 	}
-	if err := repo.CreateComment(ctx, &Comment{VideoID: item.ID, AuthorID: viewer.ID, Content: "cascade comment"}); err != nil {
+	if err := repo.CreateComment(ctx, &social.Comment{VideoID: item.ID, AuthorID: viewer.ID, Content: "cascade comment"}); err != nil {
 		t.Fatalf("创建评论失败: %v", err)
 	}
 	if err := db.Unscoped().Delete(&video.Video{}, item.ID).Error; err != nil {
@@ -174,10 +175,10 @@ func TestRepositoryHardDeleteVideoCascadesInteractions(t *testing.T) {
 	}
 
 	var likes, comments int64
-	if err := db.Model(&VideoLike{}).Count(&likes).Error; err != nil {
+	if err := db.Model(&social.VideoLike{}).Count(&likes).Error; err != nil {
 		t.Fatalf("统计点赞失败: %v", err)
 	}
-	if err := db.Unscoped().Model(&Comment{}).Count(&comments).Error; err != nil {
+	if err := db.Unscoped().Model(&social.Comment{}).Count(&comments).Error; err != nil {
 		t.Fatalf("统计评论失败: %v", err)
 	}
 	if likes != 0 || comments != 0 {
@@ -290,38 +291,16 @@ func socialToken(t *testing.T, gdb *gorm.DB, account *user.User) string {
 	return pair.AccessToken
 }
 
-// newSocialHTTPEngine 装配社交互动端点并挂载公开视频详情以校验互动计数
-func newSocialHTTPEngine(t *testing.T, middlewares ...gin.HandlerFunc) (*gin.Engine, *gorm.DB, *Repository) {
+// 测试目标：让已有 HTTP 契约与查询预算使用生产路由装配
+// 预期效果：互动读写经过同一四层入口，保留关注和视频回归
+func newSocialHTTPEngine(t *testing.T, middlewares ...gin.HandlerFunc) (*gin.Engine, *gorm.DB, *social.Repository) {
 	t.Helper()
 	gdb := testutil.DB(t)
-	repo := NewRepository(gdb)
-	sessions := authn.NewSessionService(authn.NewSessionRepository(gdb))
-	socialCtl := NewController(NewService(repo))
-	videoCtl := video.NewController(
-		video.NewService(video.NewRepository(gdb), video.NewUserAuthorReader(user.NewRepository(gdb)), repo),
-		video.NewLocalStorage(t.TempDir()),
-	)
-
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
-	engine.Use(middlewares...)
-	engine.GET("/api/video/:id", videoCtl.GetVideo)
-	engine.GET("/api/video/:id/comments", socialCtl.GetCommentList)
-	engine.GET("/api/user/:id/followers", socialCtl.GetFollowerList)
-	engine.GET("/api/user/:id/following", socialCtl.GetFollowingList)
-
-	protectedUsers := engine.Group("/api/user/auth", jwtmw.Auth(sessions))
-	protectedUsers.GET("/:id/follow", socialCtl.GetFollowState)
-	protectedUsers.PUT("/:id/follow", socialCtl.CreateFollow)
-	protectedUsers.DELETE("/:id/follow", socialCtl.RemoveFollow)
-
-	protectedVideos := engine.Group("/api/video/auth", jwtmw.Auth(sessions))
-	protectedVideos.GET("/:id/like", socialCtl.GetLikeState)
-	protectedVideos.PUT("/:id/like", socialCtl.CreateLike)
-	protectedVideos.DELETE("/:id/like", socialCtl.RemoveLike)
-	protectedVideos.POST("/:id/comments", socialCtl.CreateComment)
-	protectedVideos.DELETE("/:id/comments/:commentID", socialCtl.DeleteComment)
-	return engine, gdb, repo
+	if err := gdb.Exec("DELETE FROM interaction_outbox_events").Error; err != nil {
+		t.Fatalf("清理隔离测试库的互动事实失败: %v", err)
+	}
+	engine := router.New(gdb, false, router.Options{UploadDir: t.TempDir(), Middlewares: middlewares})
+	return engine, gdb, social.NewRepository(gdb)
 }
 
 // seedDraftVideo 写入仅作者可见的草稿作品以校验互动边界
@@ -402,15 +381,15 @@ func TestSocialLikeHTTPContract(t *testing.T) {
 	}
 
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPut, "/api/video/auth/999999/like", token, nil),
-		http.StatusNotFound); message != ErrVideoNotFound.Error() {
+		http.StatusNotFound); message != social.ErrVideoNotFound.Error() {
 		t.Fatalf("不存在作品点赞文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPut,
-		fmt.Sprintf("/api/video/auth/%d/like", draft.ID), token, nil), http.StatusNotFound); message != ErrVideoNotFound.Error() {
+		fmt.Sprintf("/api/video/auth/%d/like", draft.ID), token, nil), http.StatusNotFound); message != social.ErrVideoNotFound.Error() {
 		t.Fatalf("草稿点赞文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPut, "/api/video/auth/abc/like", token, nil),
-		http.StatusBadRequest); message != ErrInvalidVideoID.Error() {
+		http.StatusBadRequest); message != social.ErrInvalidVideoID.Error() {
 		t.Fatalf("非法作品标识文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodGet, likePath, "", nil),
@@ -454,12 +433,12 @@ func TestSocialCommentHTTPContract(t *testing.T) {
 	firstCommentID := uint(socialNumber(t, comment, "id"))
 
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPost, commentsPath, firstToken,
-		map[string]any{"content": "   "}), http.StatusBadRequest); message != ErrInvalidCommentContent.Error() {
+		map[string]any{"content": "   "}), http.StatusBadRequest); message != social.ErrInvalidCommentContent.Error() {
 		t.Fatalf("空评论文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPost,
 		"/api/video/auth/999999/comments", firstToken, map[string]any{"content": "无主评论"}),
-		http.StatusNotFound); message != ErrVideoNotFound.Error() {
+		http.StatusNotFound); message != social.ErrVideoNotFound.Error() {
 		t.Fatalf("不存在作品评论文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPost, commentsPath, "",
@@ -490,7 +469,7 @@ func TestSocialCommentHTTPContract(t *testing.T) {
 
 	deletePath := fmt.Sprintf("/api/video/auth/%d/comments/%d", published.ID, firstCommentID)
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodDelete, deletePath, secondToken, nil),
-		http.StatusForbidden); message != ErrCommentNotAuthor.Error() {
+		http.StatusForbidden); message != social.ErrCommentNotAuthor.Error() {
 		t.Fatalf("非作者删除评论文案错误 got=%q", message)
 	}
 
@@ -513,12 +492,12 @@ func TestSocialCommentHTTPContract(t *testing.T) {
 	}
 
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodDelete, deletePath, firstToken, nil),
-		http.StatusNotFound); message != ErrCommentNotFound.Error() {
+		http.StatusNotFound); message != social.ErrCommentNotFound.Error() {
 		t.Fatalf("重复删除评论文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodDelete,
 		fmt.Sprintf("/api/video/auth/999999/comments/%d", secondCommentID), secondToken, nil),
-		http.StatusNotFound); message != ErrCommentNotFound.Error() {
+		http.StatusNotFound); message != social.ErrCommentNotFound.Error() {
 		t.Fatalf("作品与评论不匹配的删除文案错误 got=%q", message)
 	}
 
@@ -531,7 +510,7 @@ func TestSocialCommentHTTPContract(t *testing.T) {
 		t.Fatalf("评论列表长度错误 got=%v", placeholder)
 	}
 	placeholderAuthor := placeholder[0]["author"].(map[string]any)
-	if placeholderAuthor["username"] != deletedUsername {
+	if placeholderAuthor["username"] != "已注销用户" {
 		t.Fatalf("已注销评论作者占位错误 got=%v", placeholderAuthor)
 	}
 }
@@ -558,11 +537,11 @@ func TestSocialFollowHTTPContract(t *testing.T) {
 
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPut,
 		fmt.Sprintf("/api/user/auth/%d/follow", follower.ID), followerToken, nil),
-		http.StatusBadRequest); message != ErrSelfFollow.Error() {
+		http.StatusBadRequest); message != social.ErrSelfFollow.Error() {
 		t.Fatalf("自关注文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPut,
-		"/api/user/auth/999999/follow", followerToken, nil), http.StatusNotFound); message != ErrUserNotFound.Error() {
+		"/api/user/auth/999999/follow", followerToken, nil), http.StatusNotFound); message != social.ErrUserNotFound.Error() {
 		t.Fatalf("不存在用户关注文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPut, followPath, "", nil),
@@ -632,12 +611,12 @@ func TestSocialFollowHTTPContract(t *testing.T) {
 	}
 
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodGet,
-		"/api/user/999999/followers", "", nil), http.StatusNotFound); message != ErrUserNotFound.Error() {
+		"/api/user/999999/followers", "", nil), http.StatusNotFound); message != social.ErrUserNotFound.Error() {
 		t.Fatalf("不存在用户关注者列表文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodGet,
 		fmt.Sprintf("/api/user/%d/followers?limit=99", followee.ID), "", nil),
-		http.StatusBadRequest); message != ErrInvalidLimit.Error() {
+		http.StatusBadRequest); message != social.ErrInvalidLimit.Error() {
 		t.Fatalf("非法分页文案错误 got=%q", message)
 	}
 }
@@ -669,7 +648,7 @@ func socialQueryBudget(t *testing.T, capture *socialQueryCapture, before int, bu
 }
 
 // 测试目标：验证社交读取端点的真实 SQL 语句数量不随列表长度增长
-// 预期效果：评论列表与关注者列表各最多两条语句，点赞状态最多四条且无逐条查询
+// 预期效果：评论与关注者各最多两条语句，点赞含会话最多五条，评论创建含事务事实最多八条
 func TestSocialReadEndpointsQueryBudget(t *testing.T) {
 	capture := &socialQueryCapture{}
 	engine, gdb, _ := newSocialHTTPEngine(t, capture.middleware())
@@ -721,5 +700,5 @@ func TestSocialReadEndpointsQueryBudget(t *testing.T) {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("创建评论状态错误 got=%d body=%s", created.Code, created.Body.String())
 	}
-	t.Logf("创建评论语句数量=%d", socialQueryBudget(t, capture, 3, 5))
+	t.Logf("创建评论语句数量=%d", socialQueryBudget(t, capture, 3, 8))
 }

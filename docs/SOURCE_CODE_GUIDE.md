@@ -1,6 +1,6 @@
 # GoFeed 源码导读
 
-> 阅读基线：2026-10-05，`F:\work\Feed\GoFeed`，后端源码基线为 `8e059e2`。七项 Feed/互动能力直接装配，相关配置开关已删除；worker 在入口 `startWorkers` 中统一编排，热度业务规则由领域层统一校验。本文从当前源码、路由及迁移推导；热度尚无重建、快照或完整覆盖证明。指标配置与请求回调仍未接通采集器/监听出口，见第 11 节。本轮不碰前端和测试代码，不作运行验收结论。
+> 阅读基线：2026-10-06，`F:\work\Feed\GoFeed`，后端提交基线为 `8e059e2`，当前另有待 review 的 R1-A 互动读侧及测试精简改动，上一轮文档提交为 `5c2d4b5`。七项 Feed/互动能力直接装配，相关配置开关已删除；worker 在入口 `startWorkers` 中统一编排，热度业务规则由领域层统一校验。本文从当前源码、路由及迁移推导；热度尚无重建、快照或完整覆盖证明。指标配置与请求回调仍未接通采集器/监听出口，见第 11 节。历史验证与当前范围见开发计划第 6.4 节，下一步 R1-B1 分析与 Prompt 见第 6.7、6.8 节；本轮未执行运行验收。
 >
 > 本文用于理解源码。运行与配置看 [README](../README.md)，接口字段看 [API](../API.md)，未完成设计与历史验收看 [开发计划](./DEVELOPMENT_PLAN.md)。本文中的“源码入口”均可直接点击。
 
@@ -25,7 +25,7 @@
 GoFeed 是一个 Go/Gin + Vue 的短视频系统。它已覆盖账户会话、草稿上传、异步发布、视频流、关注、点赞、评论和后台回收。理解项目时，先记住三个职责：
 
 1. **MySQL 保存业务事实**：用户、会话、视频状态、互动关系和待派发事件。
-2. **Redis 加速或限制访问**：当前用于注册/登录限流，以及Timeline 页缓存与基础卡片缓存。
+2. **Redis 加速或限制访问**：当前用于注册/登录限流、Timeline 页缓存、基础卡片缓存及热度分钟桶；热度是 MySQL 互动事实的派生结果，尚未用于 Hot 读取。
 3. **RabbitMQ 承接异步处理**：当前用于视频媒体校验与发布后卡片预热，事件从 MySQL Outbox 派发；独立互动 Relay 向 `feed.heat` 投递事实，当前 worker 同时运行幂等热度消费者。
 
 视频文件保存在本地媒体目录；MySQL 保存相对访问地址和关联信息。数据库中的媒体字段完整，不等于文件此刻一定可读。
@@ -34,7 +34,7 @@ GoFeed 是一个 Go/Gin + Vue 的短视频系统。它已覆盖账户会话、�
 flowchart LR
     Browser["Vue 页面"] --> API["Go API / Gin"]
     API --> MySQL["MySQL：业务事实与 Outbox"]
-    API --> Redis["Redis：限流、页缓存、卡片缓存"]
+    API --> Redis["Redis：限流、缓存与派生热度"]
     Browser --> Static["/static：本地媒体访问"]
     API --> Files["本地媒体目录"]
     Static --> Files
@@ -43,7 +43,7 @@ flowchart LR
     MQ -->|视频处理、卡片预热、热度消费| Worker
     Worker -->|状态变更| MySQL
     Worker -->|校验媒体| Files
-    Worker -->|卡片预热| Redis
+    Worker -->|卡片预热与热度分钟桶| Redis
     Sweeper["Sweeper：定期清扫"] --> MySQL
     Sweeper --> Files
 ```
@@ -79,6 +79,10 @@ flowchart LR
 
 三个入口可以独立运行。API 接受发布请求与 worker 完成发布是两个不同阶段。
 
+worker 的 `main` 负责加载配置、连接 MySQL/视频 MQ、接收退出信号；`startWorkers` 负责组件构造和八个循环的统一启动与收尾。循环分别是视频 Relay/消费者/MQ 观测、卡片预热消费者/队列观测、互动 Relay、热度消费者/队列观测。热度规则和投影仍在既有 domain/application/infra 包中，入口只组合依赖，没有独立启动包。
+
+这里参考的是 GCFeed 的 `cmd/worker/main.go:startWorkers` 编排方式。GCFeed 没有独立热度消费者，互动应用服务直接调用 Redis 计分；GoFeed 保留 MySQL 同事务事实 → Outbox → Relay → 热度消费，避免把参考项目的请求内 Redis 写入当成当前实现。
+
 ### 2.2 既有三层业务与 Feed 四层边界并存
 
 ```text
@@ -95,9 +99,9 @@ backend/
    ├─ infra/cache/feed/        Redis 键、编码、Lua 与超时
    ├─ interfaces/http/feed/    HTTP 参数、认证、响应 DTO
    ├─ domain/interaction/      互动规则、不可变事实与 Outbox 端口
-   ├─ application/interaction/ 写入编排与租约派发
-   ├─ infra/persistence/interaction/ 同事务业务/事实及派发状态
-   ├─ interfaces/http/interaction/ 四种互动事实写入口
+   ├─ application/interaction/ 读写编排、评论游标与租约派发
+   ├─ infra/persistence/interaction/ 读取适配、同事务业务/事实及派发状态
+   ├─ interfaces/http/interaction/ 点赞状态、评论列表与四种写入口
    ├─ middleware/cache/        Redis Runtime 的故障与恢复状态
    ├─ middleware/ratelimit/    注册/登录限流策略
    ├─ mq/ worker/              MQ 拓扑、连接、确认与事件处理
@@ -105,7 +109,7 @@ backend/
    └─ observability/ db/ error/ 日志、就绪检查、查询计数、错误映射
 ```
 
-Feed 采取渐进拆层：通过读取边界和小接口复用已有仓储。互动事实写入、Relay 与热度消费直接装配；四种互动写入使用独立四层，关注、统计与评论列表继续复用既有模块。
+Feed 采取渐进拆层：通过读取边界和小接口复用已有仓储。互动事实写入、Relay 与热度消费直接装配；点赞状态、评论列表与四种互动写入使用独立四层，关注和批量统计继续复用既有模块。互动持久化对 social 的过渡适配留给 R1-B。
 
 ```mermaid
 flowchart TD
@@ -173,7 +177,7 @@ flowchart TD
 
 ## 4. Timeline：一次 Feed 请求怎样完成
 
-先关闭缓存理解基础链路，再阅读第 6 节的缓存分支。
+先沿首屏直读 MySQL 的路径理解基础链路，再阅读第 6 节的续页缓存分支；当前没有关闭缓存的配置开关。
 
 ### 4.1 从页面一路追到 SQL
 
@@ -226,7 +230,7 @@ Base64 是编码，当前游标没有签名。服务端仍须检查范围、场�
 
 `assembleFeedItems` 先校验条目与卡片的 ID、作者、发布时间一致，再对截断后的 ID 去重，调用 `BatchGetStats` 与 `BatchGetAuthors`，最后保持页条目的顺序组装。
 
-在非空、缓存关闭的基础 Timeline 路径，源码对应约 4 条 SELECT：视频页 1 条、点赞聚合 1 条、评论聚合 1 条、作者 1 条。它解决逐视频/逐作者查询的 N+1 问题；**固定查询次数不代表固定扫描量或已经证明性能收益。**
+在非空、直读 MySQL 的基础 Timeline 路径，源码对应约 4 条 SELECT：视频页 1 条、点赞聚合 1 条、评论聚合 1 条、作者 1 条。它解决逐视频/逐作者查询的 N+1 问题；**固定查询次数不代表固定扫描量或已经证明性能收益。**
 
 ## 5. Following：关注关系如何变成视频流
 
@@ -280,9 +284,9 @@ Following 游标额外绑定 `viewer_id`。这个身份来自认证上下文，�
 
 ```mermaid
 flowchart TD
-    Req["Timeline 请求"] --> Enabled{"装配页缓存？"}
-    Enabled -->|否| SQL["按原游标查询完整 MySQL 页"]
-    Enabled -->|是| Slot{"32 个读取名额有空位？"}
+    Req["Timeline 请求"] --> Cache{"页缓存构造成功？"}
+    Cache -->|否| SQL["按原游标查询完整 MySQL 页"]
+    Cache -->|是| Slot{"32 个读取名额有空位？"}
     Slot -->|否| Busy["返回 503"]
     Slot -->|是| Page{"续页且页缓存有效命中？"}
     Page -->|首屏、未命中或故障| SQL
@@ -294,11 +298,11 @@ flowchart TD
     Fill --> Join
 ```
 
-页缓存有效命中后的卡片读取再分成两条路径：
+API 直接构造页/卡片缓存：页缓存构造失败时使用 MySQL 基础路径；只有卡片缓存构造失败时，页缓存仍保留，卡片按公开规则批量回源。图中的判断是组件构造结果，不对应环境变量开关。页缓存有效命中的卡片读取如下：
 
 ```mermaid
 flowchart TD
-    Cards{"装配卡片缓存？"} -->|否| Full["MySQL 批量读取完整公开卡片"]
+    Cards{"卡片缓存构造成功？"} -->|否| Full["MySQL 批量读取完整公开卡片"]
     Cards -->|是| States["MySQL 批量读取当前公开状态"]
     States --> RedisCards["Redis 批量读仍公开的卡片"]
     RedisCards --> Missing["缺失或不匹配卡片批量回源<br/>允许时回填"]
@@ -306,7 +310,7 @@ flowchart TD
     Missing --> Match
 ```
 
-图中的数据库步骤失败会返回错误，不会使用旧缓存掩盖。首屏和关闭缓存的路径不回填页缓存；装配缓存后，首屏仍受 32 个 Timeline 读取名额限制。
+图中的数据库步骤失败会返回错误，不会使用旧缓存掩盖。首屏和未装配缓存的基础路径不回填页缓存；当前正常装配时，首屏仍受 32 个 Timeline 读取名额限制。
 
 ### 6.3 为什么缓存命中还查 MySQL
 
@@ -385,13 +389,13 @@ sequenceDiagram
     Q->>W: 投递 video.process
     W->>W: 校验本地视频与封面
     W->>D: CAS：processing→published
-    Note over W,D: 开启发布事件时，同事务写 video.published
+    Note over W,D: 实际 CAS 变更时，同事务写 video.published
     W->>Q: 状态处理成功后 ACK
 ```
 
 视频消费者当前执行路径、大小、扩展名和文件头校验，见 [media_validation.go](../backend/internal/video/media_validation.go)。它还不是视频转码或内容审核流水线。
 
-开启发布事件与预热消费后，已提交的 `video.published` 继续走独立的派生链路：
+当前 worker 直接装配发布事件与预热消费，已提交的 `video.published` 继续走独立的派生链路：
 
 ```mermaid
 sequenceDiagram
@@ -440,7 +444,7 @@ Relay 默认每 2 秒一轮、每轮最多 32 条、租约 30 秒。发布失败
 当前以“至少一次投递 + 幂等业务处理”应对：
 
 - 视频状态只允许从 `processing` 条件更新；重复处理不会再次完成状态变更。
-- 开启发布事件时，`processing → published` 与新增 `video.published` 在同一事务；CAS 未变更不新增事件。
+- 当前 worker 中，`processing → published` 与新增 `video.published` 在同一事务；CAS 未变更不新增事件。
 - 卡片预热每次读取当前事实并覆盖同一 key，不依赖旧消息里的展示内容。
 - 暂态失败先发布下一档重试消息，收到 broker 确认后才 ACK 原消息。
 - 坏载荷、未知版本或消费重试耗尽进入 DLQ；DLQ 需要受控处理，不会自动变成成功。
@@ -476,7 +480,7 @@ stateDiagram-v2
 
 [mq/runtime.go](../backend/internal/mq/runtime.go) 在后续发布/取消费信道时发现连接失效，会重建连接、声明完整消费拓扑，并重新创建确认发布器；消费循环重新取得消费信道。旧发布器不能继续绑定已经失效的连接。
 
-开启预热时，每次重连都声明视频处理与卡片预热两个规格，并开启 mandatory/Return 检查。publisher confirm 表示 broker 确认发布；mandatory/Return 用于检测无法路由的消息。当前未开启预热的默认装配没有开启这项 mandatory 检查，不能笼统写成所有模式都有路由返回保护。
+当前视频 MQ Runtime 首次连接及每次重连都声明视频处理与卡片预热两个规格，独立互动 Runtime 声明热度规格；两个入口装配都显式开启 mandatory/Return 检查。publisher confirm 表示 broker 确认发布，mandatory/Return 用于检测无法路由的消息，两者都不证明消费完成。Runtime 构造默认值仍是 `mandatory=false`，阅读时应以 worker 的实际装配为准。
 
 worker 启动期连接失败有有限次数退避，耗尽会退出；运行期恢复也依赖持续调用与可用依赖。“自动恢复”不表示无限等待、无故障损失或无积压。
 
@@ -512,7 +516,7 @@ API 直接装配页缓存和卡片缓存，四种互动写入直接使用同事�
 
 Redis 缓存失败仍回源 MySQL。计划性回退使用对应代码版本，并保留认识已有事件类型的消费者处理存量；不能删除事实表或伪造派发/消费完成。启动前须应用迁移 `000010_interaction_outbox`。配置包只读取热度参数；[worker/main.go](../backend/cmd/worker/main.go) 的 `startWorkers` 在时间单位转换前检查整数溢出，热度索引构造时统一调用 [HeatPolicy.Validate](../backend/internal/domain/feed/heat.go) 校验窗口、去重保留、权重及容量。入口参照 GCFeed 集中装配视频处理、卡片预热、互动 Relay、热度索引/投影器/消费者及观测循环；主函数处理配置加载、连接和关闭信号，收到取消后调用返回的收尾函数，等待循环退出再关闭资源。
 
-组件装配、队列声明与进程启动都不能证明窗口覆盖完整，Hot/Recommend 仍为 501。本轮未执行部署、迁移或运行验收。
+组件装配、队列声明与进程启动都不能证明窗口覆盖完整，Hot/Recommend 仍为 501。本轮 R1-A 未执行部署或业务库迁移，也未作热度窗口完整性验收。
 
 ## 9. 账户、互动与媒体清扫
 
@@ -528,7 +532,9 @@ Following 另外检查观看者有效。匿名 Timeline 不会因携带 token �
 
 [social/controller.go](../backend/internal/social/controller.go) → [social/service.go](../backend/internal/social/service.go) → [social/repo.go](../backend/internal/social/repo.go)。
 
-关注、点赞状态、统计和评论列表继续复用这条旧模块链路。点赞与关注通过关系表唯一键处理重复创建，删除返回是否确实发生变更；评论使用软删除。Feed 的点赞和评论数来自当前页批量聚合，评论聚合遵循软删除作用域。
+关注继续使用这条旧 HTTP 链路；批量统计仍复用 social 仓储。点赞与关注通过关系表唯一键处理重复创建，删除返回是否确实发生变更；评论使用软删除。Feed 的点赞和评论数来自当前页批量聚合，评论聚合遵循软删除作用域。
+
+点赞状态与评论列表从 [router.go](../backend/internal/router/router.go) → [Interaction handler](../backend/internal/interfaces/http/interaction/handler.go) → [Application service](../backend/internal/application/interaction/service.go) → Domain Reader → [读取适配器](../backend/internal/infra/persistence/interaction/reader.go) → social.Repository。点赞状态先校验完整公开视频和活动用户，再查询关系及实时计数；认证仍先由 JWT/session 中间件校验。评论由 [cursor.go](../backend/internal/application/interaction/cursor.go) 处理原 v1 字段和视频范围，仓储按 `(created_at DESC, id DESC)` 多读一条，JOIN 一次带出全部作者资料，注销作者保留原 ID 与占位名。SQL 与 ORM 类型只在外层适配，生产读用例不调用旧 Service/Controller；临时兼容对照测试已移除，旧读入口待 R1-B 核对清理。
 
 四种写操作直接走 [HTTP handler](../backend/internal/interfaces/http/interaction/handler.go) → [application/interaction/service.go](../backend/internal/application/interaction/service.go) → [事务适配器 writer.go](../backend/internal/infra/persistence/interaction/writer.go)。实际点赞/取消、评论创建/软删除与 `interaction_outbox_events` 在同一事务提交；重复点赞/取消不追加事实，重复删评仍为 404，评论 POST 仍无请求幂等键。提交后的统计/作者读取失败不撤销已提交事实。
 
@@ -540,7 +546,17 @@ Following 另外检查观看者有效。匿名 Timeline 不会因携带 token �
 
 新增与撤销归属同一原创建分钟。Lua 状态 Hash 同时保存收据、绝对分数及容量计数，再把绝对分数写入 ZSET；重复投递读取当前分数补写 ZSET，不重复加分，撤销先到保留负贡献。桶过期由原创建分钟确定，不因重投延长，过期或已离开窗口且不存在的桶不重建。同代际规则指纹不一致、已有状态损坏或分钟容量超限均不伪造成功。
 
-热度消费直接装配，处理上下文 5 秒、Redis 单次操作 100ms。meta 的 `coverage=unverified` 不会因收到事件自动变为完整；目前只有处理结果、单事件 lag 和队列深度，没有持久覆盖水位、事实重建或 MySQL 快照，Hot 仍为 501。去重状态丢失后的恢复属于后续 B2，源码和编译不能替代真实故障验收。范围见开发计划第 3.7、5.19 节。
+热度消费直接装配，处理上下文 5 秒、Redis 单次操作 100ms。Lua 的长度主要来自规则/类型/容量检查、event_id 去重、绝对分数补写及原分钟到期处理；这些逻辑用于处理重复与乱序，不在 API 请求中计算整张热榜。Hash 收据仍在时，重复投递可补写 ZSET；去重状态也丢失时不能据此保证恢复，属于后续 B2。
+
+`coverage=unverified` 的含义是“窗口完整性尚未证明”。[heat_index.go](../backend/internal/infra/cache/feed/heat_index.go) 只在创建代际 meta 时写这个固定值，当前没有验证后更新它的代码；worker 日志也固定输出这个值。这是源码行为说明，本轮没有读取实时 Redis。
+
+| 当前可观察的状态 | 能证明什么 | 仍不能证明什么 |
+| --- | --- | --- |
+| Redis 可连接、分钟 ZSET 有数据 | 某些操作可访问 Redis | 历史采集无缺口、整个窗口已消费 |
+| Outbox 为 dispatched | broker 发布已确认且派发标记成功 | 事件已计分，或没有重试/DLQ 积压 |
+| 单次消费成功、重复或过期跳过 | 此投递已按当前规则处理 | 窗口内其他事实齐全、索引可用于完整热榜 |
+
+目前只有 `HeatIndex.ApplyHeat` 写入端口及处理结果、单事件 lag、队列深度，没有窗口榜读取、持久覆盖水位、事实重建或 MySQL 快照。`GetFeed` 仍将 Hot/Recommend 映射为 501；七项能力直接装配只覆盖已实现链路。下一步 B2 的扫描、重建和快照边界见 [开发计划第 3.8 节](./DEVELOPMENT_PLAN.md#38-f4-b2事实重建与-mysql-快照的下一步边界未实现)，真实故障与覆盖验收仍待补。
 
 ### 9.3 文件系统与数据库无法共用一个事务
 
@@ -618,11 +634,11 @@ Timeline 和 Following 各自保存视频、游标、首屏/续页加载状态�
 
 | 要理解的行为                                  | 建议读的测试                                                                                                                                                        |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 卡片故障回源、并发容量与迟到写                | [application/feed/service_test.go](../backend/internal/application/feed/service_test.go)                                                                            |
-| 缓存命中、载荷损坏与 MySQL 回源               | [feed_http_integration_test.go](../backend/internal/router/feed_http_integration_test.go)                                                                           |
+| 卡片并发容量、取消与迟到写                    | [application/feed/service_test.go](../backend/internal/application/feed/service_test.go)                                                                            |
+| 缓存命中、载荷损坏与 MySQL 回源               | [e2e_test.go](../backend/internal/router/e2e_test.go)                                                                                                                |
 | 页缓存容量与取消释放                          | [service_test.go](../backend/internal/application/feed/service_test.go)                                                                                             |
 | 当前关注关系、认证与跨用户游标                | [e2e_test.go](../backend/internal/router/e2e_test.go)                                                                                                                |
-| MySQL/Redis 下实际卡片读取                    | [feed_http_integration_test.go](../backend/internal/router/feed_http_integration_test.go)                                                                           |
+| MySQL/Redis 下实际卡片读取                    | [e2e_test.go](../backend/internal/router/e2e_test.go)                                                                                                                |
 | MySQL → Relay → RabbitMQ → 预热消费者 → Redis | [integration_test.go](../backend/internal/worker/integration_test.go)                                                                                               |
 | 草稿部分回收、失去租约与断点继续              | [draft_purge_test.go](../backend/internal/sweeper/draft_purge_test.go)                                                                                              |
 | 前端迟到响应、场景与分页                      | [usePublishedFeed.spec.ts](../frontend/src/features/video/__tests__/usePublishedFeed.spec.ts)、[FeedView.spec.ts](../frontend/src/views/__tests__/FeedView.spec.ts) |

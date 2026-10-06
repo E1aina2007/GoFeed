@@ -28,6 +28,16 @@ type LikeState struct {
 	LikesCount int64
 }
 
+type CommentWithAuthor struct {
+	Comment Comment
+	Author  Author
+}
+
+type CommentPosition struct {
+	CreatedAt time.Time
+	ID        uint
+}
+
 // NormalizeCommentContent 保持评论去除首尾空格及 Unicode 字符数上限的业务规则
 func NormalizeCommentContent(content string) (string, error) {
 	content = strings.TrimSpace(content)

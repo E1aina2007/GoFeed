@@ -22,6 +22,45 @@ func New(service *applicationinteraction.Service) *Handler {
 	}
 }
 
+func (h *Handler) GetLikeState(c *gin.Context) {
+	userID, videoID, ok := actorAndVideo(c)
+	if !ok {
+		return
+	}
+	state, err := h.service.GetLikeState(c.Request.Context(), videoID, userID)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, likeStateResponse{Liked: state.Liked, LikesCount: state.LikesCount})
+}
+
+func (h *Handler) GetCommentList(c *gin.Context) {
+	videoID, err := pathID(c.Param("id"), domaininteraction.ErrInvalidVideoID)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	limit := 0
+	if raw := c.Query("limit"); raw != "" {
+		limit, err = strconv.Atoi(raw)
+		if err != nil {
+			writeError(c, domaininteraction.ErrInvalidLimit)
+			return
+		}
+	}
+	result, err := h.service.GetCommentList(c.Request.Context(), videoID, c.Query("cursor"), limit)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	response := commentListResponse{Items: make([]commentResponse, 0, len(result.Items)), NextCursor: result.NextCursor}
+	for _, item := range result.Items {
+		response.Items = append(response.Items, commentResponseFromDomain(item.Comment, item.Author))
+	}
+	c.JSON(http.StatusOK, response)
+}
+
 func (h *Handler) CreateLike(c *gin.Context) {
 	h.setLike(c, true)
 }
@@ -46,21 +85,8 @@ func (h *Handler) CreateComment(c *gin.Context) {
 		writeError(c, err)
 		return
 	}
-	comment := result.Comment
-	author := result.Author
 	c.JSON(http.StatusCreated, gin.H{
-		"comment": commentResponse{
-			ID:        comment.ID,
-			VideoID:   comment.VideoID,
-			Content:   comment.Content,
-			CreatedAt: comment.CreatedAt,
-			Author: authorResponse{
-				ID:        author.ID,
-				Username:  author.Username,
-				AvatarURL: author.AvatarURL,
-				Bio:       author.Bio,
-			},
-		},
+		"comment": commentResponseFromDomain(result.Comment, result.Author),
 	})
 }
 
@@ -131,6 +157,8 @@ var errorRules = []apierror.Rule{
 			domaininteraction.ErrInvalidUserID,
 			domaininteraction.ErrInvalidVideoID,
 			domaininteraction.ErrInvalidCommentID,
+			domaininteraction.ErrInvalidLimit,
+			domaininteraction.ErrInvalidCursor,
 			domaininteraction.ErrInvalidCommentContent,
 		),
 		Code:         apierror.CodeInvalid,

@@ -1,6 +1,10 @@
 package interfaceshttpinteraction
 
-import "time"
+import (
+	"time"
+
+	domaininteraction "gofeed/internal/domain/interaction"
+)
 
 type likeStateResponse struct {
 	Liked      bool  `json:"liked"`
@@ -24,4 +28,19 @@ type commentResponse struct {
 	Author    authorResponse `json:"author"`
 	Content   string         `json:"content"`
 	CreatedAt time.Time      `json:"created_at"`
+}
+
+type commentListResponse struct {
+	Items      []commentResponse `json:"items"`
+	NextCursor string            `json:"next_cursor,omitempty"`
+}
+
+func commentResponseFromDomain(comment domaininteraction.Comment, author domaininteraction.Author) commentResponse {
+	return commentResponse{
+		ID:        comment.ID,
+		VideoID:   comment.VideoID,
+		Content:   comment.Content,
+		CreatedAt: comment.CreatedAt,
+		Author:    authorResponse{ID: author.ID, Username: author.Username, AvatarURL: author.AvatarURL, Bio: author.Bio},
+	}
 }

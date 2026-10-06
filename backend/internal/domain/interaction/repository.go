@@ -6,6 +6,8 @@ type Reader interface {
 	RequireActiveUser(ctx context.Context, userID uint) error
 	RequirePublicVideo(ctx context.Context, videoID uint) error
 	GetLikeCount(ctx context.Context, videoID uint) (int64, error)
+	GetLikeState(ctx context.Context, videoID, userID uint) (bool, error)
+	GetCommentList(ctx context.Context, videoID uint, position *CommentPosition, limit int) ([]CommentWithAuthor, error)
 	GetAuthor(ctx context.Context, userID uint) (Author, error)
 }
 

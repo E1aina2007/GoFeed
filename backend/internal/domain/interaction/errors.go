@@ -7,6 +7,8 @@ var (
 	ErrInvalidUserID         = errors.New("invalid user id")
 	ErrInvalidVideoID        = errors.New("invalid video id")
 	ErrInvalidCommentID      = errors.New("invalid comment id")
+	ErrInvalidLimit          = errors.New("invalid limit")
+	ErrInvalidCursor         = errors.New("invalid cursor")
 	ErrInvalidCommentContent = errors.New("invalid comment content")
 	ErrUserNotFound          = errors.New("user not found")
 	ErrVideoNotFound         = errors.New("video not found")
