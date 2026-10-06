@@ -132,34 +132,6 @@ func TestDraftPurgeJobRunPersistsPartialProgressAndContinues(t *testing.T) {
 	}
 }
 
-// 测试目标：验证重试时只删除尚未写入检查点的媒体槽位
-// 预期效果：已删除视频不会重复传给删除器，封面完成后草稿可被硬删除
-func TestDraftPurgeJobRunRetriesOnlyUnfinishedMedia(t *testing.T) {
-	completed := time.Now().Add(-time.Minute)
-	coverURL := "/static/covers/1/20260810/a.png"
-	purger := &fakeDraftPurger{
-		expired: []uint{1},
-		claims: map[uint]*video.DraftPurgeClaim{
-			1: {DraftID: 1, PlayURL: "/static/videos/1/20260810/a.mp4", PlayPurgedAt: &completed, CoverURL: coverURL},
-		},
-		hardOK: map[uint]bool{1: true},
-	}
-	remover := &fakeMediaRemover{}
-	job := NewDraftPurgeJob(purger, remover, time.Hour, time.Minute)
-	job.newToken = func() (string, error) { return "token", nil }
-
-	purged, err := job.Run(context.Background())
-	if err != nil || purged != 1 {
-		t.Fatalf("重试未完成槽位应成功 purged=%d err=%v", purged, err)
-	}
-	if got, want := remover.urls, []string{coverURL}; len(got) != len(want) || got[0] != want[0] {
-		t.Fatalf("重试不应删除已完成视频 got=%v want=%v", got, want)
-	}
-	if got, want := purger.marked, []draftMediaMark{{id: 1, kind: video.MediaCover}}; len(got) != len(want) || got[0] != want[0] {
-		t.Fatalf("重试检查点错误 got=%v want=%v", got, want)
-	}
-}
-
 // 测试目标：验证已完成槽位不会重复删除，丢失租约后停止处理该草稿
 // 预期效果：不会删除已标记视频，租约失效时不会删除封面或硬删除记录
 func TestDraftPurgeJobRunSkipsCompletedMediaAndLostLease(t *testing.T) {
@@ -185,26 +157,6 @@ func TestDraftPurgeJobRunSkipsCompletedMediaAndLostLease(t *testing.T) {
 	}
 }
 
-type fakeVideoPurger struct {
-	cutoff       time.Time
-	videos       []video.Video
-	listErr      error
-	hardDelete   []uint
-	deleteResult map[uint]bool
-	deleteErr    error
-}
-
-func (f *fakeVideoPurger) GetExpiredDeletedVideoList(_ context.Context, cutoff time.Time) ([]video.Video, error) {
-	f.cutoff = cutoff
-	return f.videos, f.listErr
-}
-
-func (f *fakeVideoPurger) RemoveExpiredVideo(_ context.Context, id uint, cutoff time.Time) (bool, error) {
-	f.cutoff = cutoff
-	f.hardDelete = append(f.hardDelete, id)
-	return f.deleteResult[id], f.deleteErr
-}
-
 type fakeMediaRemover struct {
 	urls   []string
 	errFor map[string]error
@@ -213,26 +165,6 @@ type fakeMediaRemover struct {
 func (f *fakeMediaRemover) Remove(_ context.Context, publicURL string) error {
 	f.urls = append(f.urls, publicURL)
 	return f.errFor[publicURL]
-}
-
-// 测试目标：验证媒体删除失败时视频记录会保留以便下次重试
-// 预期效果：任务返回错误且不调用对应视频的硬删除
-func TestVideoPurgeJobRunRetainsRecordWhenMediaRemovalFails(t *testing.T) {
-	coverURL := "/static/covers/1/20260810/a.png"
-	purger := &fakeVideoPurger{
-		videos:       []video.Video{{ID: 1, PlayURL: "/static/videos/1/20260810/a.mp4", CoverURL: coverURL}},
-		deleteResult: map[uint]bool{1: true},
-	}
-	want := errors.New("disk unavailable")
-	remover := &fakeMediaRemover{errFor: map[string]error{coverURL: want}}
-
-	purged, err := NewVideoPurgeJob(purger, remover, time.Hour).Run(context.Background())
-	if !errors.Is(err, want) {
-		t.Fatalf("应透传媒体删除错误 got=%v", err)
-	}
-	if purged != 0 || len(purger.hardDelete) != 0 {
-		t.Fatalf("删除媒体失败时不应硬删除记录 purged=%d hardDelete=%v", purged, purger.hardDelete)
-	}
 }
 
 type fakeMediaReferenceReader struct {

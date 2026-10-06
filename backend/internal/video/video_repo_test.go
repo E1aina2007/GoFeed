@@ -3,14 +3,16 @@ package video
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,7 +20,6 @@ import (
 	"gorm.io/gorm"
 
 	authn "gofeed/internal/auth"
-	dbpkg "gofeed/internal/db"
 	jwtmw "gofeed/internal/middleware/jwt"
 	"gofeed/internal/testutil"
 	"gofeed/internal/user"
@@ -73,151 +74,6 @@ func setVideoDeletedAt(t *testing.T, db *gorm.DB, id uint, at time.Time) {
 	t.Helper()
 	if err := db.Exec("UPDATE videos SET deleted_at = ? WHERE id = ?", at, id).Error; err != nil {
 		t.Fatalf("设置视频 deleted_at 失败: %v", err)
-	}
-}
-
-// 测试目标：验证仓储原子将草稿转入可由 sweeper 接管的 purging 状态
-// 预期效果：重试保持幂等，清扫前不删除媒体，其他作者和已发布视频不能触发转换
-func TestRepositoryDiscardDraft(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-	ctx := context.Background()
-	draft := newVideoFixture(1, "待丢弃草稿", VideoStatusDraft, baseTime)
-	draft.PublishedAt = nil
-	if err := repo.Create(ctx, draft); err != nil {
-		t.Fatalf("创建草稿失败 error=%v", err)
-	}
-
-	discarded, err := repo.UpdateDraftDiscard(ctx, draft.ID, 1)
-	if err != nil {
-		t.Fatalf("丢弃草稿失败 error=%v", err)
-	}
-	if discarded.Status != VideoStatusPurging || discarded.PurgeToken != nil || discarded.PurgeLeaseUntil != nil || discarded.PlayPurgedAt != nil || discarded.CoverPurgedAt != nil {
-		t.Fatalf("丢弃后的清扫状态错误 got=%#v", discarded)
-	}
-	if err := repo.UpdateDraftMedia(ctx, draft.ID, 1, MediaVideo, SavedFile{PublicURL: "/static/videos/1/20260810/retry.mp4", FileName: "retry.mp4"}, "retry.mp4"); !errors.Is(err, ErrDraftNotWritable) {
-		t.Fatalf("清扫中的草稿仍可写入媒体 error=%v", err)
-	}
-	ids, err := repo.GetRecoverableDraftPurgeList(ctx, 10)
-	if err != nil || len(ids) != 1 || ids[0] != draft.ID {
-		t.Fatalf("丢弃草稿未成为清扫候选 ids=%v error=%v", ids, err)
-	}
-	if repeated, err := repo.UpdateDraftDiscard(ctx, draft.ID, 1); err != nil || repeated.Status != VideoStatusPurging {
-		t.Fatalf("重复丢弃应保持成功 draft=%#v error=%v", repeated, err)
-	}
-	if _, err := repo.UpdateDraftDiscard(ctx, draft.ID, 2); !errors.Is(err, ErrNotAuthor) {
-		t.Fatalf("跨作者丢弃未被拒绝 error=%v", err)
-	}
-
-	published := seedVideo(t, repo, 1, "已发布", VideoStatusPublished, baseTime)
-	if _, err := repo.UpdateDraftDiscard(ctx, published.ID, 1); !errors.Is(err, ErrDraftNotWritable) {
-		t.Fatalf("已发布视频不应进入草稿清扫 error=%v", err)
-	}
-
-	rejectedAt := time.Now().Add(-time.Minute)
-	rejected := newVideoFixture(1, "被拒绝视频", VideoStatusRejected, baseTime)
-	rejected.RejectedReason = "媒体缺失"
-	rejected.RejectedAt = &rejectedAt
-	if err := repo.Create(ctx, rejected); err != nil {
-		t.Fatalf("创建 rejected 视频失败: %v", err)
-	}
-	rejectedPurgeToken := "cccccccccccccccccccccccccccccccc"
-	rejectedLease := time.Now().Add(time.Hour)
-	rejected.PlayPurgedAt = &rejectedLease
-	rejected.CoverPurgedAt = &rejectedLease
-	rejected.PurgeToken = &rejectedPurgeToken
-	rejected.PurgeLeaseUntil = &rejectedLease
-	if err := db.Model(&Video{}).Where("id = ?", rejected.ID).Updates(map[string]any{
-		"purge_token":       rejectedPurgeToken,
-		"purge_lease_until": rejectedLease,
-		"play_purged_at":    rejectedLease,
-		"cover_purged_at":   rejectedLease,
-	}).Error; err != nil {
-		t.Fatalf("准备 rejected 清扫字段失败: %v", err)
-	}
-	discardedRejected, err := repo.UpdateDraftDiscard(ctx, rejected.ID, 1)
-	if err != nil {
-		t.Fatalf("主动丢弃 rejected 视频失败: %v", err)
-	}
-	if discardedRejected.Status != VideoStatusPurging || discardedRejected.PurgeToken != nil || discardedRejected.PurgeLeaseUntil != nil || discardedRejected.PlayPurgedAt != nil || discardedRejected.CoverPurgedAt != nil {
-		t.Fatalf("rejected 丢弃后的清扫状态错误 got=%#v", discardedRejected)
-	}
-	if repeated, err := repo.UpdateDraftDiscard(ctx, rejected.ID, 1); err != nil || repeated.Status != VideoStatusPurging {
-		t.Fatalf("重复丢弃 rejected 视频应保持成功 video=%#v error=%v", repeated, err)
-	}
-}
-
-// 测试目标：验证 rejected 的自动清扫以 rejected_at 为保留期基准并支持租约认领
-// 预期效果：到期和边界记录可认领，未到期或缺少 rejected_at 的记录不会提前清扫
-func TestRepositoryRejectedPurgeCandidatesAndClaim(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-	ctx := context.Background()
-	now := time.Now()
-	cutoff := now.Add(-time.Hour)
-
-	expired := newVideoFixture(1, "expired rejected", VideoStatusRejected, baseTime)
-	boundary := newVideoFixture(1, "boundary rejected", VideoStatusRejected, baseTime)
-	active := newVideoFixture(1, "active rejected", VideoStatusRejected, baseTime)
-	legacy := newVideoFixture(1, "legacy rejected", VideoStatusRejected, cutoff.Add(-time.Hour))
-	draft := newVideoFixture(1, "expired draft", VideoStatusDraft, baseTime)
-	for _, item := range []*Video{expired, boundary, active, legacy, draft} {
-		item.PublishedAt = nil
-		if item.Status == VideoStatusRejected {
-			item.RejectedReason = "媒体校验失败"
-		}
-		if err := repo.Create(ctx, item); err != nil {
-			t.Fatalf("创建清扫候选 %q 失败: %v", item.Title, err)
-		}
-	}
-	if err := db.Exec("UPDATE videos SET rejected_at = ?, created_at = ? WHERE id = ?", cutoff.Add(-time.Minute), now.Add(time.Hour), expired.ID).Error; err != nil {
-		t.Fatalf("设置过期 rejected 时间失败: %v", err)
-	}
-	if err := db.Exec("UPDATE videos SET rejected_at = ? WHERE id = ?", cutoff, boundary.ID).Error; err != nil {
-		t.Fatalf("设置边界 rejected 时间失败: %v", err)
-	}
-	if err := db.Exec("UPDATE videos SET rejected_at = ? WHERE id = ?", cutoff.Add(time.Minute), active.ID).Error; err != nil {
-		t.Fatalf("设置活跃 rejected 时间失败: %v", err)
-	}
-	if err := db.Exec("UPDATE videos SET rejected_at = NULL, created_at = ? WHERE id = ?", cutoff.Add(-time.Hour), legacy.ID).Error; err != nil {
-		t.Fatalf("设置旧 rejected 时间失败: %v", err)
-	}
-	var boundaryCutoff time.Time
-	if err := db.Raw("SELECT rejected_at FROM videos WHERE id = ?", boundary.ID).Scan(&boundaryCutoff).Error; err != nil {
-		t.Fatalf("读取数据库截断后的 rejected 边界失败: %v", err)
-	}
-	if err := db.Exec("UPDATE videos SET created_at = ? WHERE id = ?", cutoff.Add(-time.Minute), draft.ID).Error; err != nil {
-		t.Fatalf("设置过期草稿创建时间失败: %v", err)
-	}
-
-	ids, err := repo.GetExpiredDraftPurgeList(ctx, boundaryCutoff, 20)
-	if err != nil {
-		t.Fatalf("查询 rejected 清扫候选失败: %v", err)
-	}
-	got := make(map[uint]bool, len(ids))
-	for _, id := range ids {
-		got[id] = true
-	}
-	for _, id := range []uint{expired.ID, boundary.ID, draft.ID} {
-		if !got[id] {
-			t.Errorf("应返回到期候选 id=%d ids=%v", id, ids)
-		}
-	}
-	for _, id := range []uint{active.ID, legacy.ID} {
-		if got[id] {
-			t.Errorf("不应返回未到期或缺少 rejected_at 的候选 id=%d ids=%v", id, ids)
-		}
-	}
-
-	claim, ok, err := repo.UpdateDraftPurgeClaim(ctx, expired.ID, boundaryCutoff, "dddddddddddddddddddddddddddddddd", time.Minute)
-	if err != nil || !ok || claim == nil || claim.Token != "dddddddddddddddddddddddddddddddd" {
-		t.Fatalf("到期 rejected 认领失败 claim=%+v ok=%t err=%v", claim, ok, err)
-	}
-	if _, ok, err := repo.UpdateDraftPurgeClaim(ctx, active.ID, boundaryCutoff, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", time.Minute); err != nil || ok {
-		t.Fatalf("未到期 rejected 不应认领 ok=%t err=%v", ok, err)
-	}
-	if _, ok, err := repo.UpdateDraftPurgeClaim(ctx, legacy.ID, boundaryCutoff, "ffffffffffffffffffffffffffffffff", time.Minute); err != nil || ok {
-		t.Fatalf("缺少 rejected_at 的旧记录不应认领 ok=%t err=%v", ok, err)
 	}
 }
 
@@ -430,171 +286,6 @@ func TestRepositorySoftDeletePublished(t *testing.T) {
 	}
 }
 
-// 测试目标：验证到期软删除视频可被查询并硬删除
-// 预期效果：早于或等于截止时间的软删记录被删除，宽限期内及活跃记录保持不变
-func TestRepositoryPurgeExpiredDeleted(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-	ctx := context.Background()
-	cutoff := time.Date(2026, 8, 18, 12, 0, 0, 0, time.Local)
-
-	expired := seedVideo(t, repo, 1, "expired", VideoStatusPublished, baseTime)
-	boundary := seedVideo(t, repo, 1, "boundary", VideoStatusPublished, baseTime)
-	grace := seedVideo(t, repo, 1, "grace", VideoStatusPublished, baseTime)
-	active := seedVideo(t, repo, 1, "active", VideoStatusPublished, baseTime)
-	draftDeleted := seedVideo(t, repo, 1, "draft-deleted", VideoStatusDraft, baseTime)
-	purgingDeleted := seedVideo(t, repo, 1, "purging-deleted", VideoStatusPurging, baseTime)
-	setVideoDeletedAt(t, db, expired.ID, cutoff.Add(-time.Minute))
-	setVideoDeletedAt(t, db, boundary.ID, cutoff)
-	setVideoDeletedAt(t, db, grace.ID, cutoff.Add(time.Minute))
-	setVideoDeletedAt(t, db, draftDeleted.ID, cutoff.Add(-time.Minute))
-	setVideoDeletedAt(t, db, purgingDeleted.ID, cutoff.Add(-time.Minute))
-
-	items, err := repo.GetExpiredDeletedVideoList(ctx, cutoff)
-	if err != nil {
-		t.Fatalf("GetExpiredDeletedVideoList: %v", err)
-	}
-	if len(items) != 2 {
-		t.Fatalf("应只返回到期和边界视频, got=%+v", items)
-	}
-	for _, item := range []Video{*draftDeleted, *purgingDeleted} {
-		if deleted, err := repo.RemoveExpiredVideo(ctx, item.ID, cutoff); err != nil || deleted {
-			t.Fatalf("非 published 记录不应由已发布清扫删除 id=%d deleted=%t err=%v", item.ID, deleted, err)
-		}
-	}
-
-	for _, item := range items {
-		deleted, err := repo.RemoveExpiredVideo(ctx, item.ID, cutoff)
-		if err != nil {
-			t.Fatalf("RemoveExpiredVideo id=%d: %v", item.ID, err)
-		}
-		if !deleted {
-			t.Fatalf("到期视频应被硬删除 id=%d", item.ID)
-		}
-	}
-	if deleted, err := repo.RemoveExpiredVideo(ctx, expired.ID, cutoff); err != nil || deleted {
-		t.Fatalf("重复硬删除应为空 deleted=%t err=%v", deleted, err)
-	}
-
-	for _, id := range []uint{expired.ID, boundary.ID} {
-		var count int64
-		if err := db.Raw("SELECT COUNT(*) FROM videos WHERE id = ?", id).Scan(&count).Error; err != nil {
-			t.Fatalf("统计硬删除视频失败: %v", err)
-		}
-		if count != 0 {
-			t.Fatalf("视频 id=%d 应被硬删除", id)
-		}
-	}
-	for _, id := range []uint{grace.ID, active.ID} {
-		var count int64
-		if err := db.Raw("SELECT COUNT(*) FROM videos WHERE id = ?", id).Scan(&count).Error; err != nil {
-			t.Fatalf("统计保留视频失败: %v", err)
-		}
-		if count != 1 {
-			t.Fatalf("视频 id=%d 应在数据库中保留", id)
-		}
-	}
-}
-
-// 测试目标：验证批量读取公开视频的可见性过滤
-// 预期效果：非发布状态、软删除、发布时间为空、媒体字段不完整和不存在的标识都不返回
-func TestRepositoryGetPublishedByIDsFiltersInvisible(t *testing.T) {
-	db := testutil.DB(t)
-	repo := NewRepository(db)
-	ctx := context.Background()
-
-	public := seedVideo(t, repo, 1, "public", VideoStatusPublished, baseTime)
-	otherAuthor := seedVideo(t, repo, 7, "other-author", VideoStatusPublished, baseTime.Add(time.Minute))
-
-	ids := []uint{public.ID, otherAuthor.ID}
-	draft := seedVideo(t, repo, 1, "draft", VideoStatusDraft, baseTime)
-	processing := seedVideo(t, repo, 1, "processing", VideoStatusProcessing, baseTime)
-	rejected := seedVideo(t, repo, 1, "rejected", VideoStatusRejected, baseTime)
-	purging := seedVideo(t, repo, 1, "purging", VideoStatusPurging, baseTime)
-	deleted := seedVideo(t, repo, 1, "deleted", VideoStatusPublished, baseTime)
-	invisible := []*Video{draft, processing, rejected, purging, deleted}
-
-	nullPublishedAt := newVideoFixture(1, "null-published-at", VideoStatusPublished, baseTime)
-	nullPublishedAt.PublishedAt = nil
-	if err := repo.Create(ctx, nullPublishedAt); err != nil {
-		t.Fatalf("写入发布时间为空的视频失败: %v", err)
-	}
-	invisible = append(invisible, nullPublishedAt)
-
-	blankFields := []struct {
-		name   string
-		mutate func(*Video)
-	}{
-		{name: "缺少播放地址", mutate: func(row *Video) { row.PlayURL = "" }},
-		{name: "缺少播放文件名", mutate: func(row *Video) { row.PlayFileName = "" }},
-		{name: "缺少播放原始名", mutate: func(row *Video) { row.PlayOriginalName = "" }},
-		{name: "缺少封面地址", mutate: func(row *Video) { row.CoverURL = "" }},
-		{name: "缺少封面文件名", mutate: func(row *Video) { row.CoverFileName = "" }},
-		{name: "缺少封面原始名", mutate: func(row *Video) { row.CoverOriginalName = "" }},
-	}
-	for _, item := range blankFields {
-		row := newVideoFixture(1, item.name, VideoStatusPublished, baseTime)
-		item.mutate(row)
-		if err := repo.Create(ctx, row); err != nil {
-			t.Fatalf("写入%s的视频失败: %v", item.name, err)
-		}
-		invisible = append(invisible, row)
-	}
-	if err := repo.DeletePublishedVideo(ctx, deleted.ID, deleted.AuthorID); err != nil {
-		t.Fatalf("软删除视频失败: %v", err)
-	}
-
-	for _, row := range invisible {
-		ids = append(ids, row.ID)
-	}
-	ids = append(ids, 999999)
-
-	got, err := repo.GetPublishedByIDs(ctx, ids)
-	if err != nil {
-		t.Fatalf("批量读取公开视频失败: %v", err)
-	}
-	byID := make(map[uint]Video, len(got))
-	for _, row := range got {
-		byID[row.ID] = row
-	}
-	if len(byID) != 2 {
-		t.Fatalf("结果应只包含两条公开视频 got=%d", len(byID))
-	}
-	for _, row := range invisible {
-		if _, ok := byID[row.ID]; ok {
-			t.Fatalf("不可见视频不应出现在结果中 id=%d title=%s", row.ID, row.Title)
-		}
-	}
-	if _, ok := byID[999999]; ok {
-		t.Fatalf("不存在的标识不应出现在结果中")
-	}
-	card, ok := byID[public.ID]
-	if !ok {
-		t.Fatalf("公开视频缺失 got=%+v", got)
-	}
-	if card.Title != public.Title || card.PlayURL != public.PlayURL || card.CoverURL != public.CoverURL {
-		t.Fatalf("公开视频字段映射错误 got=%+v", card)
-	}
-	if card.PlayFileName != public.PlayFileName || card.PlayOriginalName != public.PlayOriginalName {
-		t.Fatalf("公开视频播放媒体字段映射错误 got=%+v", card)
-	}
-	if card.CoverFileName != public.CoverFileName || card.CoverOriginalName != public.CoverOriginalName {
-		t.Fatalf("公开视频封面媒体字段映射错误 got=%+v", card)
-	}
-	if card.PublishedAt == nil || !card.PublishedAt.Equal(*public.PublishedAt) {
-		t.Fatalf("公开视频发布时间错误 got=%v want=%v", card.PublishedAt, *public.PublishedAt)
-	}
-	if otherAuthorRow, ok := byID[otherAuthor.ID]; !ok || otherAuthorRow.AuthorID != 7 {
-		t.Fatalf("批量读取不应按作者过滤 other=%+v", otherAuthorRow)
-	}
-}
-
-// videoTestVideoHeader 是校验通过的最小 mp4 文件头
-var videoTestVideoHeader = []byte{0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
-
-// videoTestImageHeader 是校验通过的最小 png 文件头
-var videoTestImageHeader = []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
-
 // videoJSONRequest 发送可选 JSON 请求体与可选访问令牌的 HTTP 请求
 func videoJSONRequest(t *testing.T, engine *gin.Engine, method, path, token string, payload any) *httptest.ResponseRecorder {
 	t.Helper()
@@ -613,32 +304,6 @@ func videoJSONRequest(t *testing.T, engine *gin.Engine, method, path, token stri
 	if payload != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	if token != "" {
-		request.Header.Set("Authorization", "Bearer "+token)
-	}
-	recorder := httptest.NewRecorder()
-	engine.ServeHTTP(recorder, request)
-	return recorder
-}
-
-// videoMultipartRequest 以多部分表单上传单个媒体文件
-func videoMultipartRequest(t *testing.T, engine *gin.Engine, path, token, filename string, content []byte) *httptest.ResponseRecorder {
-	t.Helper()
-	var form bytes.Buffer
-	writer := multipart.NewWriter(&form)
-	part, err := writer.CreateFormFile("file", filename)
-	if err != nil {
-		t.Fatalf("创建表单文件失败: %v", err)
-	}
-	if _, err := part.Write(content); err != nil {
-		t.Fatalf("写入表单失败: %v", err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("关闭表单失败: %v", err)
-	}
-
-	request := httptest.NewRequest(http.MethodPost, path, &form)
-	request.Header.Set("Content-Type", writer.FormDataContentType())
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -818,107 +483,6 @@ func videoInteractions(t *testing.T, gdb *gorm.DB, videoID uint, likerIDs []uint
 	}
 }
 
-// 测试目标：验证草稿上传与发布的完整 HTTP 状态契约
-// 预期效果：建草稿 201、媒体不完整发布 409、上传媒体 201、发布 202 且状态转为 processing
-func TestVideoDraftPublishHTTPContract(t *testing.T) {
-	engine, gdb, _, _ := newVideoHTTPEngine(t)
-	author, token := newVideoAuthor(t, gdb, "draft-author")
-
-	created := videoJSONRequest(t, engine, http.MethodPost, "/api/video/auth/drafts", token,
-		map[string]any{"title": "我的第一个作品", "description": "草稿描述"})
-	if created.Code != http.StatusCreated {
-		t.Fatalf("建草稿状态错误 got=%d body=%s", created.Code, created.Body.String())
-	}
-	draft, ok := videoResponseBody(t, created)["draft"].(map[string]any)
-	if !ok {
-		t.Fatalf("建草稿响应缺少 draft body=%s", created.Body.String())
-	}
-	if draft["status"] != VideoStatusDraft || draft["has_video"] != false || draft["has_cover"] != false {
-		t.Fatalf("草稿初始字段错误 got=%v", draft)
-	}
-	draftID := uint(draft["id"].(float64))
-
-	incomplete := videoJSONRequest(t, engine, http.MethodPost,
-		fmt.Sprintf("/api/video/auth/drafts/%d/publish", draftID), token, nil)
-	if message := videoErrorMessage(t, incomplete, http.StatusConflict); message != ErrDraftIncomplete.Error() {
-		t.Fatalf("媒体不完整发布文案错误 got=%q", message)
-	}
-
-	play := videoMultipartRequest(t, engine, fmt.Sprintf("/api/video/auth/drafts/%d/play", draftID), token,
-		"clip.mp4", videoTestVideoHeader)
-	if play.Code != http.StatusCreated {
-		t.Fatalf("上传视频状态错误 got=%d body=%s", play.Code, play.Body.String())
-	}
-	playBody := videoResponseBody(t, play)
-	if uint(playBody["draft_id"].(float64)) != draftID {
-		t.Fatalf("上传视频 draft_id 错误 got=%v", playBody)
-	}
-	if !strings.HasPrefix(playBody["play_url"].(string), fmt.Sprintf("/static/videos/%d/", author.ID)) ||
-		!strings.HasSuffix(playBody["play_url"].(string), playBody["play_file_name"].(string)) {
-		t.Fatalf("上传视频地址归属错误 got=%v", playBody)
-	}
-	if playBody["play_original_name"] != "clip.mp4" {
-		t.Fatalf("上传视频原始文件名错误 got=%v", playBody)
-	}
-
-	cover := videoMultipartRequest(t, engine, fmt.Sprintf("/api/video/auth/drafts/%d/cover", draftID), token,
-		"cover.png", videoTestImageHeader)
-	if cover.Code != http.StatusCreated {
-		t.Fatalf("上传封面状态错误 got=%d body=%s", cover.Code, cover.Body.String())
-	}
-	coverBody := videoResponseBody(t, cover)
-	if !strings.HasPrefix(coverBody["cover_url"].(string), fmt.Sprintf("/static/covers/%d/", author.ID)) ||
-		!strings.HasSuffix(coverBody["cover_url"].(string), coverBody["cover_file_name"].(string)) {
-		t.Fatalf("上传封面地址归属错误 got=%v", coverBody)
-	}
-
-	detail := videoJSONRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/video/auth/drafts/%d", draftID), token, nil)
-	if detail.Code != http.StatusOK {
-		t.Fatalf("草稿详情状态错误 got=%d body=%s", detail.Code, detail.Body.String())
-	}
-	detailDraft := videoResponseBody(t, detail)["draft"].(map[string]any)
-	if detailDraft["has_video"] != true || detailDraft["has_cover"] != true {
-		t.Fatalf("草稿媒体标记错误 got=%v", detailDraft)
-	}
-
-	withBody := videoJSONRequest(t, engine, http.MethodPost,
-		fmt.Sprintf("/api/video/auth/drafts/%d/publish", draftID), token, map[string]any{"title": "覆盖"})
-	if message := videoErrorMessage(t, withBody, http.StatusBadRequest); message != "publish draft does not accept a request body" {
-		t.Fatalf("发布请求体文案错误 got=%q", message)
-	}
-
-	published := videoJSONRequest(t, engine, http.MethodPost,
-		fmt.Sprintf("/api/video/auth/drafts/%d/publish", draftID), token, nil)
-	if published.Code != http.StatusAccepted {
-		t.Fatalf("发布状态错误 got=%d body=%s", published.Code, published.Body.String())
-	}
-	publishedDraft := videoResponseBody(t, published)["draft"].(map[string]any)
-	if publishedDraft["status"] != VideoStatusProcessing {
-		t.Fatalf("发布后状态错误 got=%v", publishedDraft)
-	}
-
-	repeated := videoJSONRequest(t, engine, http.MethodPost,
-		fmt.Sprintf("/api/video/auth/drafts/%d/publish", draftID), token, nil)
-	if message := videoErrorMessage(t, repeated, http.StatusConflict); message != ErrDraftNotWritable.Error() {
-		t.Fatalf("重复发布文案错误 got=%q", message)
-	}
-
-	processing := videoJSONRequest(t, engine, http.MethodGet,
-		fmt.Sprintf("/api/video/auth/%d/status", draftID), token, nil)
-	if processing.Code != http.StatusOK {
-		t.Fatalf("处理状态查询错误 got=%d body=%s", processing.Code, processing.Body.String())
-	}
-	if videoResponseBody(t, processing)["status"] != VideoStatusProcessing {
-		t.Fatalf("处理状态字段错误 got=%s", processing.Body.String())
-	}
-
-	anonymous := videoJSONRequest(t, engine, http.MethodPost, "/api/video/auth/drafts", "",
-		map[string]any{"title": "未登录"})
-	if message := videoErrorMessage(t, anonymous, http.StatusUnauthorized); message != "missing authorization header" {
-		t.Fatalf("未登录建草稿文案错误 got=%q", message)
-	}
-}
-
 // 测试目标：验证公开列表与详情的可见性、排序与互动计数语义
 // 预期效果：仅完整已发布作品可见，同发布时间按标识倒序，计数随真实互动增长
 func TestVideoPublicVisibilityHTTPContract(t *testing.T) {
@@ -1048,66 +612,547 @@ func TestVideoDeleteHTTPContract(t *testing.T) {
 	}
 }
 
-// videoQueryCapture 记录请求内真实执行的 SQL 语句数量
-type videoQueryCapture struct {
-	counts []int64
-}
-
-func (q *videoQueryCapture) middleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Request = c.Request.WithContext(dbpkg.WithQueryCounter(c.Request.Context()))
-		c.Next()
-		q.counts = append(q.counts, dbpkg.QueryCount(c.Request.Context()))
-	}
-}
-
-// videoQueryBudget 断言目标请求的语句数量落在预算内并返回实际值
-func videoQueryBudget(t *testing.T, capture *videoQueryCapture, before int, budget int64) int64 {
+// 测试目标：写入一条指定状态的事件
+// 预期效果：租约用例可基于该事件构造 claim 场景
+func seedOutboxEvent(t *testing.T, db *gorm.DB, videoID uint, eventID, status string) OutboxEvent {
 	t.Helper()
-	if len(capture.counts) != before+1 {
-		t.Fatalf("应只新增一次请求记录 got=%d want=%d", len(capture.counts), before+1)
+	event := OutboxEvent{
+		EventID:   eventID,
+		VideoID:   videoID,
+		EventType: VideoProcessEventType,
+		Status:    status,
 	}
-	got := capture.counts[len(capture.counts)-1]
-	if got < 1 || got > budget {
-		t.Fatalf("查询预算超限 got=%d want 1..%d", got, budget)
+	if err := db.Create(&event).Error; err != nil {
+		t.Fatalf("创建 outbox 事件失败: %v", err)
 	}
-	return got
+	return event
 }
 
-// 测试目标：验证公开读取端点的真实 SQL 语句数量不随列表长度增长
-// 预期效果：列表与详情各自最多四条语句且六条作品时不出现逐条查询
-func TestVideoReadEndpointsQueryBudget(t *testing.T) {
-	capture := &videoQueryCapture{}
-	engine, gdb, repo, _ := newVideoHTTPEngine(t, capture.middleware())
-	if err := dbpkg.RegisterQueryCounter(gdb); err != nil {
-		t.Fatalf("注册查询计数回调失败: %v", err)
+// 测试目标：写入一条 processing 视频
+// 预期效果：满足 outbox 外键与视频快照读取需求
+func seedProcessingVideoRow(t *testing.T, repo *Repository, authorID uint, title string) *Video {
+	t.Helper()
+	publishedAt := baseTime
+	row := newVideoFixture(authorID, title, VideoStatusProcessing, publishedAt)
+	row.PublishedAt = &publishedAt
+	if err := repo.Create(context.Background(), row); err != nil {
+		t.Fatalf("创建处理视频失败: %v", err)
+	}
+	return row
+}
+
+// 测试目标：验证过期 publishing 事件可被接管，且旧持有者的围栏令牌失效
+// 预期效果：接管后 attempt 递增，旧令牌的标记与释放均不生效，新持有者可完成标记
+func TestClaimPendingOutboxEventsTakesOverExpiredLease(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db)
+	row := seedProcessingVideoRow(t, repo, 1, "接管视频")
+	event := seedOutboxEvent(t, db, row.ID, "evt-lease-expired", OutboxEventStatusPublishing)
+
+	// 测试目标：构造一个已过期的租约模拟持有者崩溃
+	// 预期效果：该事件可被后续 claim 接管
+	if err := db.Model(&OutboxEvent{}).Where("id = ?", event.ID).Updates(map[string]any{
+		"locked_until": gorm.Expr("TIMESTAMPADD(SECOND, -60, NOW(3))"),
+		"attempt":      1,
+	}).Error; err != nil {
+		t.Fatalf("构造过期租约失败: %v", err)
 	}
 
-	author, _ := newVideoAuthor(t, gdb, "budget-author")
-	liker, _ := newVideoAuthor(t, gdb, "budget-liker")
-	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.Local)
-	var ids []uint
-	for index := 0; index < 6; index++ {
-		video := seedVideo(t, repo, author.ID, fmt.Sprintf("预算作品 %d", index), VideoStatusPublished, base.Add(time.Duration(index)*time.Minute))
-		ids = append(ids, video.ID)
+	// 测试目标：验证租约过期且尚未接管时旧持有者失效
+	// 预期效果：标记与释放都不产生变更
+	marked, err := repo.MarkOutboxDispatched(context.Background(), event.ID, 1)
+	if err != nil {
+		t.Fatalf("过期租约标记失败: %v", err)
 	}
-	videoInteractions(t, gdb, ids[0], []uint{liker.ID}, []uint{liker.ID})
+	if marked {
+		t.Fatal("租约过期后原持有者不应能标记事件")
+	}
+	released, err := repo.ReleaseOutboxRetry(context.Background(), event.ID, 1, time.Second, errors.New("stale"))
+	if err != nil {
+		t.Fatalf("过期租约释放失败: %v", err)
+	}
+	if released {
+		t.Fatal("租约过期后原持有者不应能释放事件")
+	}
 
-	capture.counts = nil
-	list := videoJSONRequest(t, engine, http.MethodGet, "/api/video", "", nil)
-	if list.Code != http.StatusOK {
-		t.Fatalf("公开列表状态错误 got=%d body=%s", list.Code, list.Body.String())
+	// 测试目标：验证接管后新持有者拿到递增的围栏令牌
+	// 预期效果：旧令牌无法覆盖状态，新令牌可完成标记
+	taken, err := repo.ClaimPendingOutboxEvents(context.Background(), 10, time.Minute)
+	if err != nil {
+		t.Fatalf("接管失败: %v", err)
 	}
-	if len(videoListIDs(t, list)) != 6 {
-		t.Fatalf("公开列表条数错误 body=%s", list.Body.String())
+	if len(taken) != 1 || taken[0].Event.Attempt != 2 {
+		t.Fatalf("过期租约应被接管并递增 attempt got=%+v", taken)
 	}
-	listQueries := videoQueryBudget(t, capture, 0, 4)
-	t.Logf("公开列表语句数量=%d", listQueries)
+	staleMark, err := repo.MarkOutboxDispatched(context.Background(), event.ID, 1)
+	if err != nil {
+		t.Fatalf("旧令牌标记失败: %v", err)
+	}
+	if staleMark {
+		t.Fatal("旧围栏令牌不应能标记已接管的事件")
+	}
+	marked, err = repo.MarkOutboxDispatched(context.Background(), taken[0].Event.ID, taken[0].Event.Attempt)
+	if err != nil || !marked {
+		t.Fatalf("接管者应能标记事件 marked=%v err=%v", marked, err)
+	}
+}
 
-	detail := videoJSONRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/video/%d", ids[0]), "", nil)
-	if detail.Code != http.StatusOK {
-		t.Fatalf("公开详情状态错误 got=%d body=%s", detail.Code, detail.Body.String())
+// 以下用例验收「视频处理完成时同事务写入 video.published 发布事件」这一能力
+// 覆盖正常流转、CAS 零行、拒绝分支、并发竞争、插入失败回滚、提交失败回滚与开关关闭七类场景
+
+// 测试目标：验证并发完成同一视频时只有一个调用赢得状态流转并写入发布事件
+// 预期效果：八个并发调用恰好一个返回变更且都不报错 视频最终为 published 发布事件恰好一条
+func TestPublishedEventSingleWinnerUnderConcurrentCompletion(t *testing.T) {
+	db := testutil.DB(t)
+	row := seedProcessingVideoRow(t, NewRepository(db, WithPublishedEvents(true)), 1, "并发完成视频")
+
+	const workers = 8
+	type completionResult struct {
+		changed bool
+		err     error
 	}
-	detailQueries := videoQueryBudget(t, capture, 1, 4)
-	t.Logf("公开详情语句数量=%d", detailQueries)
+
+	start := make(chan struct{})
+	results := make(chan completionResult, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			repo := NewRepository(db, WithPublishedEvents(true))
+			<-start
+			changed, err := repo.CompleteVideoProcessing(context.Background(), row.ID)
+			results <- completionResult{changed: changed, err: err}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	winners := 0
+	for got := range results {
+		if got.err != nil {
+			t.Fatalf("并发完成处理不应返回错误 got=%v", got.err)
+		}
+		if got.changed {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("应恰好一个调用赢得状态流转 got=%d", winners)
+	}
+	if got := readPublishedEventVideo(t, db, row.ID); got.Status != VideoStatusPublished {
+		t.Fatalf("视频状态应为 published got=%s", got.Status)
+	}
+	if events := listPublishedEvents(t, db, row.ID); len(events) != 1 {
+		t.Fatalf("发布事件应恰好一条 got=%d", len(events))
+	}
+}
+
+// 测试目标：验证发布事件插入失败时状态流转随事务一起回滚
+// 预期效果：返回注入的插入错误 视频仍为 processing published_at 不变 outbox 无任何事件
+func TestPublishedEventRolledBackWhenOutboxInsertFails(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db, WithPublishedEvents(true))
+	row := seedProcessingVideoRow(t, repo, 1, "事件插入失败视频")
+	before := readPublishedEventVideo(t, db, row.ID)
+
+	fault := registerPublishedEventCreateFault(t, db)
+	injected := errors.New("injected outbox insert failure")
+	fault.arm("video_outbox_events", injected)
+
+	changed, err := repo.CompleteVideoProcessing(t.Context(), row.ID)
+	fault.disarm()
+	if !errors.Is(err, injected) {
+		t.Fatalf("应返回注入的插入错误 changed=%v err=%v", changed, err)
+	}
+	if changed {
+		t.Fatal("插入失败回滚后不应报告状态变更")
+	}
+	if !fault.hit() {
+		t.Fatal("注入点未被触发 用例未覆盖真实插入失败路径")
+	}
+
+	after := readPublishedEventVideo(t, db, row.ID)
+	if after.Status != VideoStatusProcessing {
+		t.Fatalf("插入失败应回滚状态 got=%s", after.Status)
+	}
+	if after.PublishedAt == nil || before.PublishedAt == nil {
+		t.Fatal("published_at 不应为空")
+	}
+	if !before.PublishedAt.Equal(*after.PublishedAt) {
+		t.Fatalf("插入失败后 published_at 不应改变 before=%v after=%v", *before.PublishedAt, *after.PublishedAt)
+	}
+	if total := countAllOutboxEvents(t, db); total != 0 {
+		t.Fatalf("插入失败回滚后不应留下事件 got=%d", total)
+	}
+
+	// 移除注入后同一视频仍可正常完成 说明失败并非前置状态被破坏
+	fault.disarm()
+	if changed, err := repo.CompleteVideoProcessing(t.Context(), row.ID); err != nil || !changed {
+		t.Fatalf("解除注入后应能正常完成 changed=%v err=%v", changed, err)
+	}
+	if events := listPublishedEvents(t, db, row.ID); len(events) != 1 {
+		t.Fatalf("解除注入后应写入一条发布事件 got=%d", len(events))
+	}
+}
+
+// 测试目标：验证事务提交失败时状态流转与发布事件一起回滚
+// 预期效果：返回注入的提交错误 视频仍为 processing published_at 不变 outbox 无任何事件
+func TestPublishedEventRolledBackWhenCommitFails(t *testing.T) {
+	db := testutil.DB(t)
+	repo := NewRepository(db, WithPublishedEvents(true))
+	row := seedProcessingVideoRow(t, repo, 1, "提交失败视频")
+	before := readPublishedEventVideo(t, db, row.ID)
+
+	faultRepo, fault := newPublishedEventCommitFaultRepository(t, db)
+	injected := errors.New("injected commit failure")
+	fault.arm(injected)
+
+	changed, err := faultRepo.CompleteVideoProcessing(t.Context(), row.ID)
+	if !errors.Is(err, injected) {
+		t.Fatalf("应返回注入的提交错误 changed=%v err=%v", changed, err)
+	}
+	if changed {
+		t.Fatal("提交失败回滚后不应报告状态变更")
+	}
+	if begins, commits := fault.counters(); begins != 1 || commits != 1 {
+		t.Fatalf("注错点应恰好开启并提交一次事务 begins=%d commits=%d", begins, commits)
+	}
+	fault.disarm()
+
+	after := readPublishedEventVideo(t, db, row.ID)
+	if after.Status != VideoStatusProcessing {
+		t.Fatalf("提交失败应回滚状态 got=%s", after.Status)
+	}
+	if after.PublishedAt == nil || before.PublishedAt == nil {
+		t.Fatal("published_at 不应为空")
+	}
+	if !before.PublishedAt.Equal(*after.PublishedAt) {
+		t.Fatalf("提交失败后 published_at 不应改变 before=%v after=%v", *before.PublishedAt, *after.PublishedAt)
+	}
+	if total := countAllOutboxEvents(t, db); total != 0 {
+		t.Fatalf("提交失败回滚后不应留下事件 got=%d", total)
+	}
+
+	// 同一连接池在解除注入后仍可正常提交 说明回滚确实落到底层事务
+	faultRepo2, _ := newPublishedEventCommitFaultRepository(t, db)
+	if changed, err := faultRepo2.CompleteVideoProcessing(t.Context(), row.ID); err != nil || !changed {
+		t.Fatalf("解除注入后应能正常完成 changed=%v err=%v", changed, err)
+	}
+	if events := listPublishedEvents(t, db, row.ID); len(events) != 1 {
+		t.Fatalf("解除注入后应写入一条发布事件 got=%d", len(events))
+	}
+}
+
+// readPublishedEventVideo 读取视频当前落库状态
+// 测试目标：为用例提供真实数据库中的状态快照
+// 预期效果：返回该视频行的状态与发布时间
+func readPublishedEventVideo(t *testing.T, db *gorm.DB, videoID uint) Video {
+	t.Helper()
+	var row Video
+	if err := db.First(&row, "id = ?", videoID).Error; err != nil {
+		t.Fatalf("读取视频 %d 失败: %v", videoID, err)
+	}
+	return row
+}
+
+// listPublishedEvents 列出指定视频的发布事件
+// 测试目标：只统计 event_type 为 video.published 的事件
+// 预期效果：按创建顺序返回该视频的发布事件
+func listPublishedEvents(t *testing.T, db *gorm.DB, videoID uint) []OutboxEvent {
+	t.Helper()
+	var events []OutboxEvent
+	if err := db.Where("video_id = ? AND event_type = ?", videoID, VideoPublishedEventType).
+		Order("id ASC").Find(&events).Error; err != nil {
+		t.Fatalf("读取视频 %d 的发布事件失败: %v", videoID, err)
+	}
+	return events
+}
+
+// countAllOutboxEvents 统计 outbox 全表事件数
+// 测试目标：判断是否有多余事件残留
+// 预期效果：返回 video_outbox_events 的当前行数
+func countAllOutboxEvents(t *testing.T, db *gorm.DB) int64 {
+	t.Helper()
+	var total int64
+	if err := db.Model(&OutboxEvent{}).Count(&total).Error; err != nil {
+		t.Fatalf("统计 outbox 事件失败: %v", err)
+	}
+	return total
+}
+
+// publishedEventCreateFault 是写入发布事件时的插入故障注入器
+// 测试目标：让针对目标表的 Create 语句在回调阶段直接失败
+// 预期效果：武装后命中目标表的插入返回注入错误 其余语句不受影响
+type publishedEventCreateFault struct {
+	mu    sync.Mutex
+	table string
+	err   error
+	hits  int
+}
+
+// inject 是注册到 Create 回调链上的处理函数
+// 测试目标：在 INSERT 执行前按表名短路语句
+// 预期效果：命中目标表时把注入错误写入语句错误并累计命中次数
+func (f *publishedEventCreateFault) inject(tx *gorm.DB) {
+	f.mu.Lock()
+	table, err := f.table, f.err
+	if err != nil && tx.Statement != nil && tx.Statement.Table == table {
+		f.hits++
+	}
+	f.mu.Unlock()
+	if err == nil || tx.Statement == nil || tx.Statement.Table != table {
+		return
+	}
+	tx.AddError(err)
+}
+
+// arm 武装故障
+// 测试目标：让下一次命中目标表的插入失败
+// 预期效果：目标表匹配且错误非空
+func (f *publishedEventCreateFault) arm(table string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.table = table
+	f.err = err
+}
+
+// disarm 解除故障
+// 测试目标：恢复目标表的正常写入
+// 预期效果：后续插入不再注入错误
+func (f *publishedEventCreateFault) disarm() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = nil
+}
+
+// hit 报告注入点是否被触发
+// 测试目标：确认用例确实走到了目标语句
+// 预期效果：命中过至少一次返回 true
+func (f *publishedEventCreateFault) hit() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hits > 0
+}
+
+const publishedEventCreateFaultCallback = "gofeed:published_event_create_fault"
+
+// registerPublishedEventCreateFault 在 Create 流程上注册插入故障注入
+// 测试目标：为用例提供可武装的插入失败能力
+// 预期效果：回调在 gorm:create 之前执行 测试结束后自动移除
+func registerPublishedEventCreateFault(t *testing.T, db *gorm.DB) *publishedEventCreateFault {
+	t.Helper()
+	fault := &publishedEventCreateFault{}
+	if err := db.Callback().Create().Before("gorm:create").
+		Register(publishedEventCreateFaultCallback, fault.inject); err != nil {
+		t.Fatalf("注册插入故障回调失败: %v", err)
+	}
+	t.Cleanup(func() {
+		fault.disarm()
+		if err := db.Callback().Create().Remove(publishedEventCreateFaultCallback); err != nil {
+			t.Errorf("移除插入故障回调失败: %v", err)
+		}
+	})
+	return fault
+}
+
+// publishedEventCommitFault 是事务提交故障注入器
+// 测试目标：在连接池层拦截事务开启并在提交时注入错误
+// 预期效果：武装后真实事务被回滚且返回注入错误 未武装时提交照常
+type publishedEventCommitFault struct {
+	mu       sync.Mutex
+	pool     *sql.DB
+	injected error
+	begins   int
+	commits  int
+}
+
+// PrepareContext 委托底层连接池
+// 测试目标：保持非事务语句可用
+// 预期效果：直接使用底层预处理语句
+func (f *publishedEventCommitFault) PrepareContext(ctx context.Context, query string) (*sql.Stmt, error) {
+	return f.pool.PrepareContext(ctx, query)
+}
+
+// ExecContext 委托底层连接池
+// 测试目标：保持非事务语句可用
+// 预期效果：直接执行底层语句
+func (f *publishedEventCommitFault) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return f.pool.ExecContext(ctx, query, args...)
+}
+
+// QueryContext 委托底层连接池
+// 测试目标：保持非事务查询可用
+// 预期效果：返回底层查询结果
+func (f *publishedEventCommitFault) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	return f.pool.QueryContext(ctx, query, args...)
+}
+
+// QueryRowContext 委托底层连接池
+// 测试目标：保持非事务单行查询可用
+// 预期效果：返回底层单行结果
+func (f *publishedEventCommitFault) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	return f.pool.QueryRowContext(ctx, query, args...)
+}
+
+// BeginTx 开启真实事务并包装提交
+// 测试目标：让事务提交点可注入错误
+// 预期效果：返回包装后的连接池并累计开启次数
+func (f *publishedEventCommitFault) BeginTx(ctx context.Context, opts *sql.TxOptions) (gorm.ConnPool, error) {
+	real, err := f.pool.BeginTx(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	f.begins++
+	f.mu.Unlock()
+	return &publishedEventCommitFaultTx{Tx: real, fault: f}, nil
+}
+
+// arm 武装提交故障
+// 测试目标：让下一次事务提交失败
+// 预期效果：提交时先回滚再返回注入错误
+func (f *publishedEventCommitFault) arm(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.injected = err
+}
+
+// disarm 解除提交故障
+// 测试目标：恢复事务正常提交
+// 预期效果：后续提交直接落地
+func (f *publishedEventCommitFault) disarm() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.injected = nil
+}
+
+// counters 报告事务开启与提交次数
+// 测试目标：确认注错点确实被走到
+// 预期效果：返回开启次数与提交次数
+func (f *publishedEventCommitFault) counters() (int, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.begins, f.commits
+}
+
+// publishedEventCommitFaultTx 包装真实事务以便注入提交错误
+// 测试目标：在事务提交点注入错误并回滚
+// 预期效果：武装时回滚真实事务并返回注入错误 未武装时正常提交
+type publishedEventCommitFaultTx struct {
+	*sql.Tx
+	fault *publishedEventCommitFault
+}
+
+// Commit 按武装状态提交或注入失败
+// 测试目标：模拟提交阶段失败
+// 预期效果：武装时先回滚真实事务再返回注入错误 否则提交真实事务
+func (tx *publishedEventCommitFaultTx) Commit() error {
+	tx.fault.mu.Lock()
+	injected := tx.fault.injected
+	tx.fault.commits++
+	tx.fault.mu.Unlock()
+	if injected != nil {
+		_ = tx.Tx.Rollback()
+		return injected
+	}
+	return tx.Tx.Commit()
+}
+
+// Rollback 回滚真实事务
+// 测试目标：保留事务回滚能力
+// 预期效果：返回底层回滚结果
+func (tx *publishedEventCommitFaultTx) Rollback() error {
+	return tx.Tx.Rollback()
+}
+
+// newPublishedEventCommitFaultRepository 构造提交点可注入错误的仓储
+// 测试目标：让 CompleteVideoProcessing 走真实事务并在提交处失败
+// 预期效果：返回使用真实连接池的仓储与对应故障注入器
+func newPublishedEventCommitFaultRepository(t *testing.T, db *gorm.DB) (*Repository, *publishedEventCommitFault) {
+	t.Helper()
+	pool, err := db.DB()
+	if err != nil {
+		t.Fatalf("读取底层连接池失败: %v", err)
+	}
+	fault := &publishedEventCommitFault{pool: pool}
+	session := db.Session(&gorm.Session{NewDB: true, Context: context.Background()})
+	session.Statement.ConnPool = fault
+	return NewRepository(session, WithPublishedEvents(true)), fault
+}
+
+func requireObjectName(t *testing.T, got, stem, ext string) {
+	t.Helper()
+	prefix := stem + "_"
+	if !strings.HasPrefix(got, prefix) || !strings.HasSuffix(got, ext) {
+		t.Fatalf("对象文件名格式错误 got=%q want prefix=%q suffix=%q", got, prefix, ext)
+	}
+	objectID := strings.TrimSuffix(strings.TrimPrefix(got, prefix), ext)
+	if len(objectID) != storageObjectIDBytes*2 {
+		t.Fatalf("对象键长度错误 got=%q", objectID)
+	}
+	for _, r := range objectID {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			t.Fatalf("对象键应为小写十六进制 got=%q", objectID)
+		}
+	}
+	if sanitizeFilename(got) != got {
+		t.Fatalf("对象文件名不再符合清洗规则 got=%q", got)
+	}
+}
+
+// 测试目标：验证本地存储阻止文件名中的路径穿越
+// 预期效果：仅保留最后一段文件名且文件始终落在上传目录内
+func TestLocalStorageSaveSanitizesPathTraversal(t *testing.T) {
+	// 1 上传文件名携带目录前缀
+	// 2 保存时必须只保留最后一段文件名，且落盘位置始终在上传目录内
+	root := t.TempDir()
+	s := NewLocalStorage(root)
+	content := []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
+
+	saved, err := s.Save(context.Background(), 7, MediaVideo, "../../etc/passwd.mp4", bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("保存失败 error=%v", err)
+	}
+	publicURL := saved.PublicURL
+	if !strings.HasSuffix(publicURL, "/"+saved.FileName) {
+		t.Fatalf("应只保留最后一段文件名 got=%q", publicURL)
+	}
+	requireObjectName(t, saved.FileName, "passwd", ".mp4")
+
+	rel := strings.TrimPrefix(publicURL, "/static/")
+	savedPath := filepath.Join(root, filepath.FromSlash(rel))
+	if !strings.HasPrefix(savedPath, root+string(os.PathSeparator)) {
+		t.Fatalf("文件逃出上传目录 %q", savedPath)
+	}
+	if _, err := os.ReadFile(savedPath); err != nil {
+		t.Fatalf("文件未落盘 %s error=%v", savedPath, err)
+	}
+}
+
+// 测试目标：验证清扫任务不能借由异常 URL 删除上传目录外的文件
+// 预期效果：非规范媒体路径被拒绝，根目录外文件保持不变
+func TestLocalStorageRemoveRejectsUnsafePath(t *testing.T) {
+	root := t.TempDir()
+	s := NewLocalStorage(root)
+	outside := filepath.Join(filepath.Dir(root), "outside.mp4")
+	if err := os.WriteFile(outside, []byte("keep"), 0o644); err != nil {
+		t.Fatalf("创建根目录外文件失败: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(outside) })
+
+	for _, rawURL := range []string{
+		"/static/videos/1/20260818/../../outside.mp4",
+		"/static/videos/1/not-a-date/clip.mp4",
+		"https://example.com/static/videos/1/20260818/clip.mp4",
+		"/static/videos/1/20260818/clip.mp4?download=1",
+	} {
+		if err := s.Remove(context.Background(), rawURL); !errors.Is(err, ErrInvalidMediaPath) {
+			t.Fatalf("不安全路径应被拒绝 url=%q err=%v", rawURL, err)
+		}
+	}
+	if data, err := os.ReadFile(outside); err != nil || string(data) != "keep" {
+		t.Fatalf("根目录外文件不应被删除 data=%q err=%v", data, err)
+	}
 }

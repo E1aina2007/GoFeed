@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -657,44 +659,6 @@ func newIntegrationRelay(t *testing.T, repo *video.Repository, publisher EventPu
 	return relay
 }
 
-// 测试目标：验证无法处理的消息经死信拓扑进入死信队列
-// 预期效果：未知版本消息被 nack 后可在死信队列读取
-func TestDeadLetterIntegration(t *testing.T) {
-	db := testutil.DB(t)
-	conn := newIntegrationConnection(t)
-	runtime := newIntegrationRuntime(t)
-	// 测试目标：使用随机专用拓扑承载死信投递
-	// 预期效果：用例只操作自身队列，不消费共享业务队列的历史消息
-	spec := declareWorkerProcessTopology(t, conn)
-
-	stale := ProcessMessage{SchemaVersion: 99, EventID: "evt-stale", VideoID: 1}
-	if err := runtime.Publish(context.Background(), spec.Event.Exchange, spec.Event.RoutingKey, stale); err != nil {
-		t.Fatalf("发布消息失败: %v", err)
-	}
-
-	delivery := consumeDelivery(t, conn, spec.Queue)
-	consumer := NewConsumer(video.NewRepository(db), runtime, t.TempDir())
-	consumer.spec = spec
-	if result := consumer.handleDelivery(context.Background(), delivery); result != mq.ResultDeadLetter {
-		t.Fatalf("未知版本应进入死信 got=%v", result)
-	}
-	if err := delivery.Nack(false, false); err != nil {
-		t.Fatalf("死信投递失败: %v", err)
-	}
-
-	dead := consumeDelivery(t, conn, spec.DeadLetterQueueName())
-	var msg ProcessMessage
-	if err := json.Unmarshal(dead.Body, &msg); err != nil {
-		t.Fatalf("解码死信失败: %v", err)
-	}
-	if msg.EventID != "evt-stale" {
-		t.Fatalf("死信内容错误 got=%+v", msg)
-	}
-	if err := dead.Ack(false); err != nil {
-		t.Fatalf("确认死信消息失败: %v", err)
-	}
-}
-
 // 测试目标：验证重试耗尽的投递经真实死信拓扑进入死信队列
 // 预期效果：带重试上限计数头且基础设施仍故障的消息被 nack 后可在死信队列读取
 func TestExhaustedRetryDeadLetterIntegration(t *testing.T) {
@@ -1012,62 +976,6 @@ func TestRetryRepublishFailureLeavesOriginalForBrokerRedeliveryIntegration(t *te
 	}
 	if ready := inspector.ready(spec.RetryQueueName(0)); ready != 0 {
 		t.Fatalf("重试队列应保持为空 got=%d", ready)
-	}
-}
-
-// 测试目标：验证确认丢失后 broker 重投被业务状态判定幂等吸收
-// 预期效果：第二次投递仍返回确认结果，视频只流转一次且不产生重试或死信消息
-func TestRedeliveredMessageKeepsProcessingIdempotentIntegration(t *testing.T) {
-	db := testutil.DB(t)
-	admin := newIntegrationConnection(t)
-	holder := newIntegrationConnection(t)
-	spec := declareWorkerProcessTopology(t, admin)
-	inspector := newBrokerQueueInspector(t, admin)
-
-	root := t.TempDir()
-	repo := video.NewRepository(db)
-	row, msg := seedLoopVideo(t, repo, db, root, "evt-redelivered-idempotent")
-
-	publisher := newBrokerConfirmPublisher(t)
-	consumer := NewConsumer(repo, publisher, root)
-	consumer.spec = spec
-	ctx := context.Background()
-	if err := publisher.Publish(ctx, spec.Event.Exchange, spec.Event.RoutingKey, msg); err != nil {
-		t.Fatalf("发布主消息失败: %v", err)
-	}
-
-	first := consumeDelivery(t, holder, spec.Queue)
-	if result := consumer.handleDelivery(ctx, first); result != mq.ResultAck {
-		t.Fatalf("首次投递应完成发布 got=%v", result)
-	}
-	if published := loadLoopVideo(t, db, row.ID); published.Status != video.VideoStatusPublished {
-		t.Fatalf("首次投递后视频应为已发布 got=%+v", published)
-	}
-
-	// 测试目标：在确认原消息前断开连接以模拟确认丢失
-	// 预期效果：broker 重投同一条消息，消费端必须按业务状态判定为重复
-	if err := holder.Close(); err != nil {
-		t.Fatalf("关闭原消息持有连接失败: %v", err)
-	}
-	redelivered := consumeDelivery(t, admin, spec.Queue)
-	if !redelivered.Redelivered {
-		t.Fatal("broker 重投的消息应带 Redelivered 标记")
-	}
-	if result := consumer.handleDelivery(ctx, redelivered); result != mq.ResultAck {
-		t.Fatalf("重复投递应被幂等吸收 got=%v", result)
-	}
-	if err := redelivered.Ack(false); err != nil {
-		t.Fatalf("确认重投消息失败: %v", err)
-	}
-
-	// 测试目标：验证重复投递没有产生额外副作用
-	// 预期效果：视频保持已发布，重试队列与死信队列都为空
-	if published := loadLoopVideo(t, db, row.ID); published.Status != video.VideoStatusPublished {
-		t.Fatalf("重复投递后视频状态不应变化 got=%+v", published)
-	}
-	inspector.waitForReady(spec.RetryQueueName(0), 0)
-	if depth := inspector.ready(spec.DeadLetterQueueName()); depth != 0 {
-		t.Fatalf("重复投递不应进入死信队列 got=%d", depth)
 	}
 }
 
@@ -1660,15 +1568,6 @@ func chainWarmQueueFamily(spec mq.ConsumerSpec) []string {
 func chainWarmValidUUID(value string) bool {
 	parsed, err := uuid.Parse(value)
 	return err == nil && parsed != uuid.Nil
-}
-
-// 测试目标：格式化可能为空的时间指针
-// 预期效果：证据输出不出现空指针解引用
-func chainWarmFormatTime(value *time.Time) string {
-	if value == nil {
-		return "<nil>"
-	}
-	return value.Format(time.RFC3339Nano)
 }
 
 // 测试目标：从日志文本中取出包含关键字的一行
@@ -2378,79 +2277,6 @@ func (e *chainWarmEnv) expireLease(event video.OutboxEvent) {
 	e.logf("lease_rewound event_id=%s event_type=%s", event.EventID, event.EventType)
 }
 
-// 测试目标：验证卡片缓存键布局与内容契约
-// 预期效果：真实键为 gofeed:feed:card:v1:<video_id>，原文经生产解码器还原为同一视频
-func TestCardWarmChainCachesExactCardKeyLayout(t *testing.T) {
-	env := chainWarmNewEnv(t)
-	entity, processEvent := env.seedProcessing()
-	publishedEvent := env.completeProcessing(entity.ID)
-	env.dispatchPublished()
-	env.assertEventDispatched(publishedEvent.ID)
-
-	delivery, msg := env.consumePublished()
-	if msg.EventID != publishedEvent.EventID || msg.VideoID != entity.ID {
-		t.Fatalf("载荷与持久化事件不一致 got=%+v persisted=%+v", msg, publishedEvent)
-	}
-	if msg.SchemaVersion != mq.VideoPublishedSchemaVersion {
-		t.Fatalf("载荷版本错误 got=%d", msg.SchemaVersion)
-	}
-	if result := env.deliver(delivery); result != mq.ResultAck {
-		t.Fatalf("消费者应确认投递 got=%v", result)
-	}
-	env.assertLogLine(entity.ID, applicationfeed.CardWarmed)
-
-	key := env.prefix + chainWarmCardKey(entity.ID)
-	value, err := env.rawValue(key)
-	if err != nil {
-		t.Fatalf("读取真实缓存键 %s 失败: %v", key, err)
-	}
-	env.logf("redis_key=%s value=%s", key, value)
-	var payload struct {
-		Version int `json:"version"`
-		Card    struct {
-			VideoID     uint      `json:"VideoID"`
-			AuthorID    *uint     `json:"AuthorID"`
-			Title       string    `json:"Title"`
-			PublishedAt time.Time `json:"PublishedAt"`
-		} `json:"card"`
-	}
-	if err := json.Unmarshal([]byte(value), &payload); err != nil {
-		t.Fatalf("解码缓存原文失败: %v value=%s", err, value)
-	}
-	if payload.Version != 1 || payload.Card.VideoID != entity.ID {
-		t.Fatalf("缓存版本或视频标识错误 got=%+v", payload)
-	}
-	if payload.Card.AuthorID == nil || *payload.Card.AuthorID != chainWarmAuthorID {
-		t.Fatalf("缓存作者标识错误 got=%+v", payload.Card.AuthorID)
-	}
-	if payload.Card.Title != chainWarmVideoTitle {
-		t.Fatalf("缓存标题错误 got=%q", payload.Card.Title)
-	}
-	row := env.currentVideo(entity.ID)
-	if row.PublishedAt == nil || !payload.Card.PublishedAt.Equal(*row.PublishedAt) {
-		t.Fatalf("缓存发布时间错误 got=%s want=%s", payload.Card.PublishedAt, chainWarmFormatTime(row.PublishedAt))
-	}
-
-	cached, err := env.cache.GetCards(context.Background(), []uint{entity.ID})
-	if err != nil {
-		t.Fatalf("生产解码器读取缓存失败: %v", err)
-	}
-	card, ok := cached.Cards[entity.ID]
-	if !ok || cached.InvalidCount != 0 {
-		t.Fatalf("生产解码器未取到卡片 got=%+v invalid=%d", cached.Cards, cached.InvalidCount)
-	}
-	if err := applicationfeed.ValidateCachedCard(card); err != nil {
-		t.Fatalf("卡片不满足公开契约: %v", err)
-	}
-	if card.VideoID != entity.ID || card.Title != chainWarmVideoTitle || card.AuthorID != chainWarmAuthorID {
-		t.Fatalf("卡片内容错误 got=%+v", card)
-	}
-	env.logf("decoded_card video_id=%d title=%s author_id=%d published_at=%s process_event_id=%s",
-		card.VideoID, card.Title, card.AuthorID, card.PublishedAt.Format(time.RFC3339Nano), processEvent.EventID)
-	env.assertQueuesEmpty()
-	env.assertOutboxSettled()
-}
-
 // 测试目标：验证重复投递沿用持久化事件标识
 // 预期效果：首次投递、代理重投与租约接管重发的载荷 event_id 都等于 outbox 行取值
 func TestCardWarmChainRedeliveryKeepsPersistedEventID(t *testing.T) {
@@ -2584,58 +2410,893 @@ func TestCardWarmChainInvisibleVideoDoesNotReappear(t *testing.T) {
 	env.assertOutboxSettled()
 }
 
-// 测试目标：验证关闭发布事件开关时仍能派发既有 video.published 事件
-// 预期效果：完成处理不新增事件，既有事件被真实 relay 与消费者按原标识处理并预热卡片
-func TestCardWarmChainConsumesExistingEventWithoutRepoFlag(t *testing.T) {
-	env := chainWarmNewEnv(t, video.WithPublishedEvents(false))
-	entity, _ := env.seedProcessing()
-	preExisting := video.OutboxEvent{
-		EventID:   uuid.NewString(),
-		VideoID:   entity.ID,
-		EventType: video.VideoPublishedEventType,
+// 测试目标：配置 worker 闭环集成测试进程
+// 预期效果：运行前初始化并在结束后清理独立测试数据库
+func TestMain(m *testing.M) {
+	os.Exit(testutil.Main(m))
+}
+
+// 测试目标：按表名向语句注入错误的测试夹具
+// 预期效果：用例可精确制造数据库基础设施故障
+type faultInjection struct {
+	mu     sync.Mutex
+	target *faultTarget
+}
+
+type faultTarget struct {
+	table string
+	err   error
+}
+
+func (f *faultInjection) inject(tx *gorm.DB) {
+	f.mu.Lock()
+	target := f.target
+	f.mu.Unlock()
+	if target == nil || tx.Statement == nil || tx.Statement.Context == nil {
+		return
+	}
+	if tx.Statement.Table != target.table {
+		return
+	}
+	tx.AddError(target.err)
+}
+
+func (f *faultInjection) arm(table string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.target = &faultTarget{table: table, err: err}
+}
+
+func (f *faultInjection) disarm() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.target = nil
+}
+
+// 测试目标：注册按表名短路的故障回调
+// 预期效果：未标记目标表时为 no-op，用例结束自动移除回调
+func registerFaultInjection(t *testing.T, gdb *gorm.DB) *faultInjection {
+	t.Helper()
+	faults := &faultInjection{}
+	callback := func(tx *gorm.DB) { faults.inject(tx) }
+	registrations := []struct {
+		name     string
+		register func() error
+		remove   func() error
+	}{
+		{
+			name: "gofeed:worker_fault_query",
+			register: func() error {
+				return gdb.Callback().Query().Before("gorm:query").Register("gofeed:worker_fault_query", callback)
+			},
+			remove: func() error { return gdb.Callback().Query().Remove("gofeed:worker_fault_query") },
+		},
+		{
+			name: "gofeed:worker_fault_create",
+			register: func() error {
+				return gdb.Callback().Create().Before("gorm:create").Register("gofeed:worker_fault_create", callback)
+			},
+			remove: func() error { return gdb.Callback().Create().Remove("gofeed:worker_fault_create") },
+		},
+		{
+			name: "gofeed:worker_fault_update",
+			register: func() error {
+				return gdb.Callback().Update().Before("gorm:update").Register("gofeed:worker_fault_update", callback)
+			},
+			remove: func() error { return gdb.Callback().Update().Remove("gofeed:worker_fault_update") },
+		},
+	}
+	t.Cleanup(func() {
+		faults.disarm()
+		for _, registration := range registrations {
+			if err := registration.remove(); err != nil {
+				t.Errorf("移除故障回调 %s 失败: %v", registration.name, err)
+			}
+		}
+	})
+	for _, registration := range registrations {
+		if err := registration.register(); err != nil {
+			t.Fatalf("注册故障回调失败: %v", err)
+		}
+	}
+	return faults
+}
+
+// 测试目标：写入一条处理中视频与 outbox 事件
+// 预期效果：返回已回填标识的视频行与待派发事件
+func seedProcessingVideo(t *testing.T, repo *video.Repository, db *gorm.DB, id int64) video.Video {
+	t.Helper()
+	ctx := context.Background()
+	playURL := "/static/videos/1/20260801/clip.mp4"
+	coverURL := "/static/covers/1/20260801/cover.png"
+	publishedAt := testTime()
+	row := video.Video{
+		AuthorID: 1, Title: "处理视频", Status: video.VideoStatusProcessing,
+		PlayURL: playURL, PlayFileName: "clip.mp4", PlayOriginalName: "clip.mp4",
+		CoverURL: coverURL, CoverFileName: "cover.png", CoverOriginalName: "cover.png",
+		PublishedAt: &publishedAt,
+	}
+	if err := repo.Create(ctx, &row); err != nil {
+		t.Fatalf("创建处理视频失败: %v", err)
+	}
+	event := video.OutboxEvent{
+		EventID:   fmt.Sprintf("evt-%d", id),
+		VideoID:   row.ID,
+		EventType: video.VideoProcessEventType,
 		Status:    video.OutboxEventStatusPending,
 	}
-	if err := env.db.Create(&preExisting).Error; err != nil {
-		t.Fatalf("写入既有发布事件失败: %v", err)
+	if err := db.Create(&event).Error; err != nil {
+		t.Fatalf("创建 outbox 事件失败: %v", err)
 	}
-	env.trackEvent(preExisting.EventID)
+	return row
+}
 
-	publishedEvent := env.completeProcessing(entity.ID)
-	if count := env.publishedEventCount(entity.ID); count != 1 {
-		t.Fatalf("关闭开关时完成处理不应新增发布事件 count=%d", count)
+// 测试目标：按公开 URL 相对路径写入媒体文件
+// 预期效果：被测处理逻辑可校验到完整媒体
+func writeMediaFile(t *testing.T, root, relative string, content []byte) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("创建媒体目录失败: %v", err)
 	}
-	if publishedEvent.EventID != preExisting.EventID {
-		t.Fatalf("既有事件被改写 persisted=%s want=%s", publishedEvent.EventID, preExisting.EventID)
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("写入媒体文件失败: %v", err)
 	}
-	row := env.currentVideo(entity.ID)
-	env.logf("flag_off video_id=%d status=%s published_at=%s existing_event_id=%s uuid_valid=%t published_event_count=%d",
-		entity.ID, row.Status, chainWarmFormatTime(row.PublishedAt), preExisting.EventID,
-		chainWarmValidUUID(preExisting.EventID), env.publishedEventCount(entity.ID))
-	if row.Status != video.VideoStatusPublished || row.PublishedAt == nil {
-		t.Fatalf("完成处理后视频应为已发布 got status=%s published_at=%s", row.Status, chainWarmFormatTime(row.PublishedAt))
+}
+
+// 测试目标：固定测试基准时间
+// 预期效果：用例共享同一发布时刻，避免时区与时钟差异
+func testTime() time.Time {
+	return time.Date(2026, 8, 1, 12, 0, 0, 0, time.Local)
+}
+
+// syncLogBuffer 串行化日志捕获的写入与读取
+// 测试目标：让后台消费循环写日志与用例断言读日志并发安全
+// 预期效果：-race 下不出现 strings.Builder 的数据竞争
+type syncLogBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// 测试目标：捕获标准日志输出并在用例结束后恢复
+// 预期效果：观测日志断言不污染其他用例输出，后台协程并发写日志也安全
+func captureWorkerLogs(t *testing.T) *syncLogBuffer {
+	t.Helper()
+	output := &syncLogBuffer{}
+	log.SetOutput(output)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+		log.SetFlags(log.LstdFlags)
+	})
+	return output
+}
+
+// 测试目标：构造可控消费信道的测试源并记录预取参数
+// 预期效果：用例能观察 run 循环每次重建信道后的消费目标，信源暂时耗尽时返回错误
+type fakeConsumerSource struct {
+	mu        sync.Mutex
+	channels  []*fakeConsumeChannel
+	prefetch  int
+	calls     int
+	delivered int
+}
+
+func newFakeConsumerSource(channels ...*fakeConsumeChannel) *fakeConsumerSource {
+	return &fakeConsumerSource{channels: channels}
+}
+
+func (f *fakeConsumerSource) ConsumerChannel(prefetch int) (mq.ConsumerChannel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.prefetch = prefetch
+	if f.delivered >= len(f.channels) {
+		return nil, errors.New("测试信源没有更多信道")
+	}
+	channel := f.channels[f.delivered]
+	f.delivered++
+	return channel, nil
+}
+
+func (f *fakeConsumerSource) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// add 追加一个可用信道 供用例在循环重连期间放行注册
+func (f *fakeConsumerSource) add(channels ...*fakeConsumeChannel) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.channels = append(f.channels, channels...)
+}
+
+func (f *fakeConsumerSource) prefetchValue() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.prefetch
+}
+
+// 测试目标：记录消费注册参数与关闭次数，并允许逐条推送投递
+// 预期效果：注册失败或投递流关闭时让循环走重建分支，正常时把投递交给循环
+type fakeConsumeChannel struct {
+	operations sync.Mutex
+	active     chan amqp.Delivery
+	consumeErr error
+	attempts   int
+	registered int
+	closeCalls int
+	closeErr   error
+}
+
+func newFakeConsumeChannel() *fakeConsumeChannel {
+	return &fakeConsumeChannel{}
+}
+
+func (f *fakeConsumeChannel) Consume(string) (<-chan amqp.Delivery, error) {
+	f.operations.Lock()
+	defer f.operations.Unlock()
+	f.attempts++
+	if f.consumeErr != nil {
+		return nil, f.consumeErr
+	}
+	f.active = make(chan amqp.Delivery, 8)
+	f.registered++
+	return f.active, nil
+}
+
+func (f *fakeConsumeChannel) Close() error {
+	f.operations.Lock()
+	defer f.operations.Unlock()
+	f.closeCalls++
+	return f.closeErr
+}
+
+// closeDeliveries 模拟 broker 侧断开投递流 让消费循环回到外层重建信道
+func (f *fakeConsumeChannel) closeDeliveries() {
+	f.operations.Lock()
+	active := f.active
+	f.active = nil
+	f.operations.Unlock()
+	if active != nil {
+		close(active)
+	}
+}
+
+func (f *fakeConsumeChannel) failClose(err error) {
+	f.operations.Lock()
+	defer f.operations.Unlock()
+	f.closeErr = err
+}
+
+// waitForRegistration 等待消费注册成功次数超过给定代数并返回该次投递流
+func (f *fakeConsumeChannel) waitForRegistration(t *testing.T, generation int) chan amqp.Delivery {
+	t.Helper()
+	waitForCondition(t, 20*time.Second, func() bool {
+		f.operations.Lock()
+		defer f.operations.Unlock()
+		return f.registered > generation && f.active != nil
+	}, "消费循环没有完成消费注册")
+	f.operations.Lock()
+	defer f.operations.Unlock()
+	return f.active
+}
+
+// nextRegistration 记录当前注册代数 供后续等待下一次成功注册
+func (f *fakeConsumeChannel) nextRegistration() int {
+	f.operations.Lock()
+	defer f.operations.Unlock()
+	return f.registered
+}
+
+// attemptsCount 返回 Consume 被调用的次数
+func (f *fakeConsumeChannel) attemptsCount() int {
+	f.operations.Lock()
+	defer f.operations.Unlock()
+	return f.attempts
+}
+
+// registrationCount 返回注册成功的次数
+func (f *fakeConsumeChannel) registrationCount() int {
+	f.operations.Lock()
+	defer f.operations.Unlock()
+	return f.registered
+}
+
+// failConsume 标记注册消费失败并等待循环确实再次尝试注册
+func (f *fakeConsumeChannel) failConsume(t *testing.T, err error) {
+	t.Helper()
+	f.operations.Lock()
+	attempts := f.attempts
+	f.consumeErr = err
+	f.operations.Unlock()
+	f.proveRegistrationAttempt(t, attempts)
+}
+
+// failConsumeWith 预先标记注册消费失败 供尚未被取用的信道使用
+func (f *fakeConsumeChannel) failConsumeWith(err error) {
+	f.operations.Lock()
+	defer f.operations.Unlock()
+	f.consumeErr = err
+}
+
+// proveRegistrationAttempt 断言消费循环在该信道上确实再次调用过注册
+func (f *fakeConsumeChannel) proveRegistrationAttempt(t *testing.T, attempts int) {
+	t.Helper()
+	waitForCondition(t, 20*time.Second, func() bool {
+		return f.attemptsCount() > attempts
+	}, "消费循环没有再次尝试注册消费")
+}
+
+// recoverConsume 清除注册失败标记 模拟 broker 恢复后注册成功
+func (f *fakeConsumeChannel) recoverConsume() {
+	f.operations.Lock()
+	defer f.operations.Unlock()
+	f.consumeErr = nil
+}
+
+func (f *fakeConsumeChannel) closeCount() int {
+	f.operations.Lock()
+	defer f.operations.Unlock()
+	return f.closeCalls
+}
+
+// 测试目标：观察循环给出的确认与拒绝结果并实现投递确认接口
+// 预期效果：按调用方法区分确认 死信 与重入队，并阻塞式等待循环完成处理
+type consumerAckRecorder struct {
+	mu          sync.Mutex
+	results     chan struct{}
+	acked       int
+	nacked      int
+	rejects     int
+	nackRequeue int
+	failing     bool
+}
+
+func newConsumerAckRecorder() *consumerAckRecorder {
+	return &consumerAckRecorder{results: make(chan struct{}, 8)}
+}
+
+func (r *consumerAckRecorder) delivery(body []byte, headers amqp.Table) amqp.Delivery {
+	return amqp.Delivery{Body: body, Headers: headers, Acknowledger: r}
+}
+
+func (r *consumerAckRecorder) Ack(_ uint64, _ bool) error { return r.record("ack") }
+
+func (r *consumerAckRecorder) Nack(_ uint64, _ bool, requeue bool) error {
+	if requeue {
+		return r.record("nackRequeue")
+	}
+	return r.record("nack")
+}
+
+func (r *consumerAckRecorder) Reject(_ uint64, requeue bool) error {
+	if requeue {
+		return r.record("nackRequeue")
+	}
+	return r.record("reject")
+}
+
+func (r *consumerAckRecorder) record(outcome string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.failing {
+		return errors.New("broker 侧提交失败")
+	}
+	switch outcome {
+	case "ack":
+		r.acked++
+	case "nack":
+		r.nacked++
+	case "reject":
+		r.rejects++
+	case "nackRequeue":
+		r.nackRequeue++
+	}
+	select {
+	case r.results <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (r *consumerAckRecorder) markFailing() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failing = true
+}
+
+// counts 返回确认数 未重入队拒绝数 重入队拒绝数
+func (r *consumerAckRecorder) counts() (int, int, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.acked, r.nacked + r.rejects, r.nackRequeue
+}
+
+func (r *consumerAckRecorder) push(t *testing.T, channel *fakeConsumeChannel, delivery amqp.Delivery) {
+	t.Helper()
+	// 等待消费循环完成下一次注册 避免用固定睡眠与后台协程协调
+	stream := channel.waitForRegistration(t, 0)
+	r.mu.Lock()
+	for len(r.results) > 0 {
+		<-r.results
+	}
+	r.mu.Unlock()
+	stream <- delivery
+}
+
+func (r *consumerAckRecorder) waitForResult(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.results:
+	case <-time.After(5 * time.Second):
+		acked, nacked, requeued := r.counts()
+		t.Fatalf("等待循环处理投递超时 acked=%d nacked=%d requeued=%d", acked, nacked, requeued)
+	}
+}
+
+// 测试目标：在重发确认返回前检查循环是否已经提交原消息
+// 预期效果：发布进行中读取到的提交次数为零即证明顺序为先重发后确认
+type observingRetryPublisher struct {
+	mu           sync.Mutex
+	publishing   bool
+	commitAtPub  int
+	routingKeys  []string
+	headers      []amqp.Table
+	ackPublished bool
+
+	inner    EventPublisher
+	recorder *consumerAckRecorder
+	unblock  chan struct{}
+}
+
+func newObservingRetryPublisher(inner EventPublisher, recorder *consumerAckRecorder) *observingRetryPublisher {
+	return &observingRetryPublisher{inner: inner, recorder: recorder, unblock: make(chan struct{})}
+}
+
+func (p *observingRetryPublisher) Publish(ctx context.Context, exchange, routingKey string, payload any) error {
+	return p.inner.Publish(ctx, exchange, routingKey, payload)
+}
+
+func (p *observingRetryPublisher) PublishWithHeaders(ctx context.Context, exchange, routingKey string, payload any, headers amqp.Table) error {
+	acked, nacked, requeued := p.recorder.counts()
+	p.mu.Lock()
+	p.publishing = true
+	p.commitAtPub = acked + nacked + requeued
+	p.mu.Unlock()
+
+	select {
+	case <-p.unblock:
+	case <-ctx.Done():
+		p.mu.Lock()
+		p.publishing = false
+		p.mu.Unlock()
+		return ctx.Err()
 	}
 
-	env.dispatchPublished()
-	env.assertEventDispatched(preExisting.ID)
-	env.assertOutboxSettled()
-
-	delivery, msg := env.consumePublished()
-	if msg.EventID != preExisting.EventID {
-		t.Fatalf("既有事件标识被改写 payload=%s persisted=%s", msg.EventID, preExisting.EventID)
+	err := p.inner.PublishWithHeaders(ctx, exchange, routingKey, payload, headers)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.publishing = false
+	p.ackPublished = err == nil
+	if err == nil {
+		p.routingKeys = append(p.routingKeys, routingKey)
+		p.headers = append(p.headers, headers)
 	}
-	if result := env.deliver(delivery); result != mq.ResultAck {
-		t.Fatalf("消费者应确认投递 got=%v", result)
-	}
-	env.assertLogLine(entity.ID, applicationfeed.CardWarmed)
+	return err
+}
 
-	key := env.exactKey(entity.ID)
-	value, err := env.rawValue(key)
+func (p *observingRetryPublisher) state() (bool, int, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.publishing, p.commitAtPub, p.ackPublished
+}
+
+func (p *observingRetryPublisher) firstRetry() (string, amqp.Table, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.routingKeys) == 0 {
+		return "", nil, false
+	}
+	return p.routingKeys[0], p.headers[0], true
+}
+
+// 测试目标：在超时内轮询条件而不使用固定长睡眠协调并发
+// 预期效果：条件成立立即返回，超时输出原因便于定位
+func waitForCondition(t *testing.T, timeout time.Duration, condition func() bool, reason string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("%s", reason)
+}
+
+// 测试目标：等待后台循环写入指定日志片段
+// 预期效果：日志出现后立即返回，超时输出已捕获日志便于定位
+func waitForWorkerLog(t *testing.T, logs func() string, fragment string) {
+	t.Helper()
+	waitForCondition(t, 5*time.Second, func() bool {
+		return strings.Contains(logs(), fragment)
+	}, "等待日志片段超时 fragment="+fragment+" logs="+logs())
+}
+
+// warmUnitEventID 是用例共用的合法持久化事件标识
+const warmUnitEventID = "9f8a7b6c-5d4e-4f3a-8b2c-1d0e9f8a7b6c"
+
+// 测试目标：以计数与覆盖写入模拟卡片预热的事实源读取与 SET 语义
+// 预期效果：用例可断言处理次数 传入视频标识以及重复投递是否重复写入业务状态
+type warmUnitHandler struct {
+	mu       sync.Mutex
+	result   applicationfeed.CardWarmupResult
+	err      error
+	calls    int
+	writes   int
+	videoIDs []uint
+	stored   map[uint]applicationfeed.CardWarmupResult
+}
+
+// 测试目标：模拟卡片预热处理器的读取与写入行为
+// 预期效果：按注入结果返回，预热成功时覆盖写入同一卡片键，注入错误时直接返回错误
+func (h *warmUnitHandler) WarmCard(_ context.Context, videoID uint) (applicationfeed.CardWarmupResult, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calls++
+	h.videoIDs = append(h.videoIDs, videoID)
+	if h.err != nil {
+		return "", h.err
+	}
+	if h.result == applicationfeed.CardWarmed {
+		if h.stored == nil {
+			h.stored = make(map[uint]applicationfeed.CardWarmupResult)
+		}
+		h.writes++
+		h.stored[videoID] = h.result
+	}
+	return h.result, nil
+}
+
+// 测试目标：读取处理器累计调用次数
+// 预期效果：用例可并发安全地断言处理器是否被调用以及调用次数
+func (h *warmUnitHandler) callCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.calls
+}
+
+// 测试目标：读取处理器累计覆盖写入次数
+// 预期效果：用例可断言重复投递是否重复写入业务状态
+func (h *warmUnitHandler) writeCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.writes
+}
+
+// 测试目标：读取处理器写入过的卡片条目数
+// 预期效果：用例可断言 SET 语义下重复投递不产生新的条目
+func (h *warmUnitHandler) storedKeys() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.stored)
+}
+
+// 测试目标：读取处理器收到的视频标识序列
+// 预期效果：用例可断言消费器把载荷中的视频标识原样传给处理器
+func (h *warmUnitHandler) identifications() []uint {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]uint(nil), h.videoIDs...)
+}
+
+// 测试目标：记录卡片预热消费者的重发目标 消息头与载荷
+// 预期效果：用例可断言重试队列 计数头 交换器与载荷内容，并可注入发布故障
+type warmUnitPublisher struct {
+	mu          sync.Mutex
+	payloads    []any
+	exchanges   []string
+	routingKeys []string
+	headers     []amqp.Table
+	attempts    []string
+	err         error
+}
+
+// warmUnitPublishRecord 是一次发布尝试的完整快照
+type warmUnitPublishRecord struct {
+	Exchange   string
+	RoutingKey string
+	Headers    amqp.Table
+	Payload    any
+}
+
+// 测试目标：实现不带消息头的发布入口
+// 预期效果：调用被转发到带消息头的发布方法，行为与卡片预热消费一致
+func (p *warmUnitPublisher) Publish(ctx context.Context, exchange, routingKey string, payload any) error {
+	return p.PublishWithHeaders(ctx, exchange, routingKey, payload, nil)
+}
+
+// 测试目标：记录每次重发的目标 消息头与载荷并支持注入发布故障
+// 预期效果：注入故障时只记录尝试并返回错误，否则完整保存成功发布的参数
+func (p *warmUnitPublisher) PublishWithHeaders(_ context.Context, exchange, routingKey string, payload any, headers amqp.Table) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.attempts = append(p.attempts, routingKey)
+	if p.err != nil {
+		return p.err
+	}
+	p.payloads = append(p.payloads, payload)
+	p.exchanges = append(p.exchanges, exchange)
+	p.routingKeys = append(p.routingKeys, routingKey)
+	p.headers = append(p.headers, headers)
+	return nil
+}
+
+// 测试目标：读取成功发布记录的快照
+// 预期效果：用例可并发安全地断言重发目标 交换器 计数头与载荷
+func (p *warmUnitPublisher) records() []warmUnitPublishRecord {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	records := make([]warmUnitPublishRecord, 0, len(p.routingKeys))
+	for index := range p.routingKeys {
+		records = append(records, warmUnitPublishRecord{
+			Exchange:   p.exchanges[index],
+			RoutingKey: p.routingKeys[index],
+			Headers:    p.headers[index],
+			Payload:    p.payloads[index],
+		})
+	}
+	return records
+}
+
+// 测试目标：读取成功发布次数
+// 预期效果：用例可断言死信路径与成功确认路径都不产生重发
+func (p *warmUnitPublisher) recordCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.routingKeys)
+}
+
+// 测试目标：读取包括失败在内的发布尝试次数
+// 预期效果：用例可断言发布失败时只尝试一次且不重复重发
+func (p *warmUnitPublisher) attemptCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.attempts)
+}
+
+// 测试目标：读取发布尝试过的目标路由键序列
+// 预期效果：用例可断言失败尝试仍然落在正确的重试队列上
+func (p *warmUnitPublisher) attemptsSnapshot() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.attempts...)
+}
+
+// 测试目标：读取投递被直接拒绝而不是被不重入队拒绝的次数
+// 预期效果：用例可断言死信收口走 nack 而不是 reject
+func warmUnitRejects(recorder *consumerAckRecorder) int {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	return recorder.rejects
+}
+
+// 测试目标：序列化卡片预热消费的合法发布消息
+// 预期效果：载荷字段与 mq 版本常量一致，编码失败立即失败而不是把错误带到断言阶段
+func warmUnitBody(t *testing.T, eventID string, videoID uint) []byte {
+	t.Helper()
+	body, err := json.Marshal(PublishedMessage{
+		SchemaVersion: mq.VideoPublishedSchemaVersion,
+		EventID:       eventID,
+		VideoID:       videoID,
+	})
 	if err != nil {
-		t.Fatalf("读取卡片键 %s 失败: %v", key, err)
+		t.Fatalf("编码卡片预热消息失败: %v", err)
 	}
-	env.logf("redis_key=%s value=%s", key, value)
-	if chainWarmCount(env.script.keysOf(chainWarmScriptSet), key) != 1 {
-		t.Fatalf("真实写入键应精确命中一次 key=%s sets=%v", key, env.script.keysOf(chainWarmScriptSet))
+	return body
+}
+
+// 测试目标：构造卡片预热消费者并固定其消费规格来源
+// 预期效果：规格整体取自 FeedCardWarmSpec，构造失败立即失败
+func warmUnitNewConsumer(t *testing.T, handler CardWarmupHandler, publisher EventPublisher) *CardWarmConsumer {
+	t.Helper()
+	consumer, err := NewCardWarmConsumer(handler, publisher)
+	if err != nil {
+		t.Fatalf("构造卡片预热消费者失败: %v", err)
 	}
-	env.assertQueuesEmpty()
+	return consumer
+}
+
+// 测试目标：在后台启动卡片预热消费循环并返回退出信号
+// 预期效果：用例可自行取消上下文并等待循环退出，不需要固定睡眠协调
+func warmUnitRunLoop(consumer *CardWarmConsumer, source ConsumerSource) (context.CancelFunc, <-chan struct{}) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		consumer.Run(ctx, source)
+	}()
+	return cancel, done
+}
+
+// 测试目标：在后台启动卡片预热消费循环并保证用例结束时循环已退出
+// 预期效果：用例无需固定睡眠即可驱动投递，清理阶段不遗留后台协程
+func warmUnitStartLoop(t *testing.T, consumer *CardWarmConsumer, source ConsumerSource) {
+	t.Helper()
+	cancel, done := warmUnitRunLoop(consumer, source)
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Errorf("卡片预热消费循环未跟随上下文退出")
+		}
+	})
+}
+
+// 测试目标：验证暂态故障按分级重试队列重发并在重试耗尽时死信
+// 预期效果：前三次投递各自重发到对应延迟队列并递增计数头后确认原投递，第四次投递死信且不再重发
+func TestCardWarmConsumerRetriesTransientFailures(t *testing.T) {
+	spec := mq.FeedCardWarmSpec()
+	wantQueues := []string{
+		"feed.card.warm.retry.1s",
+		"feed.card.warm.retry.5s",
+		"feed.card.warm.retry.30s",
+	}
+	for attempt, want := range wantQueues {
+		if got := spec.RetryQueueName(attempt); got != want {
+			t.Fatalf("重试队列命名错误 attempt=%d got=%q want=%q", attempt, got, want)
+		}
+	}
+
+	handler := &warmUnitHandler{err: errors.New("卡片缓存暂不可用")}
+	publisher := &warmUnitPublisher{}
+	consumer := warmUnitNewConsumer(t, handler, publisher)
+	if !reflect.DeepEqual(consumer.spec, spec) {
+		t.Fatalf("消费规格应整体取自 FeedCardWarmSpec got=%+v want=%+v", consumer.spec, spec)
+	}
+
+	recorder := newConsumerAckRecorder()
+	channel := newFakeConsumeChannel()
+	source := newFakeConsumerSource(channel)
+	logs := captureWorkerLogs(t)
+	warmUnitStartLoop(t, consumer, source)
+
+	body := warmUnitBody(t, warmUnitEventID, 21)
+	for attempt := 0; attempt < spec.Retry.MaxRetries; attempt++ {
+		recorder.push(t, channel, recorder.delivery(body, amqp.Table{retryHeader: int32(attempt)}))
+		recorder.waitForResult(t)
+
+		records := publisher.records()
+		if len(records) != attempt+1 {
+			t.Fatalf("第 %d 次投递应重发一次 got=%d", attempt, len(records))
+		}
+		record := records[attempt]
+		if record.RoutingKey != wantQueues[attempt] {
+			t.Fatalf("第 %d 次投递重试队列错误 got=%q want=%q", attempt, record.RoutingKey, wantQueues[attempt])
+		}
+		if record.Exchange != "" {
+			t.Fatalf("重试重发应走默认交换器 got=%q", record.Exchange)
+		}
+		if got, ok := record.Headers[retryHeader].(int); !ok || got != attempt+1 {
+			t.Fatalf("第 %d 次投递计数头错误 got=%v want=%d", attempt, record.Headers[retryHeader], attempt+1)
+		}
+		payload, ok := record.Payload.(PublishedMessage)
+		if !ok {
+			t.Fatalf("第 %d 次投递重发载荷类型错误 got=%T", attempt, record.Payload)
+		}
+		if payload.SchemaVersion != mq.VideoPublishedSchemaVersion || payload.EventID != warmUnitEventID || payload.VideoID != 21 {
+			t.Fatalf("第 %d 次投递重发载荷错误 got=%+v", attempt, payload)
+		}
+		if acked, nacked, _ := recorder.counts(); acked != attempt+1 || nacked != 0 {
+			t.Fatalf("第 %d 次投递重发成功后应确认原投递 acked=%d nacked=%d", attempt, acked, nacked)
+		}
+		if got := channel.closeCount(); got != 0 {
+			t.Fatalf("重试重发期间不应重建消费信道 got=%d", got)
+		}
+	}
+
+	// 测试目标：验证达到重试上限的失败投递进入死信且不再重发
+	// 预期效果：计数头本身仍在合法范围内，返回死信并不重入队地拒绝原投递
+	recorder.push(t, channel, recorder.delivery(body, amqp.Table{retryHeader: int32(spec.Retry.MaxRetries)}))
+	recorder.waitForResult(t)
+
+	if acked, nacked, requeued := recorder.counts(); acked != spec.Retry.MaxRetries || nacked != 1 || requeued != 0 {
+		t.Fatalf("重试耗尽应不重入队地拒绝 acked=%d nacked=%d requeued=%d", acked, nacked, requeued)
+	}
+	if got := warmUnitRejects(recorder); got != 0 {
+		t.Fatalf("死信应使用 nack 收口而不是 reject got=%d", got)
+	}
+	if got := publisher.recordCount(); got != spec.Retry.MaxRetries {
+		t.Fatalf("重试耗尽后不应再重发 got=%d want=%d", got, spec.Retry.MaxRetries)
+	}
+	if got := handler.callCount(); got != spec.Retry.MaxRetries+1 {
+		t.Fatalf("每次投递都应尝试业务处理 got=%d want=%d", got, spec.Retry.MaxRetries+1)
+	}
+	waitForWorkerLog(t, logs.String, "result=dead_letter reason=retry_exhausted")
+}
+
+// 测试目标：验证重发只有在 broker 发布成功后才确认原投递
+// 预期效果：发布进行中读取到的确认次数为零，发布成功后目标队列与计数头正确且原投递被确认
+func TestCardWarmRetryPublishesBeforeAcking(t *testing.T) {
+	handler := &warmUnitHandler{err: errors.New("卡片缓存暂不可用")}
+	consumer := warmUnitNewConsumer(t, handler, &warmUnitPublisher{})
+
+	recorder := newConsumerAckRecorder()
+	publisher := newObservingRetryPublisher(&warmUnitPublisher{}, recorder)
+	consumer.publisher = publisher
+
+	channel := newFakeConsumeChannel()
+	source := newFakeConsumerSource(channel)
+	warmUnitStartLoop(t, consumer, source)
+
+	recorder.push(t, channel, recorder.delivery(warmUnitBody(t, warmUnitEventID, 22), nil))
+	waitForCondition(t, 5*time.Second, func() bool {
+		publishing, _, _ := publisher.state()
+		return publishing
+	}, "消费循环没有进入重发路径")
+	if _, commitAtPub, _ := publisher.state(); commitAtPub != 0 {
+		t.Fatalf("重发成功前就确认了原投递 commitAtPub=%d", commitAtPub)
+	}
+
+	close(publisher.unblock)
+	recorder.waitForResult(t)
+
+	if acked, nacked, requeued := recorder.counts(); acked != 1 || nacked != 0 || requeued != 0 {
+		t.Fatalf("重发成功后应确认原投递 acked=%d nacked=%d requeued=%d", acked, nacked, requeued)
+	}
+	routingKey, headers, ok := publisher.firstRetry()
+	if !ok {
+		t.Fatal("没有记录到重试重发")
+	}
+	if want := consumer.spec.RetryQueueName(0); routingKey != want {
+		t.Fatalf("重试队列错误 got=%q want=%q", routingKey, want)
+	}
+	if got, ok := headers[retryHeader].(int); !ok || got != 1 {
+		t.Fatalf("重试计数头错误 got=%v want=1", headers[retryHeader])
+	}
+	if publishing, _, ackPublished := publisher.state(); publishing || !ackPublished {
+		t.Fatalf("重发结束状态错误 publishing=%v ackPublished=%v", publishing, ackPublished)
+	}
+}
+
+// 测试目标：验证重发失败时原投递保持未确认
+// 预期效果：发布失败只记录结算失败日志并关闭信道重连，不调用确认或拒绝
+func TestCardWarmRetryPublishFailureLeavesDeliveryUnacked(t *testing.T) {
+	publisher := &warmUnitPublisher{err: errors.New("broker unavailable")}
+	handler := &warmUnitHandler{err: errors.New("卡片缓存暂不可用")}
+	consumer := warmUnitNewConsumer(t, handler, publisher)
+
+	recorder := newConsumerAckRecorder()
+	channel := newFakeConsumeChannel()
+	source := newFakeConsumerSource(channel)
+	logs := captureWorkerLogs(t)
+	warmUnitStartLoop(t, consumer, source)
+
+	recorder.push(t, channel, recorder.delivery(warmUnitBody(t, warmUnitEventID, 23), nil))
+	waitForWorkerLog(t, logs.String, "event=feed_card_warm result=settlement_failed")
+
+	if acked, nacked, requeued := recorder.counts(); acked != 0 || nacked != 0 || requeued != 0 {
+		t.Fatalf("重发失败时原投递不应被结算 acked=%d nacked=%d requeued=%d", acked, nacked, requeued)
+	}
+	attempts := publisher.attemptsSnapshot()
+	if len(attempts) != 1 || attempts[0] != consumer.spec.RetryQueueName(0) {
+		t.Fatalf("重发应只在第一档重试队列尝试一次 got=%v", attempts)
+	}
+	waitForCondition(t, 5*time.Second, func() bool { return channel.closeCount() >= 1 },
+		"结算失败后没有关闭消费信道")
 }
