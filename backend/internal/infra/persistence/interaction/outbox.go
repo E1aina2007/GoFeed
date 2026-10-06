@@ -28,10 +28,10 @@ func (r *Repository) ClaimPendingEvents(ctx context.Context, limit int, lease ti
 	if limit > maxOutboxClaimBatch {
 		limit = maxOutboxClaimBatch
 	}
-	var claimed []EventModel
+	var claimed []OutboxEvent
 	takenOver := make(map[uint]bool)
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var candidates []EventModel
+		var candidates []OutboxEvent
 		if err := tx.Clauses(clause.Locking{
 			Strength: "UPDATE",
 			Options:  "SKIP LOCKED",
@@ -48,7 +48,7 @@ func (r *Repository) ClaimPendingEvents(ctx context.Context, limit int, lease ti
 			ids = append(ids, row.ID)
 			takenOver[row.ID] = row.Status == eventStatusPublishing
 		}
-		result := tx.Model(&EventModel{}).Where("id IN ?", ids).Updates(map[string]any{
+		result := tx.Model(&OutboxEvent{}).Where("id IN ?", ids).Updates(map[string]any{
 			"status":          eventStatusPublishing,
 			"attempt":         gorm.Expr("attempt + 1"),
 			"next_attempt_at": nil,
@@ -102,7 +102,7 @@ func (r *Repository) MarkDispatched(ctx context.Context, id uint, attempt int) (
 	if id == 0 || attempt <= 0 {
 		return false, domaininteraction.ErrInvalidDispatch
 	}
-	result := r.db.WithContext(ctx).Model(&EventModel{}).
+	result := r.db.WithContext(ctx).Model(&OutboxEvent{}).
 		Where("id = ? AND status = ? AND attempt = ? AND locked_until > NOW(3)", id, eventStatusPublishing, attempt).
 		Updates(map[string]any{
 			"status":          eventStatusDispatched,
@@ -129,7 +129,7 @@ func (r *Repository) ReleaseRetry(ctx context.Context, id uint, attempt int, bac
 	if len(runes) > 255 {
 		reason = string(runes[:255])
 	}
-	result := r.db.WithContext(ctx).Model(&EventModel{}).
+	result := r.db.WithContext(ctx).Model(&OutboxEvent{}).
 		Where("id = ? AND status = ? AND attempt = ? AND locked_until > NOW(3)", id, eventStatusPublishing, attempt).
 		Updates(map[string]any{
 			"status":          eventStatusPending,

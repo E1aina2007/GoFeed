@@ -19,138 +19,6 @@ func NewController(service *Service) *Controller {
 	return &Controller{service: service}
 }
 
-// GetCommentList 处理 GET /api/video/:id/comments?cursor=&limit=
-func (ctl *Controller) GetCommentList(c *gin.Context) {
-	videoID, err := parsePathID(c.Param("id"), ErrInvalidVideoID)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	limit, err := parseLimit(c.Query("limit"))
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	response, err := ctl.service.GetCommentList(c.Request.Context(), videoID, c.Query("cursor"), limit)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	if response.Items == nil {
-		response.Items = []CommentItem{}
-	}
-	c.JSON(http.StatusOK, response)
-}
-
-// CreateComment 处理 POST /api/video/auth/:id/comments
-func (ctl *Controller) CreateComment(c *gin.Context) {
-	userID, ok := jwt.UserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	videoID, err := parsePathID(c.Param("id"), ErrInvalidVideoID)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	var request CreateCommentRequest
-	if err := c.ShouldBindJSON(&request); err != nil {
-		apierror.WriteCode(c, apierror.CodeInvalid, ErrInvalidCommentContent.Error())
-		return
-	}
-	comment, err := ctl.service.CreateComment(c.Request.Context(), videoID, userID, request.Content)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"comment": comment})
-}
-
-// DeleteComment 处理 DELETE /api/video/auth/:id/comments/:commentID
-func (ctl *Controller) DeleteComment(c *gin.Context) {
-	userID, ok := jwt.UserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	videoID, err := parsePathID(c.Param("id"), ErrInvalidVideoID)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	commentID, err := parsePathID(c.Param("commentID"), ErrInvalidCommentID)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	if err := ctl.service.DeleteComment(c.Request.Context(), videoID, commentID, userID); err != nil {
-		handleError(c, err)
-		return
-	}
-	c.Status(http.StatusNoContent)
-}
-
-// GetLikeState 处理 GET /api/video/auth/:id/like
-func (ctl *Controller) GetLikeState(c *gin.Context) {
-	userID, ok := jwt.UserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	videoID, err := parsePathID(c.Param("id"), ErrInvalidVideoID)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	state, err := ctl.service.GetLikeState(c.Request.Context(), videoID, userID)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, state)
-}
-
-// CreateLike 处理 PUT /api/video/auth/:id/like
-func (ctl *Controller) CreateLike(c *gin.Context) {
-	userID, ok := jwt.UserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	videoID, err := parsePathID(c.Param("id"), ErrInvalidVideoID)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	state, err := ctl.service.CreateLike(c.Request.Context(), videoID, userID)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, state)
-}
-
-// RemoveLike 处理 DELETE /api/video/auth/:id/like
-func (ctl *Controller) RemoveLike(c *gin.Context) {
-	userID, ok := jwt.UserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	videoID, err := parsePathID(c.Param("id"), ErrInvalidVideoID)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	state, err := ctl.service.RemoveLike(c.Request.Context(), videoID, userID)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, state)
-}
-
 // GetFollowerList 处理 GET /api/user/:id/followers?cursor=&limit=
 func (ctl *Controller) GetFollowerList(c *gin.Context) {
 	userID, err := parsePathID(c.Param("id"), ErrInvalidUserID)
@@ -276,11 +144,10 @@ func parseLimit(raw string) (int, error) {
 	return limit, nil
 }
 
-// socialErrorRules 按从最具体到最通用排列，决定互动模块领域错误的公共类别与对外文案
+// socialErrorRules 按从最具体到最通用排列，决定关注模块领域错误的公共类别与对外文案
 var socialErrorRules = []apierror.Rule{
-	{Match: apierror.Is(ErrInvalidUserID, ErrInvalidVideoID, ErrInvalidCommentID, ErrInvalidLimit, ErrInvalidCursor, ErrInvalidCommentContent, ErrSelfFollow), Code: apierror.CodeInvalid, UseErrorText: true},
-	{Match: apierror.Is(ErrUserNotFound, ErrVideoNotFound, ErrCommentNotFound, gorm.ErrRecordNotFound), Code: apierror.CodeNotFound, UseErrorText: true},
-	{Match: apierror.Is(ErrCommentNotAuthor), Code: apierror.CodeForbidden, UseErrorText: true},
+	{Match: apierror.Is(ErrInvalidUserID, ErrInvalidLimit, ErrInvalidCursor, ErrSelfFollow), Code: apierror.CodeInvalid, UseErrorText: true},
+	{Match: apierror.Is(ErrUserNotFound, gorm.ErrRecordNotFound), Code: apierror.CodeNotFound, UseErrorText: true},
 }
 
 func handleError(c *gin.Context, err error) {

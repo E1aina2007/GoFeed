@@ -1,6 +1,6 @@
 # GoFeed 源码导读
 
-> 阅读基线：2026-10-06，`F:\work\Feed\GoFeed`，后端提交基线为 `8e059e2`，当前另有待 review 的 R1-A 互动读侧及测试精简改动，上一轮文档提交为 `5c2d4b5`。七项 Feed/互动能力直接装配，相关配置开关已删除；worker 在入口 `startWorkers` 中统一编排，热度业务规则由领域层统一校验。本文从当前源码、路由及迁移推导；热度尚无重建、快照或完整覆盖证明。指标配置与请求回调仍未接通采集器/监听出口，见第 11 节。历史验证与当前范围见开发计划第 6.4 节，下一步 R1-B1 分析与 Prompt 见第 6.7、6.8 节；本轮未执行运行验收。
+> 阅读基线：2026-10-06，`F:\work\Feed\GoFeed`，R1-B1 已完成并纳入本次提交；前序 R1-A 为 `56c691a`，测试精简为 `01fc0bb`。七项 Feed/互动能力直接装配，相关配置开关已删除；worker 在入口 `startWorkers` 中统一编排，热度业务规则由领域层统一校验。本文从当前源码、路由及迁移推导；热度尚无重建、快照或完整覆盖证明。指标配置与请求回调仍未接通采集器/监听出口，见第 11 节。本次验证、实际读写链路与模型排查见开发计划第 6.7 节，下一模块 R1-B2 见第 6.8 节；R1-B2/R2 未实施。
 >
 > 本文用于理解源码。运行与配置看 [README](../README.md)，接口字段看 [API](../API.md)，未完成设计与历史验收看 [开发计划](./DEVELOPMENT_PLAN.md)。本文中的“源码入口”均可直接点击。
 
@@ -109,7 +109,7 @@ backend/
    └─ observability/ db/ error/ 日志、就绪检查、查询计数、错误映射
 ```
 
-Feed 采取渐进拆层：通过读取边界和小接口复用已有仓储。互动事实写入、Relay 与热度消费直接装配；点赞状态、评论列表与四种互动写入使用独立四层，关注和批量统计继续复用既有模块。互动持久化对 social 的过渡适配留给 R1-B。
+Feed 采取渐进拆层：通过读取边界和小接口复用已有仓储。互动事实写入、Relay 与热度消费直接装配；六个互动入口及其 ORM/直接读取使用独立四层，关注和批量统计继续复用既有模块。R1-B1 已解除互动持久化对 social 的依赖，批量统计和消费者装配留给 R1-B2。
 
 ```mermaid
 flowchart TD
@@ -138,7 +138,7 @@ flowchart TD
 | `videos`              | 作者、媒体引用、发布状态、排序时间、删除及清扫进度 | [video_entity.go](../backend/internal/video/video_entity.go)                                                                            |
 | `video_likes`         | 哪个用户点赞了哪个视频                             | [000005](../backend/db/migrations/000005_social_interactions.up.sql)：`(video_id, user_id)` 唯一键                                      |
 | `user_follows`        | 谁关注了谁                                         | [000005](../backend/db/migrations/000005_social_interactions.up.sql)：`(follower_id, followee_id)` 唯一键                               |
-| `video_comments`      | 评论内容、作者与软删除状态                         | [social/entity.go](../backend/internal/social/entity.go)                                                                                |
+| `video_comments`      | 评论内容、作者与软删除状态                         | [interaction_model.go](../backend/internal/infra/persistence/interaction/interaction_model.go)                                            |
 | `video_outbox_events` | 视频事务产生的待派发事件及派发租约                 | [000006](../backend/db/migrations/000006_video_outbox.up.sql)、[000009](../backend/db/migrations/000009_outbox_publishing_lease.up.sql) |
 | `interaction_outbox_events` | 不可变互动事实及可变派发状态，无原对象级联删除外键 | [000010](../backend/db/migrations/000010_interaction_outbox.up.sql)；迁移文件存在不表示目标库已应用 |
 
@@ -516,7 +516,7 @@ API 直接装配页缓存和卡片缓存，四种互动写入直接使用同事�
 
 Redis 缓存失败仍回源 MySQL。计划性回退使用对应代码版本，并保留认识已有事件类型的消费者处理存量；不能删除事实表或伪造派发/消费完成。启动前须应用迁移 `000010_interaction_outbox`。配置包只读取热度参数；[worker/main.go](../backend/cmd/worker/main.go) 的 `startWorkers` 在时间单位转换前检查整数溢出，热度索引构造时统一调用 [HeatPolicy.Validate](../backend/internal/domain/feed/heat.go) 校验窗口、去重保留、权重及容量。入口参照 GCFeed 集中装配视频处理、卡片预热、互动 Relay、热度索引/投影器/消费者及观测循环；主函数处理配置加载、连接和关闭信号，收到取消后调用返回的收尾函数，等待循环退出再关闭资源。
 
-组件装配、队列声明与进程启动都不能证明窗口覆盖完整，Hot/Recommend 仍为 501。本轮 R1-A 未执行部署或业务库迁移，也未作热度窗口完整性验收。
+组件装配、队列声明与进程启动都不能证明窗口覆盖完整，Hot/Recommend 仍为 501。R1-A/R1-B1 均未执行部署或业务库迁移，也未作热度窗口完整性验收。
 
 ## 9. 账户、互动与媒体清扫
 
@@ -534,11 +534,13 @@ Following 另外检查观看者有效。匿名 Timeline 不会因携带 token �
 
 关注继续使用这条旧 HTTP 链路；批量统计仍复用 social 仓储。点赞与关注通过关系表唯一键处理重复创建，删除返回是否确实发生变更；评论使用软删除。Feed 的点赞和评论数来自当前页批量聚合，评论聚合遵循软删除作用域。
 
-点赞状态与评论列表从 [router.go](../backend/internal/router/router.go) → [Interaction handler](../backend/internal/interfaces/http/interaction/handler.go) → [Application service](../backend/internal/application/interaction/service.go) → Domain Reader → [读取适配器](../backend/internal/infra/persistence/interaction/reader.go) → social.Repository。点赞状态先校验完整公开视频和活动用户，再查询关系及实时计数；认证仍先由 JWT/session 中间件校验。评论由 [cursor.go](../backend/internal/application/interaction/cursor.go) 处理原 v1 字段和视频范围，仓储按 `(created_at DESC, id DESC)` 多读一条，JOIN 一次带出全部作者资料，注销作者保留原 ID 与占位名。SQL 与 ORM 类型只在外层适配，生产读用例不调用旧 Service/Controller；临时兼容对照测试已移除，旧读入口待 R1-B 核对清理。
+点赞状态与评论列表从 [router.go](../backend/internal/router/router.go) → [Interaction handler](../backend/internal/interfaces/http/interaction/handler.go) → [Application service](../backend/internal/application/interaction/service.go) → Domain Reader → [reader.go](../backend/internal/infra/persistence/interaction/reader.go) 直接读取 MySQL，不再调用 social.Repository。点赞状态先复用 `video.PublicVideoQuery` 校验完整公开视频，再校验活动用户、查询关系及实时计数；认证仍先由 JWT/session 中间件校验。评论由 [cursor.go](../backend/internal/application/interaction/cursor.go) 处理原 v1 字段和视频范围，仓储按 `(created_at DESC, id DESC)` 多读一条，一次 LEFT JOIN 带出全部作者资料，注销作者保留原 ID 与占位名。默认 20、显式 0 和最大 50、空数组及安全错误契约保持不变。旧 social 互动 Controller/Service、评论游标和读取 SQL 已删除。
 
-四种写操作直接走 [HTTP handler](../backend/internal/interfaces/http/interaction/handler.go) → [application/interaction/service.go](../backend/internal/application/interaction/service.go) → [事务适配器 writer.go](../backend/internal/infra/persistence/interaction/writer.go)。实际点赞/取消、评论创建/软删除与 `interaction_outbox_events` 在同一事务提交；重复点赞/取消不追加事实，重复删评仍为 404，评论 POST 仍无请求幂等键。提交后的统计/作者读取失败不撤销已提交事实。
+四种写操作直接走 [HTTP handler](../backend/internal/interfaces/http/interaction/handler.go) → [application/interaction/service.go](../backend/internal/application/interaction/service.go) → [writer.go](../backend/internal/infra/persistence/interaction/writer.go)，读写统一使用 [interaction_model.go](../backend/internal/infra/persistence/interaction/interaction_model.go) 的 `VideoLike`、`Comment`，持久化包与领域包区分同名类型。实际点赞/取消、评论创建/软删除与 `interaction_outbox_events` 在同一事务提交；创建/取消先锁活动用户，再锁并复核完整公开视频。删评只锁活动用户及当前未删除评论并复核归属，不额外要求视频公开。重复点赞/取消不追加事实，重复删评仍为 404，评论 POST 仍无请求幂等键。提交后的统计/作者读取失败不撤销已提交事实。
 
-[domain/interaction/event.go](../backend/internal/domain/interaction/event.go) 固定 `event_id`、版本、类型、互动 ID、正负 delta、变更时间及原创建时间；[000010](../backend/db/migrations/000010_interaction_outbox.up.sql) 独立存储事实，原视频/互动删除不会级联清理该表。2026-10-05 本机 feedsystem 已完成版本 9→10、dirty=false 的增量迁移及结构核对，见开发计划第 5.20 节；其他部署目标仍须单独确认。
+social 仅保留指向这两个 ORM 的外层别名，供 `GetEngagementCounts` 和现有夹具使用；获赞、粉丝与关注资料统计仍由 `GetProfileMetrics` 计算。Feed/video/user 的统计装配、Following 的活动观看者与关系查询均未迁移，分别留给 R1-B2/R2/R3/R4；Interaction Infrastructure 对旧 video 的公开查询依赖留至 R4。本次查询预算、模型排查和未覆盖范围见 [开发计划第 6.7 节](./DEVELOPMENT_PLAN.md#67-r1-b1-互动持久化归属已完成)，下一模块的消费方转换与包循环约束见第 6.8 节。
+
+[domain/interaction/event.go](../backend/internal/domain/interaction/event.go) 固定 `event_id`、版本、类型、互动 ID、正负 delta、变更时间及原创建时间；[event_model.go](../backend/internal/infra/persistence/interaction/event_model.go) 的 `OutboxEvent` 映射 [000010](../backend/db/migrations/000010_interaction_outbox.up.sql) 的独立事实表，原视频/互动删除不会级联清理该表。2026-10-05 本机 feedsystem 已完成版本 9→10、dirty=false 的增量迁移及结构核对，见开发计划第 5.20 节；其他部署目标仍须单独确认。
 
 [worker/main.go](../backend/cmd/worker/main.go) 直接装配 [InteractionRelay](../backend/internal/worker/interaction_relay.go) → [Dispatcher](../backend/internal/application/interaction/dispatcher.go) → [Outbox 适配器](../backend/internal/infra/persistence/interaction/outbox.go)。每轮最多逐条派发 32 个已提交事实，领取使用数据库时钟、30 秒租约与递增 attempt；确认发布后仅在有效租约内标记 dispatched，失败退避，同事件可能重复投递。MQ 编码使用持久事实，不重新读取当前业务行拼装历史。
 
@@ -643,7 +645,7 @@ Timeline 和 Following 各自保存视频、游标、首屏/续页加载状态�
 | 草稿部分回收、失去租约与断点继续              | [draft_purge_test.go](../backend/internal/sweeper/draft_purge_test.go)                                                                                              |
 | 前端迟到响应、场景与分页                      | [usePublishedFeed.spec.ts](../frontend/src/features/video/__tests__/usePublishedFeed.spec.ts)、[FeedView.spec.ts](../frontend/src/views/__tests__/FeedView.spec.ts) |
 
-本文任务只做源码核对与文档检查，未运行上述测试或真实依赖联调。既有测试记录见开发计划；依赖未配置而 SKIP 的用例不算运行通过，mock 页面测试也不替代真实发布验收。
+测试文件用于理解持续覆盖，实际通过证据须看执行记录。本轮 R1-B1 的全量普通/race、真实依赖参与及未覆盖范围见开发计划第 6.7 节；第 6.4 节为 R1-A 历史记录。依赖未配置而 SKIP 的用例不算运行通过，mock 页面测试也不替代真实发布验收。
 
 ## 12. 向量与推荐：当前边界及未来接入位置
 

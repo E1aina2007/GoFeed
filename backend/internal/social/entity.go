@@ -3,27 +3,17 @@ package social
 import (
 	"time"
 
-	"gorm.io/gorm"
+	infrainteraction "gofeed/internal/infra/persistence/interaction"
 )
 
 const (
 	DefaultListLimit     = 20
 	MaxListLimit         = 50
-	deletedUsername      = "已注销用户"
 	currentCursorVersion = 1
 )
 
-// VideoLike 记录用户对视频的当前点赞关系
-type VideoLike struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	VideoID   uint      `gorm:"not null;uniqueIndex:uq_video_likes_video_user" json:"video_id"`
-	UserID    uint      `gorm:"not null;uniqueIndex:uq_video_likes_video_user" json:"user_id"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-func (VideoLike) TableName() string {
-	return "video_likes"
-}
+// VideoLike 仅为未迁移的统计和测试夹具保留 ORM 别名
+type VideoLike = infrainteraction.VideoLike
 
 // Follow 记录用户之间的当前关注关系
 type Follow struct {
@@ -37,20 +27,8 @@ func (Follow) TableName() string {
 	return "user_follows"
 }
 
-// Comment 保存公开视频下可由作者软删除的一级评论
-type Comment struct {
-	ID        uint           `gorm:"primaryKey" json:"id"`
-	VideoID   uint           `gorm:"not null;index:idx_video_comments_video_visible,priority:1" json:"video_id"`
-	AuthorID  uint           `gorm:"not null;index:idx_video_comments_author_visible,priority:1" json:"author_id"`
-	Content   string         `gorm:"type:varchar(1000);not null" json:"content"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	DeletedAt gorm.DeletedAt `gorm:"index:idx_video_comments_video_visible,priority:2;index:idx_video_comments_author_visible,priority:2" json:"-"`
-}
-
-func (Comment) TableName() string {
-	return "video_comments"
-}
+// Comment 仅为未迁移的统计和测试夹具保留 ORM 别名
+type Comment = infrainteraction.Comment
 
 type PublicUser struct {
 	ID        uint   `json:"id"`
@@ -59,31 +37,9 @@ type PublicUser struct {
 	Bio       string `json:"bio,omitempty"`
 }
 
-type LikeState struct {
-	Liked      bool  `json:"liked"`
-	LikesCount int64 `json:"likes_count"`
-}
-
 type FollowState struct {
 	Following     bool  `json:"following"`
 	FollowerCount int64 `json:"follower_count"`
-}
-
-type CreateCommentRequest struct {
-	Content string `json:"content"`
-}
-
-type CommentItem struct {
-	ID        uint       `json:"id"`
-	VideoID   uint       `json:"video_id"`
-	Author    PublicUser `json:"author"`
-	Content   string     `json:"content"`
-	CreatedAt time.Time  `json:"created_at"`
-}
-
-type CommentListResponse struct {
-	Items      []CommentItem `json:"items"`
-	NextCursor string        `json:"next_cursor,omitempty"`
 }
 
 type FollowListItem struct {
@@ -101,19 +57,9 @@ type FollowListResponse struct {
 type CursorKind string
 
 const (
-	CursorKindComments  CursorKind = "comments"
 	CursorKindFollowers CursorKind = "followers"
 	CursorKindFollowing CursorKind = "following"
 )
-
-// CommentCursor 记录评论列表分页位置及其版本和视频范围
-type CommentCursor struct {
-	Version   int        `json:"v"`
-	Kind      CursorKind `json:"k"`
-	VideoID   uint       `json:"r"`
-	CreatedAt time.Time  `json:"p"`
-	ID        uint       `json:"i"`
-}
 
 // FollowCursor 记录关注关系列表分页位置及其版本和目标用户范围
 type FollowCursor struct {

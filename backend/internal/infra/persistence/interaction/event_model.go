@@ -8,7 +8,7 @@ const (
 	eventStatusDispatched = "dispatched"
 )
 
-type EventModel struct {
+type OutboxEvent struct {
 	ID                     uint   `gorm:"primaryKey"`
 	EventID                string `gorm:"type:char(36);not null;uniqueIndex:uq_interaction_outbox_event_id"`
 	SchemaVersion          int    `gorm:"type:int unsigned;not null"`
@@ -29,6 +29,6 @@ type EventModel struct {
 	DispatchedAt           *time.Time
 }
 
-func (EventModel) TableName() string {
+func (OutboxEvent) TableName() string {
 	return "interaction_outbox_events"
 }

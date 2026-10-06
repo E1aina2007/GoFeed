@@ -7,7 +7,6 @@ import (
 	"time"
 
 	domaininteraction "gofeed/internal/domain/interaction"
-	"gofeed/internal/social"
 	"gofeed/internal/video"
 
 	"github.com/go-sql-driver/mysql"
@@ -44,7 +43,7 @@ func (r *Repository) CreateLike(ctx context.Context, videoID, userID uint) (bool
 		if err := lockMutationTargets(tx, videoID, userID); err != nil {
 			return err
 		}
-		like := social.VideoLike{
+		like := VideoLike{
 			VideoID: videoID,
 			UserID:  userID,
 		}
@@ -76,7 +75,7 @@ func (r *Repository) RemoveLike(ctx context.Context, videoID, userID uint) (bool
 		if err := lockMutationTargets(tx, videoID, userID); err != nil {
 			return err
 		}
-		var like social.VideoLike
+		var like VideoLike
 		if err := tx.Clauses(clause.Locking{
 			Strength: "UPDATE",
 		}).
@@ -86,7 +85,7 @@ func (r *Repository) RemoveLike(ctx context.Context, videoID, userID uint) (bool
 			}
 			return err
 		}
-		result := tx.Where("id = ? AND video_id = ? AND user_id = ?", like.ID, videoID, userID).Delete(&social.VideoLike{})
+		result := tx.Where("id = ? AND video_id = ? AND user_id = ?", like.ID, videoID, userID).Delete(&VideoLike{})
 		if result.Error != nil || result.RowsAffected == 0 {
 			return result.Error
 		}
@@ -114,7 +113,7 @@ func (r *Repository) CreateComment(ctx context.Context, videoID, authorID uint, 
 	if err != nil {
 		return domaininteraction.Comment{}, err
 	}
-	comment := social.Comment{
+	comment := Comment{
 		VideoID:  videoID,
 		AuthorID: authorID,
 		Content:  content,
@@ -159,7 +158,7 @@ func (r *Repository) DeleteComment(ctx context.Context, videoID, commentID, auth
 		if err := lockActiveUser(tx, authorID); err != nil {
 			return err
 		}
-		var comment social.Comment
+		var comment Comment
 		if err := tx.Clauses(clause.Locking{
 			Strength: "UPDATE",
 		}).First(&comment, commentID).Error; err != nil {
@@ -171,7 +170,7 @@ func (r *Repository) DeleteComment(ctx context.Context, videoID, commentID, auth
 		if comment.AuthorID != authorID {
 			return domaininteraction.ErrCommentNotAuthor
 		}
-		result := tx.Where("id = ? AND author_id = ?", comment.ID, authorID).Delete(&social.Comment{})
+		result := tx.Where("id = ? AND author_id = ?", comment.ID, authorID).Delete(&Comment{})
 		if result.Error != nil || result.RowsAffected == 0 {
 			return result.Error
 		}
@@ -203,7 +202,7 @@ func (r *Repository) appendEvent(tx *gorm.DB, videoID uint, kind domaininteracti
 	if err != nil {
 		return err
 	}
-	row := EventModel{
+	row := OutboxEvent{
 		EventID:                event.EventID,
 		SchemaVersion:          event.SchemaVersion,
 		EventType:              event.EventType,

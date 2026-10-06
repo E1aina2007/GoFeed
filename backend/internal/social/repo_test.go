@@ -17,6 +17,8 @@ import (
 
 	authn "gofeed/internal/auth"
 	dbpkg "gofeed/internal/db"
+	domaininteraction "gofeed/internal/domain/interaction"
+	infrainteraction "gofeed/internal/infra/persistence/interaction"
 	"gofeed/internal/router"
 	"gofeed/internal/social"
 	"gofeed/internal/testutil"
@@ -72,6 +74,7 @@ func socialTimePtr(value time.Time) *time.Time {
 func TestRepositoryPublicVideoBoundary(t *testing.T) {
 	db := testutil.DB(t)
 	repo := social.NewRepository(db)
+	interactions := infrainteraction.New(db, true)
 	ctx := context.Background()
 	author := seedUser(t, db, "boundary-author")
 	viewer := seedUser(t, db, "boundary-viewer")
@@ -137,11 +140,11 @@ func TestRepositoryPublicVideoBoundary(t *testing.T) {
 	}
 	invalidIDs[deleted.ID] = true
 
-	if err := repo.GetPublishedVideo(ctx, valid.ID); err != nil {
+	if err := interactions.RequirePublicVideo(ctx, valid.ID); err != nil {
 		t.Fatalf("完整公开视频应可用于互动: %v", err)
 	}
 	for id := range invalidIDs {
-		if err := repo.GetPublishedVideo(ctx, id); !errors.Is(err, gorm.ErrRecordNotFound) {
+		if err := interactions.RequirePublicVideo(ctx, id); !errors.Is(err, domaininteraction.ErrVideoNotFound) {
 			t.Errorf("不完整视频 id=%d 不应通过互动资源校验, err=%v", id, err)
 		}
 	}
@@ -159,15 +162,13 @@ func TestRepositoryPublicVideoBoundary(t *testing.T) {
 // 预期效果：外键级联后点赞和评论不再保留孤儿数据
 func TestRepositoryHardDeleteVideoCascadesInteractions(t *testing.T) {
 	db := testutil.DB(t)
-	repo := social.NewRepository(db)
-	ctx := context.Background()
 	author := seedUser(t, db, "cascade-author")
 	viewer := seedUser(t, db, "cascade-viewer")
 	item := seedPublishedVideo(t, db, author.ID)
-	if _, err := repo.CreateLike(ctx, item.ID, viewer.ID); err != nil {
+	if err := db.Create(&social.VideoLike{VideoID: item.ID, UserID: viewer.ID}).Error; err != nil {
 		t.Fatalf("创建点赞失败: %v", err)
 	}
-	if err := repo.CreateComment(ctx, &social.Comment{VideoID: item.ID, AuthorID: viewer.ID, Content: "cascade comment"}); err != nil {
+	if err := db.Create(&social.Comment{VideoID: item.ID, AuthorID: viewer.ID, Content: "cascade comment"}).Error; err != nil {
 		t.Fatalf("创建评论失败: %v", err)
 	}
 	if err := db.Unscoped().Delete(&video.Video{}, item.ID).Error; err != nil {
@@ -381,15 +382,15 @@ func TestSocialLikeHTTPContract(t *testing.T) {
 	}
 
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPut, "/api/video/auth/999999/like", token, nil),
-		http.StatusNotFound); message != social.ErrVideoNotFound.Error() {
+		http.StatusNotFound); message != domaininteraction.ErrVideoNotFound.Error() {
 		t.Fatalf("不存在作品点赞文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPut,
-		fmt.Sprintf("/api/video/auth/%d/like", draft.ID), token, nil), http.StatusNotFound); message != social.ErrVideoNotFound.Error() {
+		fmt.Sprintf("/api/video/auth/%d/like", draft.ID), token, nil), http.StatusNotFound); message != domaininteraction.ErrVideoNotFound.Error() {
 		t.Fatalf("草稿点赞文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPut, "/api/video/auth/abc/like", token, nil),
-		http.StatusBadRequest); message != social.ErrInvalidVideoID.Error() {
+		http.StatusBadRequest); message != domaininteraction.ErrInvalidVideoID.Error() {
 		t.Fatalf("非法作品标识文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodGet, likePath, "", nil),
@@ -433,12 +434,12 @@ func TestSocialCommentHTTPContract(t *testing.T) {
 	firstCommentID := uint(socialNumber(t, comment, "id"))
 
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPost, commentsPath, firstToken,
-		map[string]any{"content": "   "}), http.StatusBadRequest); message != social.ErrInvalidCommentContent.Error() {
+		map[string]any{"content": "   "}), http.StatusBadRequest); message != domaininteraction.ErrInvalidCommentContent.Error() {
 		t.Fatalf("空评论文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPost,
 		"/api/video/auth/999999/comments", firstToken, map[string]any{"content": "无主评论"}),
-		http.StatusNotFound); message != social.ErrVideoNotFound.Error() {
+		http.StatusNotFound); message != domaininteraction.ErrVideoNotFound.Error() {
 		t.Fatalf("不存在作品评论文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPost, commentsPath, "",
@@ -469,7 +470,7 @@ func TestSocialCommentHTTPContract(t *testing.T) {
 
 	deletePath := fmt.Sprintf("/api/video/auth/%d/comments/%d", published.ID, firstCommentID)
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodDelete, deletePath, secondToken, nil),
-		http.StatusForbidden); message != social.ErrCommentNotAuthor.Error() {
+		http.StatusForbidden); message != domaininteraction.ErrCommentNotAuthor.Error() {
 		t.Fatalf("非作者删除评论文案错误 got=%q", message)
 	}
 
@@ -492,12 +493,12 @@ func TestSocialCommentHTTPContract(t *testing.T) {
 	}
 
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodDelete, deletePath, firstToken, nil),
-		http.StatusNotFound); message != social.ErrCommentNotFound.Error() {
+		http.StatusNotFound); message != domaininteraction.ErrCommentNotFound.Error() {
 		t.Fatalf("重复删除评论文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodDelete,
 		fmt.Sprintf("/api/video/auth/999999/comments/%d", secondCommentID), secondToken, nil),
-		http.StatusNotFound); message != social.ErrCommentNotFound.Error() {
+		http.StatusNotFound); message != domaininteraction.ErrCommentNotFound.Error() {
 		t.Fatalf("作品与评论不匹配的删除文案错误 got=%q", message)
 	}
 

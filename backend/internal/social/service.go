@@ -5,8 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"strings"
-	"unicode/utf8"
 
 	"gorm.io/gorm"
 )
@@ -14,35 +12,19 @@ import (
 var (
 	ErrRepositoryUnavailable = errors.New("social repository unavailable")
 	ErrInvalidUserID         = errors.New("invalid user id")
-	ErrInvalidVideoID        = errors.New("invalid video id")
-	ErrInvalidCommentID      = errors.New("invalid comment id")
 	ErrInvalidLimit          = errors.New("invalid limit")
 	ErrInvalidCursor         = errors.New("invalid cursor")
-	ErrInvalidCommentContent = errors.New("invalid comment content")
 	ErrUserNotFound          = errors.New("user not found")
-	ErrVideoNotFound         = errors.New("video not found")
-	ErrCommentNotFound       = errors.New("comment not found")
-	ErrCommentNotAuthor      = errors.New("only the comment author can delete this comment")
 	ErrSelfFollow            = errors.New("cannot follow self")
 )
 
-// Repo 描述互动服务需要的最小持久化能力，便于单元测试隔离 HTTP 和数据库行为
+// Repo 描述关注服务需要的持久化能力
 type Repo interface {
 	GetActiveUser(ctx context.Context, id uint) error
-	GetPublishedVideo(ctx context.Context, id uint) error
-	GetPublicUser(ctx context.Context, id uint) (PublicUser, error)
-	CreateLike(ctx context.Context, videoID, userID uint) (bool, error)
-	RemoveLike(ctx context.Context, videoID, userID uint) (bool, error)
-	GetLikeState(ctx context.Context, videoID, userID uint) (bool, error)
-	GetLikeCount(ctx context.Context, videoID uint) (int64, error)
 	CreateFollow(ctx context.Context, followerID, followeeID uint) (bool, error)
 	RemoveFollow(ctx context.Context, followerID, followeeID uint) (bool, error)
 	GetFollowState(ctx context.Context, followerID, followeeID uint) (bool, error)
 	GetFollowerCount(ctx context.Context, followeeID uint) (int64, error)
-	CreateComment(ctx context.Context, comment *Comment) error
-	GetComment(ctx context.Context, id uint) (*Comment, error)
-	DeleteComment(ctx context.Context, id, authorID uint) (bool, error)
-	GetCommentList(ctx context.Context, videoID uint, cursor *CommentCursor, limit int) ([]CommentItem, error)
 	GetFollowerList(ctx context.Context, followeeID uint, cursor *FollowCursor, limit int) ([]FollowListItem, error)
 	GetFollowingList(ctx context.Context, followerID uint, cursor *FollowCursor, limit int) ([]FollowListItem, error)
 }
@@ -53,45 +35,6 @@ type Service struct {
 
 func NewService(repo Repo) *Service {
 	return &Service{repo: repo}
-}
-
-func (s *Service) CreateLike(ctx context.Context, videoID, userID uint) (LikeState, error) {
-	if err := s.requireVideoAndUser(ctx, videoID, userID); err != nil {
-		return LikeState{}, err
-	}
-	if _, err := s.repo.CreateLike(ctx, videoID, userID); err != nil {
-		return LikeState{}, err
-	}
-	return s.getLikeState(ctx, videoID, true)
-}
-
-func (s *Service) RemoveLike(ctx context.Context, videoID, userID uint) (LikeState, error) {
-	if err := s.requireVideoAndUser(ctx, videoID, userID); err != nil {
-		return LikeState{}, err
-	}
-	if _, err := s.repo.RemoveLike(ctx, videoID, userID); err != nil {
-		return LikeState{}, err
-	}
-	return s.getLikeState(ctx, videoID, false)
-}
-
-func (s *Service) GetLikeState(ctx context.Context, videoID, userID uint) (LikeState, error) {
-	if err := s.requireVideoAndUser(ctx, videoID, userID); err != nil {
-		return LikeState{}, err
-	}
-	liked, err := s.repo.GetLikeState(ctx, videoID, userID)
-	if err != nil {
-		return LikeState{}, err
-	}
-	return s.getLikeState(ctx, videoID, liked)
-}
-
-func (s *Service) getLikeState(ctx context.Context, videoID uint, liked bool) (LikeState, error) {
-	count, err := s.repo.GetLikeCount(ctx, videoID)
-	if err != nil {
-		return LikeState{}, err
-	}
-	return LikeState{Liked: liked, LikesCount: count}, nil
 }
 
 func (s *Service) CreateFollow(ctx context.Context, followerID, followeeID uint) (FollowState, error) {
@@ -131,107 +74,6 @@ func (s *Service) getFollowState(ctx context.Context, followeeID uint, following
 		return FollowState{}, err
 	}
 	return FollowState{Following: following, FollowerCount: count}, nil
-}
-
-func (s *Service) CreateComment(ctx context.Context, videoID, authorID uint, content string) (CommentItem, error) {
-	if err := s.requireVideoAndUser(ctx, videoID, authorID); err != nil {
-		return CommentItem{}, err
-	}
-	content = strings.TrimSpace(content)
-	if content == "" || utf8.RuneCountInString(content) > 1000 {
-		return CommentItem{}, ErrInvalidCommentContent
-	}
-	comment := &Comment{VideoID: videoID, AuthorID: authorID, Content: content}
-	if err := s.repo.CreateComment(ctx, comment); err != nil {
-		return CommentItem{}, err
-	}
-	author, err := s.repo.GetPublicUser(ctx, authorID)
-	if err != nil {
-		return CommentItem{}, mapUserError(err)
-	}
-	return CommentItem{
-		ID:        comment.ID,
-		VideoID:   comment.VideoID,
-		Author:    author,
-		Content:   comment.Content,
-		CreatedAt: comment.CreatedAt,
-	}, nil
-}
-
-func (s *Service) DeleteComment(ctx context.Context, videoID, commentID, authorID uint) error {
-	if s.repo == nil {
-		return ErrRepositoryUnavailable
-	}
-	if videoID == 0 {
-		return ErrInvalidVideoID
-	}
-	if commentID == 0 {
-		return ErrInvalidCommentID
-	}
-	if authorID == 0 {
-		return ErrInvalidUserID
-	}
-	if err := s.requireUser(ctx, authorID); err != nil {
-		return err
-	}
-	comment, err := s.repo.GetComment(ctx, commentID)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrCommentNotFound
-		}
-		return err
-	}
-	if comment.VideoID != videoID {
-		return ErrCommentNotFound
-	}
-	if comment.AuthorID != authorID {
-		return ErrCommentNotAuthor
-	}
-	deleted, err := s.repo.DeleteComment(ctx, commentID, authorID)
-	if err != nil {
-		return err
-	}
-	if !deleted {
-		return ErrCommentNotFound
-	}
-	return nil
-}
-
-func (s *Service) GetCommentList(ctx context.Context, videoID uint, rawCursor string, limit int) (CommentListResponse, error) {
-	if err := s.requireVideo(ctx, videoID); err != nil {
-		return CommentListResponse{}, err
-	}
-	limit, err := normalizeLimit(limit)
-	if err != nil {
-		return CommentListResponse{}, err
-	}
-	cursor, err := decodeCommentCursor(rawCursor)
-	if err != nil {
-		return CommentListResponse{}, err
-	}
-	if err := validateCommentCursorScope(cursor, videoID); err != nil {
-		return CommentListResponse{}, err
-	}
-	items, err := s.repo.GetCommentList(ctx, videoID, cursor, limit+1)
-	if err != nil {
-		return CommentListResponse{}, err
-	}
-	response := CommentListResponse{Items: items}
-	if len(items) > limit {
-		response.Items = items[:limit]
-		last := response.Items[len(response.Items)-1]
-		response.NextCursor, err = encodeCommentCursor(&CommentCursor{
-			Version:   currentCursorVersion,
-			Kind:      CursorKindComments,
-			VideoID:   videoID,
-			CreatedAt: last.CreatedAt,
-			ID:        last.ID,
-		})
-		if err != nil {
-			return CommentListResponse{}, err
-		}
-	}
-	return response, nil
 }
 
 func (s *Service) GetFollowerList(ctx context.Context, userID uint, rawCursor string, limit int) (FollowListResponse, error) {
@@ -282,13 +124,6 @@ func (s *Service) getFollowUserList(ctx context.Context, userID uint, rawCursor 
 	return response, nil
 }
 
-func (s *Service) requireVideoAndUser(ctx context.Context, videoID, userID uint) error {
-	if err := s.requireVideo(ctx, videoID); err != nil {
-		return err
-	}
-	return s.requireUser(ctx, userID)
-}
-
 func (s *Service) requireFollowUsers(ctx context.Context, followerID, followeeID uint) error {
 	if s.repo == nil {
 		return ErrRepositoryUnavailable
@@ -303,22 +138,6 @@ func (s *Service) requireFollowUsers(ctx context.Context, followerID, followeeID
 		return err
 	}
 	return s.requireUser(ctx, followeeID)
-}
-
-func (s *Service) requireVideo(ctx context.Context, videoID uint) error {
-	if s.repo == nil {
-		return ErrRepositoryUnavailable
-	}
-	if videoID == 0 {
-		return ErrInvalidVideoID
-	}
-	if err := s.repo.GetPublishedVideo(ctx, videoID); err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrVideoNotFound
-		}
-		return err
-	}
-	return nil
 }
 
 func (s *Service) requireUser(ctx context.Context, userID uint) error {
@@ -351,17 +170,6 @@ func normalizeLimit(limit int) (int, error) {
 	return limit, nil
 }
 
-func encodeCommentCursor(cursor *CommentCursor) (string, error) {
-	if !validCommentCursorFields(cursor) {
-		return "", ErrInvalidCursor
-	}
-	data, err := json.Marshal(cursor)
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(data), nil
-}
-
 func encodeFollowCursor(cursor *FollowCursor) (string, error) {
 	if !validFollowCursorFields(cursor) {
 		return "", ErrInvalidCursor
@@ -371,21 +179,6 @@ func encodeFollowCursor(cursor *FollowCursor) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(data), nil
-}
-
-func decodeCommentCursor(raw string) (*CommentCursor, error) {
-	if raw == "" {
-		return nil, nil
-	}
-	payload, err := decodeCursorPayload(raw)
-	if err != nil {
-		return nil, err
-	}
-	var cursor CommentCursor
-	if err := json.Unmarshal(payload, &cursor); err != nil || !validCommentCursorFields(&cursor) {
-		return nil, ErrInvalidCursor
-	}
-	return &cursor, nil
 }
 
 func decodeFollowCursor(raw string) (*FollowCursor, error) {
@@ -429,26 +222,11 @@ func validCursorPayloadFields(fields map[string]json.RawMessage) bool {
 	return true
 }
 
-func validCommentCursorFields(cursor *CommentCursor) bool {
-	return cursor != nil && cursor.Version == currentCursorVersion && cursor.Kind == CursorKindComments &&
-		cursor.VideoID != 0 && !cursor.CreatedAt.IsZero() && cursor.ID != 0
-}
-
 func validFollowCursorFields(cursor *FollowCursor) bool {
 	if cursor == nil || cursor.Version != currentCursorVersion || cursor.UserID == 0 || cursor.CreatedAt.IsZero() || cursor.ID == 0 {
 		return false
 	}
 	return cursor.Kind == CursorKindFollowers || cursor.Kind == CursorKindFollowing
-}
-
-func validateCommentCursorScope(cursor *CommentCursor, videoID uint) error {
-	if cursor == nil {
-		return nil
-	}
-	if cursor.VideoID != videoID {
-		return ErrInvalidCursor
-	}
-	return nil
 }
 
 func validateFollowCursorScope(cursor *FollowCursor, kind CursorKind, userID uint) error {
