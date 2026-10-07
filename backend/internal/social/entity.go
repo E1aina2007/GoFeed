@@ -27,11 +27,6 @@ type PublicUser struct {
 	Bio       string `json:"bio,omitempty"`
 }
 
-type FollowState struct {
-	Following     bool  `json:"following"`
-	FollowerCount int64 `json:"follower_count"`
-}
-
 type FollowListItem struct {
 	User       PublicUser `json:"user"`
 	FollowedAt time.Time  `json:"followed_at"`

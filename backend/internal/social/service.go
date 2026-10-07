@@ -15,16 +15,11 @@ var (
 	ErrInvalidLimit          = errors.New("invalid limit")
 	ErrInvalidCursor         = errors.New("invalid cursor")
 	ErrUserNotFound          = errors.New("user not found")
-	ErrSelfFollow            = errors.New("cannot follow self")
 )
 
 // Repo 描述关注服务需要的持久化能力
 type Repo interface {
 	GetActiveUser(ctx context.Context, id uint) error
-	CreateFollow(ctx context.Context, followerID, followeeID uint) (bool, error)
-	RemoveFollow(ctx context.Context, followerID, followeeID uint) (bool, error)
-	GetFollowState(ctx context.Context, followerID, followeeID uint) (bool, error)
-	GetFollowerCount(ctx context.Context, followeeID uint) (int64, error)
 	GetFollowerList(ctx context.Context, followeeID uint, cursor *FollowCursor, limit int) ([]FollowListItem, error)
 	GetFollowingList(ctx context.Context, followerID uint, cursor *FollowCursor, limit int) ([]FollowListItem, error)
 }
@@ -35,45 +30,6 @@ type Service struct {
 
 func NewService(repo Repo) *Service {
 	return &Service{repo: repo}
-}
-
-func (s *Service) CreateFollow(ctx context.Context, followerID, followeeID uint) (FollowState, error) {
-	if err := s.requireFollowUsers(ctx, followerID, followeeID); err != nil {
-		return FollowState{}, err
-	}
-	if _, err := s.repo.CreateFollow(ctx, followerID, followeeID); err != nil {
-		return FollowState{}, err
-	}
-	return s.getFollowState(ctx, followeeID, true)
-}
-
-func (s *Service) RemoveFollow(ctx context.Context, followerID, followeeID uint) (FollowState, error) {
-	if err := s.requireFollowUsers(ctx, followerID, followeeID); err != nil {
-		return FollowState{}, err
-	}
-	if _, err := s.repo.RemoveFollow(ctx, followerID, followeeID); err != nil {
-		return FollowState{}, err
-	}
-	return s.getFollowState(ctx, followeeID, false)
-}
-
-func (s *Service) GetFollowState(ctx context.Context, followerID, followeeID uint) (FollowState, error) {
-	if err := s.requireFollowUsers(ctx, followerID, followeeID); err != nil {
-		return FollowState{}, err
-	}
-	following, err := s.repo.GetFollowState(ctx, followerID, followeeID)
-	if err != nil {
-		return FollowState{}, err
-	}
-	return s.getFollowState(ctx, followeeID, following)
-}
-
-func (s *Service) getFollowState(ctx context.Context, followeeID uint, following bool) (FollowState, error) {
-	count, err := s.repo.GetFollowerCount(ctx, followeeID)
-	if err != nil {
-		return FollowState{}, err
-	}
-	return FollowState{Following: following, FollowerCount: count}, nil
 }
 
 func (s *Service) GetFollowerList(ctx context.Context, userID uint, rawCursor string, limit int) (FollowListResponse, error) {
@@ -122,22 +78,6 @@ func (s *Service) getFollowUserList(ctx context.Context, userID uint, rawCursor 
 		}
 	}
 	return response, nil
-}
-
-func (s *Service) requireFollowUsers(ctx context.Context, followerID, followeeID uint) error {
-	if s.repo == nil {
-		return ErrRepositoryUnavailable
-	}
-	if followerID == 0 || followeeID == 0 {
-		return ErrInvalidUserID
-	}
-	if followerID == followeeID {
-		return ErrSelfFollow
-	}
-	if err := s.requireUser(ctx, followerID); err != nil {
-		return err
-	}
-	return s.requireUser(ctx, followeeID)
 }
 
 func (s *Service) requireUser(ctx context.Context, userID uint) error {

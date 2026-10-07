@@ -18,6 +18,7 @@ import (
 	authn "gofeed/internal/auth"
 	dbpkg "gofeed/internal/db"
 	domaininteraction "gofeed/internal/domain/interaction"
+	domainrelation "gofeed/internal/domain/relation"
 	infrainteraction "gofeed/internal/infra/persistence/interaction"
 	"gofeed/internal/router"
 	"gofeed/internal/social"
@@ -539,7 +540,7 @@ func TestSocialFollowHTTPContract(t *testing.T) {
 
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPut,
 		fmt.Sprintf("/api/user/auth/%d/follow", follower.ID), followerToken, nil),
-		http.StatusBadRequest); message != social.ErrSelfFollow.Error() {
+		http.StatusBadRequest); message != domainrelation.ErrSelfFollow.Error() {
 		t.Fatalf("自关注文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPut,

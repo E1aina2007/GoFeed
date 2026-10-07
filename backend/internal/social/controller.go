@@ -5,7 +5,6 @@ import (
 	"strconv"
 
 	"gofeed/internal/error"
-	"gofeed/internal/middleware/jwt"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -65,66 +64,6 @@ func (ctl *Controller) GetFollowingList(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// GetFollowState 处理 GET /api/user/auth/:id/follow
-func (ctl *Controller) GetFollowState(c *gin.Context) {
-	followerID, ok := jwt.UserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	followeeID, err := parsePathID(c.Param("id"), ErrInvalidUserID)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	state, err := ctl.service.GetFollowState(c.Request.Context(), followerID, followeeID)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, state)
-}
-
-// CreateFollow 处理 PUT /api/user/auth/:id/follow
-func (ctl *Controller) CreateFollow(c *gin.Context) {
-	followerID, ok := jwt.UserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	followeeID, err := parsePathID(c.Param("id"), ErrInvalidUserID)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	state, err := ctl.service.CreateFollow(c.Request.Context(), followerID, followeeID)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, state)
-}
-
-// RemoveFollow 处理 DELETE /api/user/auth/:id/follow
-func (ctl *Controller) RemoveFollow(c *gin.Context) {
-	followerID, ok := jwt.UserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	followeeID, err := parsePathID(c.Param("id"), ErrInvalidUserID)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	state, err := ctl.service.RemoveFollow(c.Request.Context(), followerID, followeeID)
-	if err != nil {
-		handleError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, state)
-}
-
 func parsePathID(raw string, invalid error) (uint, error) {
 	id, err := strconv.ParseUint(raw, 10, 64)
 	if err != nil || id == 0 {
@@ -146,7 +85,7 @@ func parseLimit(raw string) (int, error) {
 
 // socialErrorRules 按从最具体到最通用排列，决定关注模块领域错误的公共类别与对外文案
 var socialErrorRules = []apierror.Rule{
-	{Match: apierror.Is(ErrInvalidUserID, ErrInvalidLimit, ErrInvalidCursor, ErrSelfFollow), Code: apierror.CodeInvalid, UseErrorText: true},
+	{Match: apierror.Is(ErrInvalidUserID, ErrInvalidLimit, ErrInvalidCursor), Code: apierror.CodeInvalid, UseErrorText: true},
 	{Match: apierror.Is(ErrUserNotFound, gorm.ErrRecordNotFound), Code: apierror.CodeNotFound, UseErrorText: true},
 }
 

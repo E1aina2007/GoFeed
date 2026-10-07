@@ -5,11 +5,14 @@ import (
 
 	applicationfeed "gofeed/internal/application/feed"
 	applicationinteraction "gofeed/internal/application/interaction"
+	applicationrelation "gofeed/internal/application/relation"
 	"gofeed/internal/auth"
 	infrafeed "gofeed/internal/infra/persistence/feed"
 	infrainteraction "gofeed/internal/infra/persistence/interaction"
+	infrarelation "gofeed/internal/infra/persistence/relation"
 	interfaceshttpfeed "gofeed/internal/interfaces/http/feed"
 	interfaceshttpinteraction "gofeed/internal/interfaces/http/interaction"
+	interfaceshttprelation "gofeed/internal/interfaces/http/relation"
 	"gofeed/internal/middleware/jwt"
 	"gofeed/internal/middleware/ratelimit"
 	"gofeed/internal/observability"
@@ -78,6 +81,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	videoRepo := video.NewRepository(db)
 	socialRepo := social.NewRepository(db)
 	socialCtl := social.NewController(social.NewService(socialRepo))
+	relationHandler := interfaceshttprelation.New(applicationrelation.New(infrarelation.New(socialRepo)))
 	interactionRepo := infrainteraction.New(db, true)
 	interactionHandler := interfaceshttpinteraction.New(applicationinteraction.New(interactionRepo, interactionRepo))
 	engagementReader := infrainteraction.NewEngagementReader(interactionRepo)
@@ -104,9 +108,9 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		protectedUsers.PATCH("/password", userCtl.UpdatePassword)
 		protectedUsers.POST("/avatar", userCtl.UpdateAvatar)
 		protectedUsers.PATCH("/profile", userCtl.UpdateProfile)
-		protectedUsers.GET("/:id/follow", socialCtl.GetFollowState)
-		protectedUsers.PUT("/:id/follow", socialCtl.CreateFollow)
-		protectedUsers.DELETE("/:id/follow", socialCtl.RemoveFollow)
+		protectedUsers.GET("/:id/follow", relationHandler.GetFollowState)
+		protectedUsers.PUT("/:id/follow", relationHandler.CreateFollow)
+		protectedUsers.DELETE("/:id/follow", relationHandler.RemoveFollow)
 		protectedUsers.DELETE("", userCtl.DeleteUser)
 	}
 
