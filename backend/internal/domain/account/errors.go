@@ -3,6 +3,7 @@ package domainaccount
 import "errors"
 
 var (
+	ErrWrongPassword             = errors.New("wrong password")
 	ErrInvalidCredentials        = errors.New("invalid username or password")
 	ErrSessionCreationFailed     = errors.New("failed to create session")
 	ErrInvalidRefreshToken       = errors.New("invalid refresh token")

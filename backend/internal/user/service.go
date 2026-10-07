@@ -4,11 +4,6 @@ import (
 	"context"
 	"errors"
 	"strings"
-
-	"gofeed/internal/auth"
-
-	"golang.org/x/crypto/bcrypt"
-	"gorm.io/gorm"
 )
 
 type Service struct {
@@ -30,7 +25,6 @@ type ProfileMetricsReader interface {
 var (
 	ErrUsernameTaken       = errors.New("username already exists")
 	ErrNewUserNameRequired = errors.New("new username is required")
-	ErrWrongPassword       = errors.New("wrong password")
 	ErrInvalidInput        = errors.New("invalid user input")
 )
 
@@ -48,34 +42,6 @@ func (s *Service) UpdateName(ctx context.Context, id uint, newName string) error
 	}
 
 	return s.Repo.UpdateName(ctx, id, newName)
-}
-
-func (s *Service) UpdatePassword(ctx context.Context, id uint, old, new string) error {
-	if len(new) < 8 || len(new) > 72 {
-		return ErrInvalidInput
-	}
-	user, err := s.Repo.GetByID(ctx, id)
-	if err != nil {
-		return err
-	}
-	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(old)); err != nil {
-		return ErrWrongPassword
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(new), bcrypt.DefaultCost)
-	if err != nil {
-		return err
-	}
-
-	return s.Repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		users := NewRepository(tx)
-		if err := users.UpdatePassword(ctx, id, user.Password, string(hash)); err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrWrongPassword
-			}
-			return err
-		}
-		return auth.NewSessionRepository(tx).UpdateUserSessionRevocations(ctx, id)
-	})
 }
 
 func (s *Service) UpdateAvatar(ctx context.Context, id uint, url string) error {
@@ -102,15 +68,4 @@ func (s *Service) UpdateProfile(ctx context.Context, id uint, req *UpdateProfile
 
 func (s *Service) GetByID(ctx context.Context, id uint) (*User, error) {
 	return s.Repo.GetByID(ctx, id)
-}
-
-// 在同一事务中软删除用户并撤销其全部会话
-func (s *Service) DeleteUser(ctx context.Context, id uint) error {
-	return s.Repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		users := NewRepository(tx)
-		if err := users.DeleteUser(ctx, id); err != nil {
-			return err
-		}
-		return auth.NewSessionRepository(tx).UpdateUserSessionRevocations(ctx, id)
-	})
 }

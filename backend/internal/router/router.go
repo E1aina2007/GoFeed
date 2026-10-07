@@ -96,6 +96,9 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	sessionHandler := interfaceshttpaccount.NewSessions(applicationaccount.NewSessions(
 		infraaccount.NewCredentialReader(userRepo), infraaccount.NewReader(userRepo), infraaccount.BcryptPasswordVerifier{},
 		infraaccount.NewSessions(sessionService), infraaccount.AccessTokenIssuer{}))
+	securityHandler := interfaceshttpaccount.NewAccountSecurity(applicationaccount.NewAccountSecurity(
+		infraaccount.NewCredentialReader(userRepo), infraaccount.BcryptPasswordVerifier{}, infraaccount.BcryptPasswordHasher{},
+		infraaccount.NewAccountSecurityWriter(db)))
 
 	api := r.Group("/api")
 	users := api.Group("/user")
@@ -113,13 +116,13 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	{
 		protectedUsers.POST("/logout", sessionHandler.UpdateSessionRevocation)
 		protectedUsers.PATCH("/name", userCtl.UpdateName)
-		protectedUsers.PATCH("/password", userCtl.UpdatePassword)
+		protectedUsers.PATCH("/password", securityHandler.UpdatePassword)
 		protectedUsers.POST("/avatar", userCtl.UpdateAvatar)
 		protectedUsers.PATCH("/profile", userCtl.UpdateProfile)
 		protectedUsers.GET("/:id/follow", relationHandler.GetFollowState)
 		protectedUsers.PUT("/:id/follow", relationHandler.CreateFollow)
 		protectedUsers.DELETE("/:id/follow", relationHandler.RemoveFollow)
-		protectedUsers.DELETE("", userCtl.DeleteUser)
+		protectedUsers.DELETE("", securityHandler.DeleteUser)
 	}
 
 	// 视频路由的公开读取和认证写入操作使用不同分组

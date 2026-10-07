@@ -35,11 +35,6 @@ type FindByUsernameResponse struct {
 	Username string `json:"username"`
 }
 
-type UpdatePasswordRequest struct {
-	OldPassword string `json:"old_password" binding:"required,min=8,max=72"`
-	NewPassword string `json:"new_password" binding:"required,min=8,max=72"`
-}
-
 type UpdateProfileRequest struct {
 	// AvatarURL 保留对象存储等外部存储实现的兼容能力，当前前端优先使用头像上传接口
 	AvatarURL string `json:"avatar_url" binding:"omitempty,max=512"`

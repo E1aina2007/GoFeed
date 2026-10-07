@@ -6,6 +6,11 @@ type Creator interface {
 	Create(ctx context.Context, input CreateInput) (PublicAccount, error)
 }
 
+type AccountSecurityWriter interface {
+	UpdatePasswordAndRevokeSessions(ctx context.Context, input PasswordChange) error
+	DeleteUserAndRevokeSessions(ctx context.Context, userID uint) error
+}
+
 type CredentialReader interface {
 	GetByUsername(ctx context.Context, username string) (Credentials, error)
 }

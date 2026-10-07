@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	applicationaccount "gofeed/internal/application/account"
 	domainaccount "gofeed/internal/domain/account"
 	"gofeed/internal/user"
 
@@ -15,9 +16,18 @@ type CredentialReader struct {
 }
 
 var _ domainaccount.CredentialReader = (*CredentialReader)(nil)
+var _ applicationaccount.PasswordCredentialReader = (*CredentialReader)(nil)
 
 func NewCredentialReader(users *user.Repository) *CredentialReader {
 	return &CredentialReader{users: users}
+}
+
+func (r *CredentialReader) GetByID(ctx context.Context, userID uint) (domainaccount.Credentials, error) {
+	account, err := r.users.GetByID(ctx, userID)
+	if err != nil {
+		return domainaccount.Credentials{}, accountError(err)
+	}
+	return domainaccount.Credentials{Account: publicAccount(account), PasswordHash: account.Password}, nil
 }
 
 func (r *CredentialReader) GetByUsername(ctx context.Context, username string) (domainaccount.Credentials, error) {

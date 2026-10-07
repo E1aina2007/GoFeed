@@ -49,25 +49,6 @@ func (ctl *Controller) UpdateName(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "username updated successfully"})
 }
 
-// 处理密码修改请求
-func (ctl *Controller) UpdatePassword(c *gin.Context) {
-	userID, ok := currentUserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	var req UpdatePasswordRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apierror.WriteCode(c, apierror.CodeInvalid, "invalid password payload")
-		return
-	}
-	if err := ctl.Srv.UpdatePassword(c.Request.Context(), userID, req.OldPassword, req.NewPassword); err != nil {
-		handleUserError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"message": "password updated; sign in again"})
-}
-
 // 处理用户资料修改请求
 func (ctl *Controller) UpdateProfile(c *gin.Context) {
 	userID, ok := currentUserID(c)
@@ -155,26 +136,11 @@ func (ctl *Controller) UpdateAvatar(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"avatar_url": avatarURL})
 }
 
-// 处理账号注销请求
-func (ctl *Controller) DeleteUser(c *gin.Context) {
-	userID, ok := currentUserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	if err := ctl.Srv.DeleteUser(c.Request.Context(), userID); err != nil {
-		handleUserError(c, err)
-		return
-	}
-	c.Status(http.StatusNoContent)
-}
-
 // userErrorRules 按从最具体到最通用排列，决定用户模块领域错误的公共类别与对外文案
 var userErrorRules = []apierror.Rule{
 	{Match: apierror.Is(ErrNewUserNameRequired, ErrInvalidInput, ErrNothingToUpdate, ErrInvalidAvatar), Code: apierror.CodeInvalid, UseErrorText: true},
 	{Match: apierror.Is(ErrAvatarTooLarge), Code: apierror.CodeTooLarge, UseErrorText: true},
 	{Match: apierror.Is(ErrUsernameTaken), Code: apierror.CodeConflict, UseErrorText: true},
-	{Match: apierror.Is(ErrWrongPassword), Code: apierror.CodeForbidden, UseErrorText: true},
 	{Match: apierror.Is(gorm.ErrRecordNotFound), Code: apierror.CodeNotFound, PublicMessage: "user not found"},
 }
 

@@ -21,6 +21,11 @@ type refreshRequest struct {
 	RefreshToken string `json:"refresh_token" binding:"required"`
 }
 
+type passwordChangeRequest struct {
+	OldPassword string `json:"old_password" binding:"required,min=8,max=72"`
+	NewPassword string `json:"new_password" binding:"required,min=8,max=72"`
+}
+
 type sessionResponse struct {
 	AccessToken  string        `json:"access_token"`
 	RefreshToken string        `json:"refresh_token"`

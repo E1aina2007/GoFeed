@@ -41,9 +41,11 @@ func TestUpdatePasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
 	ctx := context.Background()
 	service := legacyuser.NewService(legacyuser.NewRepository(db))
 	account := createUserWithSession(t, ctx, db, service, "atomic_password_user", "old-password-123")
+	security := applicationaccount.NewAccountSecurity(infraaccount.NewCredentialReader(service.Repo),
+		infraaccount.BcryptPasswordVerifier{}, infraaccount.BcryptPasswordHasher{}, infraaccount.NewAccountSecurityWriter(db))
 
 	forceSessionUpdateFailure(t, db)
-	if err := service.UpdatePassword(ctx, account.user.ID, "old-password-123", "new-password-456"); err == nil {
+	if err := security.UpdatePassword(ctx, account.user.ID, "old-password-123", "new-password-456"); err == nil {
 		t.Fatal("expected forced session revocation failure")
 	}
 
@@ -69,9 +71,11 @@ func TestDeleteRollsBackWhenSessionRevocationFails(t *testing.T) {
 	ctx := context.Background()
 	service := legacyuser.NewService(legacyuser.NewRepository(db))
 	account := createUserWithSession(t, ctx, db, service, "atomic_delete_user", "delete-password-123")
+	security := applicationaccount.NewAccountSecurity(infraaccount.NewCredentialReader(service.Repo),
+		infraaccount.BcryptPasswordVerifier{}, infraaccount.BcryptPasswordHasher{}, infraaccount.NewAccountSecurityWriter(db))
 
 	forceSessionUpdateFailure(t, db)
-	if err := service.DeleteUser(ctx, account.user.ID); err == nil {
+	if err := security.DeleteUser(ctx, account.user.ID); err == nil {
 		t.Fatal("expected forced session revocation failure")
 	}
 
@@ -187,13 +191,15 @@ func newUserHTTPEngine(t *testing.T) (*gin.Engine, *auth.SessionService) {
 	gdb := testutil.DB(t)
 	sessions := auth.NewSessionService(auth.NewSessionRepository(gdb))
 	repo := legacyuser.NewRepository(gdb)
-	controller := legacyuser.NewController(legacyuser.NewService(repo))
 	accountHandler := interfaceshttpaccount.New(applicationaccount.New(infraaccount.NewReader(repo), nil))
 	registrationHandler := interfaceshttpaccount.NewRegistration(applicationaccount.NewRegistration(
 		infraaccount.NewCreator(repo), infraaccount.BcryptPasswordHasher{}))
 	sessionHandler := interfaceshttpaccount.NewSessions(applicationaccount.NewSessions(
 		infraaccount.NewCredentialReader(repo), infraaccount.NewReader(repo), infraaccount.BcryptPasswordVerifier{},
 		infraaccount.NewSessions(sessions), infraaccount.AccessTokenIssuer{}))
+	securityHandler := interfaceshttpaccount.NewAccountSecurity(applicationaccount.NewAccountSecurity(
+		infraaccount.NewCredentialReader(repo), infraaccount.BcryptPasswordVerifier{}, infraaccount.BcryptPasswordHasher{},
+		infraaccount.NewAccountSecurityWriter(gdb)))
 
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
@@ -204,7 +210,7 @@ func newUserHTTPEngine(t *testing.T) (*gin.Engine, *auth.SessionService) {
 
 	protected := engine.Group("/api/user/auth", jwtmw.Auth(sessions))
 	protected.POST("/logout", sessionHandler.UpdateSessionRevocation)
-	protected.DELETE("", controller.DeleteUser)
+	protected.DELETE("", securityHandler.DeleteUser)
 	return engine, sessions
 }
 
