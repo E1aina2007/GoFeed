@@ -7,11 +7,70 @@ import (
 )
 
 type Service struct {
-	repo domainrelation.Repository
+	repo   domainrelation.Repository
+	reader domainrelation.ListReader
 }
 
-func New(repo domainrelation.Repository) *Service {
-	return &Service{repo: repo}
+func New(repo domainrelation.Repository, reader domainrelation.ListReader) *Service {
+	return &Service{repo: repo, reader: reader}
+}
+
+type FollowListResult struct {
+	Items      []domainrelation.FollowListItem
+	NextCursor string
+}
+
+func (s *Service) GetFollowerList(ctx context.Context, userID uint, rawCursor string, limit int) (FollowListResult, error) {
+	if err := s.requireListUser(ctx, userID); err != nil {
+		return FollowListResult{}, err
+	}
+	return s.getFollowUserList(ctx, userID, rawCursor, limit, cursorKindFollowers, s.reader.GetFollowerList)
+}
+
+func (s *Service) GetFollowingList(ctx context.Context, userID uint, rawCursor string, limit int) (FollowListResult, error) {
+	if err := s.requireListUser(ctx, userID); err != nil {
+		return FollowListResult{}, err
+	}
+	return s.getFollowUserList(ctx, userID, rawCursor, limit, cursorKindFollowing, s.reader.GetFollowingList)
+}
+
+func (s *Service) requireListUser(ctx context.Context, userID uint) error {
+	if s == nil || s.reader == nil {
+		return domainrelation.ErrUnavailable
+	}
+	if userID == 0 {
+		return domainrelation.ErrInvalidUserID
+	}
+	return s.reader.RequireActiveUser(ctx, userID)
+}
+
+func (s *Service) getFollowUserList(ctx context.Context, userID uint, rawCursor string, limit int, kind string,
+	getList func(context.Context, uint, *domainrelation.FollowPosition, int) ([]domainrelation.FollowListItem, error),
+) (FollowListResult, error) {
+	limit, err := normalizeLimit(limit)
+	if err != nil {
+		return FollowListResult{}, err
+	}
+	position, err := decodeFollowCursor(rawCursor, kind, userID)
+	if err != nil {
+		return FollowListResult{}, err
+	}
+	items, err := getList(ctx, userID, position, limit+1)
+	if err != nil {
+		return FollowListResult{}, err
+	}
+	result := FollowListResult{Items: items}
+	if len(items) > limit {
+		result.Items = items[:limit]
+		last := result.Items[len(result.Items)-1]
+		result.NextCursor, err = encodeFollowCursor(kind, userID, domainrelation.FollowPosition{
+			CreatedAt: last.FollowedAt, ID: last.RelationID,
+		})
+		if err != nil {
+			return FollowListResult{}, err
+		}
+	}
+	return result, nil
 }
 
 func (s *Service) GetFollowState(ctx context.Context, followerID, followeeID uint) (domainrelation.FollowState, error) {

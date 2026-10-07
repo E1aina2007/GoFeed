@@ -755,7 +755,7 @@ func TestUserAuthBoundaries(t *testing.T) {
 }
 
 // 测试目标：验证 social 三类列表游标只能在生成它的资源和列表范围内复用
-// 预期效果：正常翻页成功，旧格式、跨视频、跨用户和跨粉丝关注列表均返回 400
+// 预期效果：旧 v1 关系游标正常翻页，旧格式、跨视频、跨用户和跨粉丝关注列表均返回 400
 func TestSocialCursorScopeContract(t *testing.T) {
 	srv, client, gdb := newTestServer(t)
 	base := srv.URL
@@ -818,6 +818,11 @@ func TestSocialCursorScopeContract(t *testing.T) {
 			target.AccessToken, nil, http.StatusOK, nil)
 	}
 
+	if err := gdb.Model(&social.Follow{}).Where("follower_id = ? OR followee_id = ?", target.UserID, target.UserID).
+		Update("created_at", time.Date(2026, 9, 5, 8, 0, 0, 123000000, time.UTC)).Error; err != nil {
+		t.Fatalf("固定关系游标夹具失败: %v", err)
+	}
+
 	type followPage struct {
 		Items []struct {
 			User struct {
@@ -832,12 +837,23 @@ func TestSocialCursorScopeContract(t *testing.T) {
 	if len(firstFollowerPage.Items) != 1 || firstFollowerPage.NextCursor == "" {
 		t.Fatalf("粉丝首页应返回下一页游标 got=%+v", firstFollowerPage)
 	}
-	followerCursor := url.QueryEscape(firstFollowerPage.NextCursor)
+	// 测试目标：使用 R2-B 迁移前真实 HTTP 输出的固定 v1 游标续页
+	// 预期效果：毫秒精度和同时间关系 ID 边界兼容，两个方向均返回末页
+	const legacyFollowerCursor = "eyJ2IjoxLCJrIjoiZm9sbG93ZXJzIiwiciI6MSwicCI6IjIwMjYtMDktMDVUMTY6MDA6MDAuMTIzKzA4OjAwIiwiaSI6Mn0"
+	const legacyFollowingCursor = "eyJ2IjoxLCJrIjoiZm9sbG93aW5nIiwiciI6MSwicCI6IjIwMjYtMDktMDVUMTY6MDA6MDAuMTIzKzA4OjAwIiwiaSI6NH0"
+	followerCursor := url.QueryEscape(legacyFollowerCursor)
 	var secondFollowerPage followPage
 	doJSON(t, client, http.MethodGet,
 		fmt.Sprintf("%s/api/user/%d/followers?limit=1&cursor=%s", base, target.UserID, followerCursor), "", nil, http.StatusOK, &secondFollowerPage)
-	if len(secondFollowerPage.Items) != 1 || secondFollowerPage.Items[0].User.ID == firstFollowerPage.Items[0].User.ID {
+	if len(secondFollowerPage.Items) != 1 || secondFollowerPage.Items[0].User.ID != followerOne.UserID ||
+		firstFollowerPage.Items[0].User.ID != followerTwo.UserID || secondFollowerPage.NextCursor != "" {
 		t.Fatalf("粉丝下一页应无重复 got first=%+v second=%+v", firstFollowerPage, secondFollowerPage)
+	}
+	var currentFollowerPage followPage
+	doJSON(t, client, http.MethodGet,
+		fmt.Sprintf("%s/api/user/%d/followers?limit=1&cursor=%s", base, target.UserID, url.QueryEscape(firstFollowerPage.NextCursor)), "", nil, http.StatusOK, &currentFollowerPage)
+	if !reflect.DeepEqual(currentFollowerPage, secondFollowerPage) {
+		t.Fatalf("旧 v1 与新粉丝游标续页不一致 old=%+v current=%+v", secondFollowerPage, currentFollowerPage)
 	}
 	doJSON(t, client, http.MethodGet,
 		fmt.Sprintf("%s/api/user/%d/following?limit=1&cursor=%s", base, target.UserID, followerCursor), "", nil, http.StatusBadRequest, nil)
@@ -850,13 +866,21 @@ func TestSocialCursorScopeContract(t *testing.T) {
 	if len(firstFollowingPage.Items) != 1 || firstFollowingPage.NextCursor == "" {
 		t.Fatalf("关注首页应返回下一页游标 got=%+v", firstFollowingPage)
 	}
-	followingCursor := url.QueryEscape(firstFollowingPage.NextCursor)
+	followingCursor := url.QueryEscape(legacyFollowingCursor)
 	var secondFollowingPage followPage
 	doJSON(t, client, http.MethodGet,
 		fmt.Sprintf("%s/api/user/%d/following?limit=1&cursor=%s", base, target.UserID, followingCursor), "", nil, http.StatusOK, &secondFollowingPage)
-	if len(secondFollowingPage.Items) != 1 || secondFollowingPage.Items[0].User.ID == firstFollowingPage.Items[0].User.ID {
+	if len(secondFollowingPage.Items) != 1 || secondFollowingPage.Items[0].User.ID != followeeOne.UserID ||
+		firstFollowingPage.Items[0].User.ID != followeeTwo.UserID || secondFollowingPage.NextCursor != "" {
 		t.Fatalf("关注下一页应无重复 got first=%+v second=%+v", firstFollowingPage, secondFollowingPage)
 	}
+	var currentFollowingPage followPage
+	doJSON(t, client, http.MethodGet,
+		fmt.Sprintf("%s/api/user/%d/following?limit=1&cursor=%s", base, target.UserID, url.QueryEscape(firstFollowingPage.NextCursor)), "", nil, http.StatusOK, &currentFollowingPage)
+	if !reflect.DeepEqual(currentFollowingPage, secondFollowingPage) {
+		t.Fatalf("旧 v1 与新关注游标续页不一致 old=%+v current=%+v", secondFollowingPage, currentFollowingPage)
+	}
+	t.Log("迁移前真实 HTTP 生成的两个 v1 游标均成功续页，与新游标结果一致")
 	doJSON(t, client, http.MethodGet,
 		fmt.Sprintf("%s/api/user/%d/followers?limit=1&cursor=%s", base, target.UserID, followingCursor), "", nil, http.StatusBadRequest, nil)
 

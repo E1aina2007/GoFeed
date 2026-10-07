@@ -378,16 +378,18 @@ Redis 不可用时限流会 fail-open，注册或登录继续按原有业务契�
 
 `GET /api/user/:id/following`
 
-路径参数 `id` 必须是大于 0 的无符号整数。两个接口都支持以下查询参数：
+路径参数 `id` 必须是大于 0 的无符号整数。两个接口均允许匿名读取，支持以下查询参数：
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `cursor` | string | 否 | 上一页响应中的 `next_cursor` |
-| `limit` | int | 否 | 每页数量，范围 1-50，默认 20 |
+| `limit` | int | 否 | 每页数量，范围 1-50；省略、空值或显式 0 使用 20，越界不裁剪 |
 
 成功响应：`200 OK`，响应体为 [`FollowListResponse`](#followlistresponse)。`followers` 返回关注该用户的账号，`following` 返回该用户正在关注的账号。
 
 常见失败：`400` 路径参数、`limit` 或 `cursor` 不合法；`cursor` 必须由同一目标用户的同一列表生成，旧格式、版本不支持、跨用户或 `followers`/`following` 互换复用均返回 `400`。`404` 用户不存在或已注销。
+
+校验顺序为路径 ID、limit 文本解析、活动目标用户、limit 范围、游标、列表读取；例如缺失用户携带 `limit=99` 为 `404 user not found`，携带 `limit=abc` 先为 `400 invalid limit`。合法既有 v1 游标可继续使用，载荷仍为 RawURL Base64 的 `v/k/r/p/i`（版本、列表、目标用户、关系时间、关系 ID）。列表过滤注销对端，按关系时间与关系 ID 严格倒序；空页返回 `items: []`，末页省略 `next_cursor`。
 
 ### 退出当前会话
 

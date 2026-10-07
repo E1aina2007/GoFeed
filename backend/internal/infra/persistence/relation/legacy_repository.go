@@ -5,17 +5,20 @@ import (
 	"errors"
 
 	domainrelation "gofeed/internal/domain/relation"
+	"gofeed/internal/social"
 
 	"gorm.io/gorm"
 )
 
-// LegacyRepository 复用现有关注持久化能力，旧 ORM 与列表读取留待后续迁移
+// LegacyRepository 复用现有关注持久化能力，旧 ORM 与 SQL 留待后续迁移
 type LegacyRepository interface {
 	GetActiveUser(ctx context.Context, userID uint) error
 	CreateFollow(ctx context.Context, followerID, followeeID uint) (bool, error)
 	RemoveFollow(ctx context.Context, followerID, followeeID uint) (bool, error)
 	GetFollowState(ctx context.Context, followerID, followeeID uint) (bool, error)
 	GetFollowerCount(ctx context.Context, followeeID uint) (int64, error)
+	GetFollowerList(ctx context.Context, userID uint, cursor *social.FollowCursor, limit int) ([]social.FollowListItem, error)
+	GetFollowingList(ctx context.Context, userID uint, cursor *social.FollowCursor, limit int) ([]social.FollowListItem, error)
 }
 
 type Repository struct {
@@ -23,6 +26,7 @@ type Repository struct {
 }
 
 var _ domainrelation.Repository = (*Repository)(nil)
+var _ domainrelation.ListReader = (*Repository)(nil)
 
 func New(legacy LegacyRepository) *Repository {
 	return &Repository{legacy: legacy}

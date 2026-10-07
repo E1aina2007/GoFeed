@@ -2,12 +2,6 @@ package social
 
 import "time"
 
-const (
-	DefaultListLimit     = 20
-	MaxListLimit         = 50
-	currentCursorVersion = 1
-)
-
 // Follow 记录用户之间的当前关注关系
 type Follow struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
@@ -33,24 +27,8 @@ type FollowListItem struct {
 	RelationID uint       `json:"-"`
 }
 
-type FollowListResponse struct {
-	Items      []FollowListItem `json:"items"`
-	NextCursor string           `json:"next_cursor,omitempty"`
-}
-
-// CursorKind 标识 social 列表游标绑定的查询范围
-type CursorKind string
-
-const (
-	CursorKindFollowers CursorKind = "followers"
-	CursorKindFollowing CursorKind = "following"
-)
-
-// FollowCursor 记录关注关系列表分页位置及其版本和目标用户范围
+// FollowCursor 仅供旧仓储与外层适配交换关系分页位置
 type FollowCursor struct {
-	Version   int        `json:"v"`
-	Kind      CursorKind `json:"k"`
-	UserID    uint       `json:"r"`
-	CreatedAt time.Time  `json:"p"`
-	ID        uint       `json:"i"`
+	CreatedAt time.Time
+	ID        uint
 }

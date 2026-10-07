@@ -544,7 +544,7 @@ func TestSocialFollowHTTPContract(t *testing.T) {
 		t.Fatalf("自关注文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPut,
-		"/api/user/auth/999999/follow", followerToken, nil), http.StatusNotFound); message != social.ErrUserNotFound.Error() {
+		"/api/user/auth/999999/follow", followerToken, nil), http.StatusNotFound); message != domainrelation.ErrUserNotFound.Error() {
 		t.Fatalf("不存在用户关注文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodPut, followPath, "", nil),
@@ -600,6 +600,10 @@ func TestSocialFollowHTTPContract(t *testing.T) {
 	if socialNumber(t, refollowed, "follower_count") != 2 {
 		t.Fatalf("重新关注计数错误 got=%v", refollowed)
 	}
+	if response := socialJSONRequest(t, engine, http.MethodPut,
+		fmt.Sprintf("/api/user/auth/%d/follow", other.ID), followerToken, nil); response.Code != http.StatusOK {
+		t.Fatalf("关注即将注销的对端失败 body=%s", response.Body.String())
+	}
 
 	if err := gdb.Delete(&user.User{}, other.ID).Error; err != nil {
 		t.Fatalf("软删除关注者失败: %v", err)
@@ -612,15 +616,53 @@ func TestSocialFollowHTTPContract(t *testing.T) {
 	if account := active[0]["user"].(map[string]any); account["username"] != follower.Username {
 		t.Fatalf("注销后关注者列表内容错误 got=%v", account)
 	}
+	activeFollowing := socialItems(t, socialJSONRequest(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/user/%d/following", follower.ID), "", nil))
+	if len(activeFollowing) != 1 || activeFollowing[0]["user"].(map[string]any)["username"] != followee.Username {
+		t.Fatalf("注销对端不应出现在关注列表 got=%v", activeFollowing)
+	}
 
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodGet,
-		"/api/user/999999/followers", "", nil), http.StatusNotFound); message != social.ErrUserNotFound.Error() {
+		"/api/user/999999/followers", "", nil), http.StatusNotFound); message != domainrelation.ErrUserNotFound.Error() {
 		t.Fatalf("不存在用户关注者列表文案错误 got=%q", message)
 	}
 	if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodGet,
 		fmt.Sprintf("/api/user/%d/followers?limit=99", followee.ID), "", nil),
-		http.StatusBadRequest); message != social.ErrInvalidLimit.Error() {
+		http.StatusBadRequest); message != domainrelation.ErrInvalidLimit.Error() {
 		t.Fatalf("非法分页文案错误 got=%q", message)
+	}
+	for _, kind := range []string{"followers", "following"} {
+		for _, tc := range []struct {
+			id     uint
+			query  string
+			status int
+			err    error
+		}{
+			{0, "limit=abc", http.StatusBadRequest, domainrelation.ErrInvalidUserID},
+			{999999, "limit=abc", http.StatusBadRequest, domainrelation.ErrInvalidLimit},
+			{999999, "limit=99&cursor=bad", http.StatusNotFound, domainrelation.ErrUserNotFound},
+			{999999, "cursor=bad", http.StatusNotFound, domainrelation.ErrUserNotFound},
+			{followee.ID, "limit=99&cursor=bad", http.StatusBadRequest, domainrelation.ErrInvalidLimit},
+			{followee.ID, "cursor=bad", http.StatusBadRequest, domainrelation.ErrInvalidCursor},
+			{other.ID, "limit=99", http.StatusNotFound, domainrelation.ErrUserNotFound},
+		} {
+			path := fmt.Sprintf("/api/user/%d/%s?%s", tc.id, kind, tc.query)
+			if message := socialErrorMessage(t, socialJSONRequest(t, engine, http.MethodGet, path, "", nil), tc.status); message != tc.err.Error() {
+				t.Fatalf("列表校验顺序错误 path=%s got=%q want=%q", path, message, tc.err.Error())
+			}
+		}
+		emptyUserID := followee.ID
+		if kind == "followers" {
+			emptyUserID = follower.ID
+		}
+		empty := socialJSONRequest(t, engine, http.MethodGet,
+			fmt.Sprintf("/api/user/%d/%s", emptyUserID, kind), "", nil)
+		if items := socialItems(t, empty); items == nil || len(items) != 0 {
+			t.Fatalf("空列表应返回数组 kind=%s body=%s", kind, empty.Body.String())
+		}
+		if _, ok := socialResponseBody(t, empty)["next_cursor"]; ok {
+			t.Fatalf("空列表不应有下一页 kind=%s body=%s", kind, empty.Body.String())
+		}
 	}
 }
 
@@ -651,7 +693,7 @@ func socialQueryBudget(t *testing.T, capture *socialQueryCapture, before int, bu
 }
 
 // 测试目标：验证社交读取端点的真实 SQL 语句数量不随列表长度增长
-// 预期效果：评论与关注者各最多两条语句，点赞含会话最多五条，评论创建含事务事实最多八条
+// 预期效果：评论与两个关系列表各两条语句，默认和显式零为 20，上限为 50，点赞含会话最多五条
 func TestSocialReadEndpointsQueryBudget(t *testing.T) {
 	capture := &socialQueryCapture{}
 	engine, gdb, _ := newSocialHTTPEngine(t, capture.middleware())
@@ -668,12 +710,16 @@ func TestSocialReadEndpointsQueryBudget(t *testing.T) {
 	seedCommentRows(t, gdb, published.ID, commenters)
 
 	followers := []*user.User{}
-	for index := 0; index < 4; index++ {
+	for index := 0; index < 24; index++ {
 		account := seedUser(t, gdb, fmt.Sprintf("budget-follower-%d", index))
 		followers = append(followers, account)
 		if err := gdb.Exec("INSERT INTO user_follows (follower_id, followee_id, created_at) VALUES (?, ?, ?)",
 			account.ID, author.ID, time.Now()).Error; err != nil {
 			t.Fatalf("写入关注关系失败: %v", err)
+		}
+		if err := gdb.Exec("INSERT INTO user_follows (follower_id, followee_id, created_at) VALUES (?, ?, ?)",
+			author.ID, account.ID, time.Now()).Error; err != nil {
+			t.Fatalf("写入反向关注关系失败: %v", err)
 		}
 	}
 	viewerToken := socialToken(t, gdb, followers[0])
@@ -684,24 +730,43 @@ func TestSocialReadEndpointsQueryBudget(t *testing.T) {
 		t.Fatalf("评论列表条数错误 body=%s", comments.Body.String())
 	}
 	t.Logf("评论列表语句数量=%d", socialQueryBudget(t, capture, 0, 2))
-	followerList := socialJSONRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/user/%d/followers", author.ID), "", nil)
-	if len(socialItems(t, followerList)) != len(followers) {
-		t.Fatalf("关注者列表条数错误 body=%s", followerList.Body.String())
+	for _, kind := range []string{"followers", "following"} {
+		for _, query := range []string{"", "?limit=0", "?limit=50"} {
+			before := len(capture.counts)
+			list := socialJSONRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/user/%d/%s%s", author.ID, kind, query), "", nil)
+			want := 20
+			if query == "?limit=50" {
+				want = len(followers)
+			}
+			if len(socialItems(t, list)) != want {
+				t.Fatalf("列表条数错误 kind=%s query=%s body=%s", kind, query, list.Body.String())
+			}
+			body := socialResponseBody(t, list)
+			_, hasCursor := body["next_cursor"]
+			if hasCursor != (want < len(followers)) {
+				t.Fatalf("列表探测与末页游标错误 kind=%s query=%s body=%v", kind, query, body)
+			}
+			if got := socialQueryBudget(t, capture, before, 2); got != 2 {
+				t.Fatalf("关系列表应执行两条 SQL kind=%s query=%s got=%d", kind, query, got)
+			}
+			t.Logf("%s%s 列表语句数量=2", kind, query)
+		}
 	}
-	t.Logf("关注者列表语句数量=%d", socialQueryBudget(t, capture, 1, 2))
 
+	before := len(capture.counts)
 	likeState := socialJSONRequest(t, engine, http.MethodGet,
 		fmt.Sprintf("/api/video/auth/%d/like", published.ID), viewerToken, nil)
 	if likeState.Code != http.StatusOK {
 		t.Fatalf("点赞状态查询错误 got=%d body=%s", likeState.Code, likeState.Body.String())
 	}
 	// 认证请求额外包含一次 auth_sessions 会话校验语句
-	t.Logf("点赞状态语句数量=%d", socialQueryBudget(t, capture, 2, 5))
+	t.Logf("点赞状态语句数量=%d", socialQueryBudget(t, capture, before, 5))
 
+	before = len(capture.counts)
 	created := socialJSONRequest(t, engine, http.MethodPost,
 		fmt.Sprintf("/api/video/auth/%d/comments", published.ID), viewerToken, map[string]any{"content": "预算评论"})
 	if created.Code != http.StatusCreated {
 		t.Fatalf("创建评论状态错误 got=%d body=%s", created.Code, created.Body.String())
 	}
-	t.Logf("创建评论语句数量=%d", socialQueryBudget(t, capture, 3, 8))
+	t.Logf("创建评论语句数量=%d", socialQueryBudget(t, capture, before, 8))
 }
