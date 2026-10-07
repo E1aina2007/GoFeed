@@ -11,6 +11,14 @@ type Reader interface {
 	GetAuthor(ctx context.Context, userID uint) (Author, error)
 }
 
+type EngagementReader interface {
+	GetEngagementCounts(ctx context.Context, videoIDs []uint) (map[uint]EngagementCounts, error)
+}
+
+type TotalLikesReader interface {
+	GetTotalLikes(ctx context.Context, accountID uint) (int64, error)
+}
+
 // MutationWriter 保证真实业务变更与启用的互动事件在同一事务内持久化
 type MutationWriter interface {
 	CreateLike(ctx context.Context, videoID, userID uint) (bool, error)

@@ -5,12 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"gofeed/internal/user"
-	"gofeed/internal/video"
-
 	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 type Repository struct {
@@ -136,76 +132,6 @@ func (r *Repository) getFollowUserList(ctx context.Context, targetID uint, curso
 		})
 	}
 	return items, nil
-}
-
-func (r *Repository) GetEngagementCounts(ctx context.Context, videoIDs []uint) (map[uint]video.EngagementCounts, error) {
-	counts := make(map[uint]video.EngagementCounts, len(videoIDs))
-	if len(videoIDs) == 0 {
-		return counts, nil
-	}
-	for _, id := range videoIDs {
-		counts[id] = video.EngagementCounts{}
-	}
-
-	type countRow struct {
-		VideoID uint
-		Count   int64
-	}
-	var likes []countRow
-	if err := r.db.WithContext(ctx).Model(&VideoLike{}).
-		Select("video_id, COUNT(*) AS count").
-		Where("video_id IN ?", videoIDs).
-		Group("video_id").
-		Scan(&likes).Error; err != nil {
-		return nil, err
-	}
-	for _, row := range likes {
-		value := counts[row.VideoID]
-		value.LikesCount = row.Count
-		counts[row.VideoID] = value
-	}
-
-	var comments []countRow
-	if err := r.db.WithContext(ctx).Model(&Comment{}).
-		Select("video_id, COUNT(*) AS count").
-		Where("video_id IN ?", videoIDs).
-		Group("video_id").
-		Scan(&comments).Error; err != nil {
-		return nil, err
-	}
-	for _, row := range comments {
-		value := counts[row.VideoID]
-		value.CommentsCount = row.Count
-		counts[row.VideoID] = value
-	}
-	return counts, nil
-}
-
-func (r *Repository) GetProfileMetrics(ctx context.Context, accountID uint) (user.ProfileMetrics, error) {
-	metrics := user.ProfileMetrics{}
-	if accountID == 0 {
-		return metrics, nil
-	}
-	if err := video.PublicVideoQuery(r.db.WithContext(ctx)).
-		Joins("JOIN video_likes AS likes ON likes.video_id = videos.id").
-		Where(clause.Eq{
-			Column: clause.Column{Table: clause.CurrentTable, Name: "author_id"},
-			Value:  accountID,
-		}).
-		Count(&metrics.TotalLikes).Error; err != nil {
-		return user.ProfileMetrics{}, err
-	}
-	count, err := r.GetFollowerCount(ctx, accountID)
-	if err != nil {
-		return user.ProfileMetrics{}, err
-	}
-	metrics.FollowerCount = count
-	count, err = r.GetFollowingCount(ctx, accountID)
-	if err != nil {
-		return user.ProfileMetrics{}, err
-	}
-	metrics.VloggerCount = count
-	return metrics, nil
 }
 
 func isDuplicateKey(err error) bool {

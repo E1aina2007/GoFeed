@@ -28,6 +28,11 @@ type LikeState struct {
 	LikesCount int64
 }
 
+type EngagementCounts struct {
+	LikesCount    int64
+	CommentsCount int64
+}
+
 type CommentWithAuthor struct {
 	Comment Comment
 	Author  Author

@@ -35,6 +35,7 @@ import (
 	domainfeed "gofeed/internal/domain/feed"
 	infracachefeed "gofeed/internal/infra/cache/feed"
 	infrafeed "gofeed/internal/infra/persistence/feed"
+	infrainteraction "gofeed/internal/infra/persistence/interaction"
 	"gofeed/internal/middleware/cache"
 	"gofeed/internal/social"
 	"gofeed/internal/testutil"
@@ -983,10 +984,10 @@ func TestFollowingFeedMySQLPagingAndQueryBudget(t *testing.T) {
 	if first.Items[0].Author.ID != 20 || first.Items[0].PlayOriginalName != "原始 视频.mp4" || first.Items[0].CoverOriginalName != "原始 封面.png" {
 		t.Fatalf("JOIN 字段映射=%+v", first.Items[0])
 	}
-	if err := e.gdb.Create(&social.VideoLike{VideoID: 103, UserID: e.viewer.UserID}).Error; err != nil {
+	if err := e.gdb.Create(&infrainteraction.VideoLike{VideoID: 103, UserID: e.viewer.UserID}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := e.gdb.Create(&social.Comment{VideoID: 103, AuthorID: 30, Content: "当前评论"}).Error; err != nil {
+	if err := e.gdb.Create(&infrainteraction.Comment{VideoID: 103, AuthorID: 30, Content: "当前评论"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	updated := e.get("&limit=2", e.viewer.AccessToken, 200)

@@ -1,19 +1,12 @@
 package social
 
-import (
-	"time"
-
-	infrainteraction "gofeed/internal/infra/persistence/interaction"
-)
+import "time"
 
 const (
 	DefaultListLimit     = 20
 	MaxListLimit         = 50
 	currentCursorVersion = 1
 )
-
-// VideoLike 仅为未迁移的统计和测试夹具保留 ORM 别名
-type VideoLike = infrainteraction.VideoLike
 
 // Follow 记录用户之间的当前关注关系
 type Follow struct {
@@ -26,9 +19,6 @@ type Follow struct {
 func (Follow) TableName() string {
 	return "user_follows"
 }
-
-// Comment 仅为未迁移的统计和测试夹具保留 ORM 别名
-type Comment = infrainteraction.Comment
 
 type PublicUser struct {
 	ID        uint   `json:"id"`

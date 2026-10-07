@@ -75,12 +75,13 @@ func TestRepositoryPublicVideoBoundary(t *testing.T) {
 	db := testutil.DB(t)
 	repo := social.NewRepository(db)
 	interactions := infrainteraction.New(db, true)
+	profileMetrics := infrainteraction.NewProfileMetricsReader(interactions, repo)
 	ctx := context.Background()
 	author := seedUser(t, db, "boundary-author")
 	viewer := seedUser(t, db, "boundary-viewer")
 
 	valid := seedPublishedVideo(t, db, author.ID)
-	if err := db.Create(&social.VideoLike{VideoID: valid.ID, UserID: viewer.ID}).Error; err != nil {
+	if err := db.Create(&infrainteraction.VideoLike{VideoID: valid.ID, UserID: viewer.ID}).Error; err != nil {
 		t.Fatalf("创建完整视频点赞失败: %v", err)
 	}
 
@@ -102,7 +103,7 @@ func TestRepositoryPublicVideoBoundary(t *testing.T) {
 			t.Fatalf("创建 %s 视频失败: %v", title, err)
 		}
 		invalidIDs[item.ID] = true
-		if err := db.Create(&social.VideoLike{VideoID: item.ID, UserID: viewer.ID}).Error; err != nil {
+		if err := db.Create(&infrainteraction.VideoLike{VideoID: item.ID, UserID: viewer.ID}).Error; err != nil {
 			t.Fatalf("创建 %s 视频点赞失败: %v", title, err)
 		}
 		return item
@@ -132,7 +133,7 @@ func TestRepositoryPublicVideoBoundary(t *testing.T) {
 	}
 
 	deleted := seedPublishedVideo(t, db, author.ID)
-	if err := db.Create(&social.VideoLike{VideoID: deleted.ID, UserID: viewer.ID}).Error; err != nil {
+	if err := db.Create(&infrainteraction.VideoLike{VideoID: deleted.ID, UserID: viewer.ID}).Error; err != nil {
 		t.Fatalf("创建软删除视频点赞失败: %v", err)
 	}
 	if err := db.Delete(&video.Video{}, deleted.ID).Error; err != nil {
@@ -149,7 +150,7 @@ func TestRepositoryPublicVideoBoundary(t *testing.T) {
 		}
 	}
 
-	metrics, err := repo.GetProfileMetrics(ctx, author.ID)
+	metrics, err := profileMetrics.GetProfileMetrics(ctx, author.ID)
 	if err != nil {
 		t.Fatalf("读取作者互动统计失败: %v", err)
 	}
@@ -165,10 +166,10 @@ func TestRepositoryHardDeleteVideoCascadesInteractions(t *testing.T) {
 	author := seedUser(t, db, "cascade-author")
 	viewer := seedUser(t, db, "cascade-viewer")
 	item := seedPublishedVideo(t, db, author.ID)
-	if err := db.Create(&social.VideoLike{VideoID: item.ID, UserID: viewer.ID}).Error; err != nil {
+	if err := db.Create(&infrainteraction.VideoLike{VideoID: item.ID, UserID: viewer.ID}).Error; err != nil {
 		t.Fatalf("创建点赞失败: %v", err)
 	}
-	if err := db.Create(&social.Comment{VideoID: item.ID, AuthorID: viewer.ID, Content: "cascade comment"}).Error; err != nil {
+	if err := db.Create(&infrainteraction.Comment{VideoID: item.ID, AuthorID: viewer.ID, Content: "cascade comment"}).Error; err != nil {
 		t.Fatalf("创建评论失败: %v", err)
 	}
 	if err := db.Unscoped().Delete(&video.Video{}, item.ID).Error; err != nil {
@@ -176,10 +177,10 @@ func TestRepositoryHardDeleteVideoCascadesInteractions(t *testing.T) {
 	}
 
 	var likes, comments int64
-	if err := db.Model(&social.VideoLike{}).Count(&likes).Error; err != nil {
+	if err := db.Model(&infrainteraction.VideoLike{}).Count(&likes).Error; err != nil {
 		t.Fatalf("统计点赞失败: %v", err)
 	}
-	if err := db.Unscoped().Model(&social.Comment{}).Count(&comments).Error; err != nil {
+	if err := db.Unscoped().Model(&infrainteraction.Comment{}).Count(&comments).Error; err != nil {
 		t.Fatalf("统计评论失败: %v", err)
 	}
 	if likes != 0 || comments != 0 {

@@ -80,8 +80,10 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	socialCtl := social.NewController(social.NewService(socialRepo))
 	interactionRepo := infrainteraction.New(db, true)
 	interactionHandler := interfaceshttpinteraction.New(applicationinteraction.New(interactionRepo, interactionRepo))
+	engagementReader := infrainteraction.NewEngagementReader(interactionRepo)
+	profileMetricsReader := infrainteraction.NewProfileMetricsReader(interactionRepo, socialRepo)
 	mediaStorage := video.NewLocalStorage(uploadDir)
-	userCtl := user.NewController(user.NewService(userRepo, videoRepo, socialRepo), sessionService, mediaStorage)
+	userCtl := user.NewController(user.NewService(userRepo, videoRepo, profileMetricsReader), sessionService, mediaStorage)
 
 	api := r.Group("/api")
 	users := api.Group("/user")
@@ -110,9 +112,9 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 
 	// 视频路由的公开读取和认证写入操作使用不同分组
 	authorReader := video.NewUserAuthorReader(userRepo)
-	videoService := video.NewService(videoRepo, authorReader, socialRepo)
+	videoService := video.NewService(videoRepo, authorReader, engagementReader)
 	videoCtl := video.NewController(videoService, mediaStorage)
-	feedRepo := infrafeed.New(videoRepo, authorReader, socialRepo)
+	feedRepo := infrafeed.New(videoRepo, authorReader, engagementReader)
 	feedService := applicationfeed.New(feedRepo,
 		applicationfeed.WithFollowingReader(infrafeed.NewFollowingReader(videoRepo, socialRepo)),
 		applicationfeed.WithPageCache(opts.FeedPageCache, infrafeed.NewCardReader(videoRepo), func(observation applicationfeed.CacheObservation) {
