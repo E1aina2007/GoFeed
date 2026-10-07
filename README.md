@@ -4,7 +4,7 @@
 
 系统阅读项目可从 [`GoFeed 源码导读`](./docs/SOURCE_CODE_GUIDE.md) 开始，包含 Timeline/Following、页与卡片缓存、Outbox 发布与预热、故障恢复，以及向量推荐的当前边界和扩展位置。
 
-后续任务与待补验收统一维护在[开发计划](./docs/DEVELOPMENT_PLAN.md)，开头提供阅读导航。[R2-B 粉丝/关注列表与游标](./docs/DEVELOPMENT_PLAN.md#67-r2-b-粉丝关注列表与游标已提交) 已提交为 `f9481b2`；[R2-C 关系持久化与旧 social 收口](./docs/DEVELOPMENT_PLAN.md#68-r2-c-关系持久化与旧-social-收口已提交) 已提交为 `ea36d40`。下一模块为 [R3-A 三个匿名账户读取](./docs/DEVELOPMENT_PLAN.md#69-r3-a-三个匿名账户读取未实施)，尚未实施。已提交迁移见第 6.4 节，验证与缺口见第 5 节。Feed 功能路线分别推进，每个模块先 review 再提交。
+后续任务与待补验收统一维护在[开发计划](./docs/DEVELOPMENT_PLAN.md)，开头提供阅读导航。[R2-B 粉丝/关注列表与游标](./docs/DEVELOPMENT_PLAN.md#67-r2-b-粉丝关注列表与游标已提交) 已提交为 `f9481b2`；[R2-C 关系持久化与旧 social 收口](./docs/DEVELOPMENT_PLAN.md#68-r2-c-关系持久化与旧-social-收口已提交) 后端为 `ea36d40`；[R3-A 三个匿名账户读取](./docs/DEVELOPMENT_PLAN.md#69-r3-a-三个匿名账户读取已提交) 后端/API 为 `35a6fe0`。下一模块为 [R3-B 注册接口](./docs/DEVELOPMENT_PLAN.md#610-r3-b-注册接口未实施)，仅记录实施边界，尚未实施。后续不运行 Go 单元测试，默认仅静态检查、构建与差异检查。Feed 功能路线分别推进，每个模块先 review 再提交。
 
 ## 快速开始（Docker）
 
@@ -231,13 +231,15 @@ F4-A1 互动事实存储已提交为 `82c01d5`，F4-A2 可靠派发已提交为 
 
 2026-10-06 R1-A/R1-B1 将六个互动 HTTP、ORM、直接读取和事务收口到 Interaction；R1-B2 进一步迁入批量互动统计和完整公开视频获赞读取，删除 social 的旧统计方法及 ORM 别名。Domain/Application 只使用独立读模型与端口，外层适配旧 Video、Feed 和用户资料接口；粉丝/关注计数现通过 Relation CountReader 读取。完整公开视频仍复用 `video.PublicVideoQuery`，旧 v1 评论游标、响应、作者占位和事务语义保持兼容。非空互动批次固定两条聚合 SQL，资料统计按获赞→粉丝→关注执行三条 SQL；提交摘要见开发计划第 6.4 节，验证及缺口见第 5 节。
 
-R2-A 将 `GET/PUT/DELETE /api/user/auth/:id/follow` 接入 Relation 的 Domain/Application/Infrastructure/HTTP，保留认证、200 响应、错误文案、自关注校验和重复关注/取关语义。R2-B 将两个匿名粉丝/关注列表接入同一边界：独立领域列表模型/位置/读取端口，Application 负责默认 20、最大 50、limit+1 与绑定列表/用户的原 v1 游标，HTTP 单独组装 DTO；后端与 API 已提交为 `f9481b2`。R2-C 将唯一 Follow ORM、原 SQL 及双向计数迁到 Relation Infrastructure，直接实现领域端口，并切换资料统计与 Following 活动观看者依赖；确认无引用后删除旧 social，后端提交为 `ea36d40`。Following 的视频 SQL 仍归旧 Video；活动观看者不存在仍为 Feed 401，依赖失败仍为安全 503，Relation 保留原 404/500。提交前保留 repo_test.go 已删除的状态，当前为 7 个测试文件、51 个函数；只作必要迁移适配，没有新增测试或扩展断言。原有 router 流程继续验证固定旧 v1 续页及 Following 非空六条/空页三条 SQL；双向列表两条 SQL 的历史断言已删除，资料统计获赞→粉丝→关注三条 SQL 仅核对实现。Go 1.27.1 windows/amd64 下直接执行 vet、普通全量及无缓存 race 全量均通过，普通使用 7 包缓存，race 重跑 7 包；补充 JSON 为 51 PASS/0 FAIL/0 SKIP。验证与未覆盖项见开发计划第 5、6.8 节。
+R2-A 将 `GET/PUT/DELETE /api/user/auth/:id/follow` 接入 Relation 的 Domain/Application/Infrastructure/HTTP，保留认证、200 响应、错误文案、自关注校验和重复关注/取关语义。R2-B 将两个匿名粉丝/关注列表接入同一边界：独立领域列表模型/位置/读取端口，Application 负责默认 20、最大 50、limit+1 与绑定列表/用户的原 v1 游标，HTTP 单独组装 DTO；后端与 API 已提交为 `f9481b2`。R2-C 将唯一 Follow ORM、原 SQL 及双向计数迁到 Relation Infrastructure，直接实现领域端口，并切换资料统计与 Following 活动观看者依赖；确认无引用后删除旧 social，后端提交为 `ea36d40`。Following 的视频 SQL 仍归旧 Video；活动观看者不存在仍为 Feed 401，依赖失败仍为安全 503，Relation 保留原 404/500。提交前保留 repo_test.go 已删除的状态，当时为 7 个测试文件、51 个函数；只作必要迁移适配，没有新增测试或扩展断言。原有 router 流程继续验证固定旧 v1 续页及 Following 非空六条/空页三条 SQL；双向列表两条 SQL 的历史断言已删除，资料统计获赞→粉丝→关注三条 SQL 仅核对实现。Go 1.27.1 windows/amd64 下直接执行 vet、普通全量及无缓存 race 全量均通过，普通使用 7 包缓存，race 重跑 7 包；补充 JSON 为 51 PASS/0 FAIL/0 SKIP。验证与未覆盖项见开发计划第 5、6.8 节。
+
+R3-A 将三个匿名账户 GET 接入独立 Account Domain/Application/Infrastructure/HTTP：公开账户与资料模型、ID 位置和小读取端口归 Domain，列表全量/分页双模式及原 v1 游标归 Application，Infrastructure 复用旧 user.Repository、完整公开视频计数和现有资料统计适配器，HTTP 单独组装 DTO。保留 query 存在性、先 limit 后游标、原状态码/文案、公开字段及四项零值统计；正常资料装配仍按账户→视频数→获赞→粉丝→关注读取，共五条 SQL。旧读取方法和无用途助手已删除，登录/刷新/头像使用的 GetByID、publicUser、共享响应及仓储/适配类型继续保留；用户和会话 ORM、作者批量读取未迁移。后端/API 已提交为 `35a6fe0`，没有推送。实施轮的普通/race 与 51 PASS/0 FAIL/0 SKIP 是当时 7 文件版本的历史证据；本提交轮只执行 vet、build 和差异检查，均通过，没有执行 Go 测试。随后已有 `a483843` 删除 Feed/Video 两个测试文件，当前为 5 文件/36 函数。账户旧 v1 的源码兼容证据和未覆盖专项见开发计划第 5、6.9 节。
 
 当前 API 互动写入和 worker Relay 都依赖迁移 `000010_interaction_outbox`，启动前必须确认已应用。2026-10-05 已使用当前后端配置将本机 `localhost:3306/feedsystem` 从版本 9 迁移至 10，dirty=false；互动事实表的 18 个字段、7 个索引已核对，原有七张业务表记录数未变。这只证明迁移与结构，不代表真实互动/消费链路验收。worker 直接运行独立互动 Relay 与 F4-B1 热度消费（实现提交 `26a3f95`），沿用持久载荷、租约/attempt 围栏、publisher confirm、mandatory/Return、`1s/5s/30s` 重试/DLQ、重连与关闭生命周期。coverage 保持 unverified，真实依赖验收仍待补齐。
 
 热度新增与撤销都计入原互动创建分钟。Lua 在状态 Hash 中同时记录 event_id 收据与绝对分数，再写分钟 ZSET；重复投递可修复未完成的 ZSET 写入而不再次累加，负贡献不在写入时截断。分钟桶按原始时间到期，过期桶不重建；同一代际锁定权重/时间/容量规则。`unverified` 表示尚未证明整个窗口的事实与消费覆盖，当前代码没有将它改为完整的路径；它不是 Redis 连接状态。没有 MySQL 热榜快照、自动重建或完整消费水位，`scene=hot` 仍为 501，派发完成也不表示热榜完整。
 
-现有指标配置与 Feed 请求回调已单独提交为 `2ff0364`，采集器/监听出口仍未装配，容量工具继续暂缓。F4-A/B1 的并发、投递与消费专项仍待补；删除前的四种互动写入事实失败回滚/恢复记录不代表整个热度链路已验收。Feed 功能路线后续按独立模块推进 F4-B2 的覆盖契约、有界事实扫描、代际重建与 MySQL 快照，再接 F4-C Hot。Following 混合推拉仍需容量收益证据。详细范围与待补验收见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 3.5–3.8、5、6 节；架构模块 R2-C 已提交，下一步 R3-A 仅记录范围，尚未实施。
+现有指标配置与 Feed 请求回调已单独提交为 `2ff0364`，采集器/监听出口仍未装配，容量工具继续暂缓。F4-A/B1 的并发、投递与消费专项仍待补；删除前的四种互动写入事实失败回滚/恢复记录不代表整个热度链路已验收。Feed 功能路线后续按独立模块推进 F4-B2 的覆盖契约、有界事实扫描、代际重建与 MySQL 快照，再接 F4-C Hot。Following 混合推拉仍需容量收益证据。详细范围与待补验收见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 3.5–3.8、5、6 节；架构模块 R3-A 已提交，下一模块 R3-B 只迁注册接口，尚未实施。
 
 F3-A 后端支持 `GET /api/feed?scene=following`：复用 JWT/session 与活动观看者校验，在 MySQL 内关联当前关注关系、活动作者和完整公开视频，使用绑定观看者的独立 keyset 游标，并批量读取作者与当前统计。Following 响应为私有且不使用 Timeline 缓存；Timeline 保持匿名，Hot/Recommend 保持 501。真实 MySQL 用例验证非空页 6 次 SQL、空页 3 次，0/1/32/128 个关注作者下已执行 EXPLAIN ANALYZE；样本不代表生产容量或 p95。已提交的 F3-B 页面支持场景切换、独立分页、`/?scene=following` 与登录回跳；接口见 [API](./API.md)，历史验证与剩余范围见开发计划第 5、3.4 节。
 

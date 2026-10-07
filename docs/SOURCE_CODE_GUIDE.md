@@ -1,6 +1,6 @@
 # GoFeed 源码导读
 
-> 阅读基线：2026-10-07，`F:\work\Feed\GoFeed`。Interaction 已完成 HTTP、持久化及统计迁移，Relation 的五个 HTTP、用例与原 v1 游标已迁入四层，R2-B 后端/API 已提交为 `f9481b2`。R2-C 已迁关系 ORM/SQL、计数与 Following 活动观看者依赖并删除旧 social，后端提交为 `ea36d40`；Following 视频 SQL 仍在 Video。实施边界见开发计划第 6.8 节，提交摘要见第 6.4 节，验证与缺口见第 5 节。下一模块 R3-A 尚未实施。本文从当前源码推导；Hot/Recommend、完整热度覆盖及指标出口尚未实现。
+> 阅读基线：2026-10-07，`F:\work\Feed\GoFeed`。Interaction 已完成 HTTP、持久化及统计迁移，Relation 的五个 HTTP、用例与原 v1 游标已迁入四层，R2-B 后端/API 已提交为 `f9481b2`。R2-C 已迁关系 ORM/SQL、计数与 Following 活动观看者依赖并删除旧 social，后端为 `ea36d40`；Following 视频 SQL 仍在 Video。R3-A 三个匿名账户 GET 已迁入独立 Account 四层，后端/API 为 `35a6fe0`；写入和会话仍在旧 User/Auth。下一模块 R3-B 只迁注册，尚未实施。实施边界见开发计划第 6.8–6.10 节，提交摘要见第 6.4 节，验证与缺口见第 5 节。本文从当前源码推导；Hot/Recommend、完整热度覆盖及指标出口尚未实现。
 >
 > 本文用于理解源码。运行与配置看 [README](../README.md)，接口字段看 [API](../API.md)，未完成设计与历史验收看 [开发计划](./DEVELOPMENT_PLAN.md)。本文中的“源码入口”均可直接点击。
 
@@ -93,6 +93,10 @@ backend/
    ├─ router/                   HTTP 组合根：创建依赖、注册路由
    ├─ user/ video/             既有 controller → service → repository
    ├─ auth/                    JWT、数据库会话与刷新令牌
+   ├─ domain/account/          独立公开账户/资料、ID 位置与小读取端口
+   ├─ application/account/     三个匿名读取、全量/分页双模式与原 v1 游标
+   ├─ infra/persistence/account/ 旧用户、视频计数与资料统计的类型/错误适配
+   ├─ interfaces/http/account/ 三个匿名账户 GET 的参数与独立 DTO
    ├─ domain/feed/             Feed 读模型、场景、读取端口、热度规则
    ├─ application/feed/        分页编排、缓存、卡片预热与热度事实映射
    ├─ infra/persistence/feed/  适配既有 MySQL 仓储
@@ -533,6 +537,14 @@ Redis 缓存失败仍回源 MySQL。计划性回退使用对应代码版本，�
 
 Following 另外检查观看者有效。匿名 Timeline 不会因携带 token 而自动返回“我是否点赞”等个性化字段；当前 DTO 返回的是公共作者与统计。
 
+三个匿名账户 GET 从 [Account Handler](../backend/internal/interfaces/http/account/handler.go) → [Application](../backend/internal/application/account/service.go) → [Domain 读取/统计端口](../backend/internal/domain/account/repository.go) → [Infrastructure](../backend/internal/infra/persistence/account/legacy_reader.go) 读取。公开账户、资料统计和 ID 位置不携带 ORM/HTTP 标签；内层只依赖标准库及独立领域模型，旧 User、UserCursor、ProfileMetrics 和 GORM 错误仅在 Infrastructure 转换。
+
+列表没有 limit/cursor 时继续复用 user.Repository 全量读取；任一参数存在即分页，Gin GetQuery 保留空值存在性，`?cursor=` 使用默认 20，`?limit=`/0/超出 1–50 先报 limit 错误。Application 保留 [v1 编解码](../backend/internal/application/account/cursor.go) 的 RawURLEncoding、v/k/i、version=1、kind=users、非零 ID 及原字段检查，再将独立位置交给旧仓储。原 SQL 的 id ASC/id > ID 不变，多读一条，以实际返回末条 ID 续页；[DTO](../backend/internal/interfaces/http/account/dto.go) 保持 user/users/account、资料 omitempty、四项零值统计、空数组和末页省略游标。
+
+资料按账户→完整公开视频数→获赞→粉丝→关注读取并立即传播失败。视频计数继续调用 video.Repository 的 PublicVideoQuery，统计继续复用 Interaction 的旧资料适配器并转为独立 Account 指标；正常装配共五条 SQL，统计部分三条，未注入统计仍返回零值。旧读取 Controller/Service、pagination.go 与无用途读取类型已删除，写入、刷新和头像仍用的 Service.GetByID/publicUser/共享响应继续保留，User/AuthSession ORM 与作者 GetByIDs 未变。现有流程覆盖详情/注销 404 和资料头像；账户旧 v1 为迁移前后源码兼容证据，固定旧账户 v1 续页、资料预算和逐步失败尚无持续断言，不能用关系列表 v1 代替，详见[开发计划第 6.9 节](./DEVELOPMENT_PLAN.md#69-r3-a-三个匿名账户读取已提交)。
+
+注册当前仍走旧 user.Controller.CreateUser → Service.CreateUser → Repository.Create：原限流先执行，HTTP binding 后才对用户名 TrimSpace，并按字节长度做业务校验，再使用 bcrypt.DefaultCost 哈希并创建；重名依赖数据库唯一键，返回公开 user 且不创建会话。下一步只迁这条链路到 Account，范围见[开发计划第 6.10 节](./DEVELOPMENT_PLAN.md#610-r3-b-注册接口未实施)，登录/会话、改密/注销和头像留后续模块。
+
 ### 9.2 互动先保存关系，再读取聚合
 
 [Relation Handler](../backend/internal/interfaces/http/relation/handler.go) → [Application](../backend/internal/application/relation/service.go) → [Domain 端口](../backend/internal/domain/relation/repository.go) → [Relation Repository](../backend/internal/infra/persistence/relation/repository.go) → MySQL。
@@ -647,9 +659,7 @@ Timeline 和 Following 各自保存视频、游标、首屏/续页加载状态�
 
 | 要理解的行为                                  | 建议读的测试                                                                                                                                                        |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 卡片并发容量、取消与迟到写                    | [application/feed/service_test.go](../backend/internal/application/feed/service_test.go)                                                                            |
 | 缓存命中、载荷损坏与 MySQL 回源               | [e2e_test.go](../backend/internal/router/e2e_test.go)                                                                                                                |
-| 页缓存容量与取消释放                          | [service_test.go](../backend/internal/application/feed/service_test.go)                                                                                             |
 | 当前关注关系、认证与跨用户游标                | [e2e_test.go](../backend/internal/router/e2e_test.go)                                                                                                                |
 | 旧关系 v1 兼容、列表/用户绑定与 Following 关系/认证/预算 | [e2e_test.go](../backend/internal/router/e2e_test.go) |
 | MySQL/Redis 下实际卡片读取                    | [e2e_test.go](../backend/internal/router/e2e_test.go)                                                                                                                |
@@ -657,7 +667,7 @@ Timeline 和 Following 各自保存视频、游标、首屏/续页加载状态�
 | 草稿部分回收、失去租约与断点继续              | [draft_purge_test.go](../backend/internal/sweeper/draft_purge_test.go)                                                                                              |
 | 前端迟到响应、场景与分页                      | [usePublishedFeed.spec.ts](../frontend/src/features/video/__tests__/usePublishedFeed.spec.ts)、[FeedView.spec.ts](../frontend/src/views/__tests__/FeedView.spec.ts) |
 
-当前保留 7 个 Go 测试文件、51 个测试函数；原 repo_test.go 的六个互动/关注流程与预算函数已删除，不作为持续覆盖。测试文件用于理解持续覆盖，实际通过证据须看执行记录。历史验证摘要、真实依赖参与及未覆盖范围统一见开发计划第 5 节。依赖未配置而 SKIP 的用例不算运行通过，mock 页面测试也不替代真实发布验收。
+当前保留 5 个 Go 测试文件、36 个函数；Feed service_test.go 的 4 个缓存专项与 Video video_repo_test.go 的 11 个专项由独立提交 `a483843` 删除。原 repo_test.go 的六个互动/关注流程与预算函数也不再保留，不将历史通过当作持续覆盖。后续按用户指令不运行 Go 单元测试或包含它们的全量/race 命令；本提交轮只有 vet/build 与差异检查，不能称为真实依赖回归。保留文件可用于源码阅读，历史证据与未覆盖项见开发计划第 5 节；未运行不能算 PASS 或 SKIP。
 
 ## 12. 向量与推荐：当前边界及未来接入位置
 
