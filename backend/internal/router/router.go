@@ -91,10 +91,12 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	userCtl := user.NewController(user.NewService(userRepo), sessionService, mediaStorage)
 	accountHandler := interfaceshttpaccount.New(applicationaccount.New(infraaccount.NewReader(userRepo),
 		infraaccount.NewPublishedVideoCounter(videoRepo), infraaccount.NewProfileMetricsReader(profileMetricsReader)))
+	registrationHandler := interfaceshttpaccount.NewRegistration(applicationaccount.NewRegistration(
+		infraaccount.NewCreator(userRepo), infraaccount.BcryptPasswordHasher{}))
 
 	api := r.Group("/api")
 	users := api.Group("/user")
-	users.POST("/register", ratelimit.Limit(opts.RateLimitCache, ratelimit.RegisterAction, ratelimit.RegisterMaxRequests, ratelimit.RegisterWindow), userCtl.CreateUser)
+	users.POST("/register", ratelimit.Limit(opts.RateLimitCache, ratelimit.RegisterAction, ratelimit.RegisterMaxRequests, ratelimit.RegisterWindow), registrationHandler.CreateUser)
 	users.POST("/login", ratelimit.Limit(opts.RateLimitCache, ratelimit.LoginAction, ratelimit.LoginMaxRequests, ratelimit.LoginWindow), userCtl.Login)
 	users.POST("/refresh", userCtl.UpdateRefreshToken)
 	users.GET("", accountHandler.GetUserList)

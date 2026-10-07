@@ -18,11 +18,6 @@ type User struct {
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
 }
 
-type CreateRequest struct {
-	Username string `json:"username" binding:"required,min=3,max=32"`
-	Password string `json:"password" binding:"required,min=8,max=72"`
-}
-
 type UpdateNameRequest struct {
 	NewUsername string `json:"new_username" binding:"required,min=3,max=32"`
 }

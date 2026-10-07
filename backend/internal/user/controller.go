@@ -32,21 +32,6 @@ func currentUserID(c *gin.Context) (uint, bool) {
 	return jwt.UserID(c)
 }
 
-// 处理用户注册请求
-func (ctl *Controller) CreateUser(c *gin.Context) {
-	var req CreateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apierror.WriteCode(c, apierror.CodeInvalid, "invalid registration payload")
-		return
-	}
-	user := &User{Username: req.Username, Password: req.Password}
-	if err := ctl.Srv.CreateUser(c.Request.Context(), user); err != nil {
-		handleUserError(c, err)
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"user": publicUser(user)})
-}
-
 // 处理用户登录请求
 func (ctl *Controller) Login(c *gin.Context) {
 	var req LoginRequest

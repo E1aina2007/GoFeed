@@ -39,19 +39,6 @@ func NewService(repo *Repository) *Service {
 	return &Service{Repo: repo}
 }
 
-func (s *Service) CreateUser(ctx context.Context, user *User) error {
-	user.Username = strings.TrimSpace(user.Username)
-	if len(user.Username) < 3 || len(user.Username) > 32 || len(user.Password) < 8 || len(user.Password) > 72 {
-		return ErrInvalidInput
-	}
-	passwordHash, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
-	if err != nil {
-		return err
-	}
-	user.Password = string(passwordHash)
-	return s.Repo.Create(ctx, user)
-}
-
 func (s *Service) UpdateName(ctx context.Context, id uint, newName string) error {
 	newName = strings.TrimSpace(newName)
 	if newName == "" {

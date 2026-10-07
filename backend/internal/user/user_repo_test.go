@@ -16,6 +16,7 @@ import (
 
 	applicationaccount "gofeed/internal/application/account"
 	"gofeed/internal/auth"
+	domainaccount "gofeed/internal/domain/account"
 	infraaccount "gofeed/internal/infra/persistence/account"
 	interfaceshttpaccount "gofeed/internal/interfaces/http/account"
 	jwtmw "gofeed/internal/middleware/jwt"
@@ -85,7 +86,7 @@ func TestDeleteRollsBackWhenSessionRevocationFails(t *testing.T) {
 // 测试目标：汇集测试用户、会话服务和会话标识
 // 预期效果：可同时断言事务后的用户与会话状态
 type userWithSession struct {
-	user      *legacyuser.User
+	user      domainaccount.PublicAccount
 	sessions  *auth.SessionService
 	sessionID string
 }
@@ -94,8 +95,9 @@ type userWithSession struct {
 // 预期效果：返回可用于事务回滚断言的完整上下文
 func createUserWithSession(t *testing.T, ctx context.Context, db *gorm.DB, service *legacyuser.Service, username, password string) userWithSession {
 	t.Helper()
-	user := &legacyuser.User{Username: username, Password: password}
-	if err := service.CreateUser(ctx, user); err != nil {
+	registration := applicationaccount.NewRegistration(infraaccount.NewCreator(service.Repo), infraaccount.BcryptPasswordHasher{})
+	user, err := registration.CreateUser(ctx, domainaccount.RegistrationInput{Username: username, Password: password})
+	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	sessions := auth.NewSessionService(auth.NewSessionRepository(db))
@@ -187,10 +189,12 @@ func newUserHTTPEngine(t *testing.T) (*gin.Engine, *auth.SessionService) {
 	repo := legacyuser.NewRepository(gdb)
 	controller := legacyuser.NewController(legacyuser.NewService(repo), sessions)
 	accountHandler := interfaceshttpaccount.New(applicationaccount.New(infraaccount.NewReader(repo), nil))
+	registrationHandler := interfaceshttpaccount.NewRegistration(applicationaccount.NewRegistration(
+		infraaccount.NewCreator(repo), infraaccount.BcryptPasswordHasher{}))
 
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
-	engine.POST("/api/user/register", controller.CreateUser)
+	engine.POST("/api/user/register", registrationHandler.CreateUser)
 	engine.POST("/api/user/login", controller.Login)
 	engine.POST("/api/user/refresh", controller.UpdateRefreshToken)
 	engine.GET("/api/user/:id", accountHandler.GetUser)

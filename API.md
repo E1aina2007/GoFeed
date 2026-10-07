@@ -227,8 +227,10 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 
 | 字段 | 类型 | 必填 | 约束 |
 | --- | --- | --- | --- |
-| `username` | string | 是 | 去除首尾空格后长度为 3-32 |
-| `password` | string | 是 | 长度为 8-72 |
+| `username` | string | 是 | 原值先按字符数 3–32 绑定校验；绑定成功后去首尾空白，再按字节长度检查 3–32 |
+| `password` | string | 是 | 原值先按字符数 8–72 绑定校验，再按字节长度检查 8–72；不去首尾空白 |
+
+绑定继续使用原 `ShouldBindJSON` 和 `required,min=3,max=32` / `required,min=8,max=72` 标签，不新增未知字段或尾部 JSON 限制。业务校验后先使用 bcrypt 默认成本哈希，再创建用户；重名请求也先哈希，用户名唯一性、大小写语义及软删除账户的用户名占用由原数据库唯一键决定，不预查重。
 
 成功响应：`201 Created`
 
@@ -241,11 +243,20 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 }
 ```
 
-常见失败：`400` 请求体格式或字段不合法，`409` 用户名已存在，或见下方共享限流行为的 `429`。
+响应只包含公开用户字段 `id`、`username` 和非空时的 `avatar_url`、`bio`；不包含密码或软删除字段，也不创建会话或令牌。
+
+| 状态码 | 错误文案 | 原因 |
+| --- | --- | --- |
+| `400` | `invalid registration payload` | JSON 绑定或 binding 标签校验失败 |
+| `400` | `invalid user input` | 绑定后的业务字节长度校验失败 |
+| `409` | `username already exists` | 原仓储将 MySQL 1062 重名错误转换为冲突 |
+| `500` | `user operation failed` | 未知哈希或创建错误 |
+
+超限为下方共享限流行为的 `429`，限流仍先于 JSON 绑定。
 
 ### 注册与登录的限流
 
-`POST /api/user/register` 与 `POST /api/user/login` 共享固定窗口限流，并在 JSON 请求体绑定、注册或认证处理前执行。注册窗口为 1 小时，登录窗口为 1 分钟。
+`POST /api/user/register` 与 `POST /api/user/login` 共享固定窗口限流，并在 JSON 请求体绑定、注册或认证处理前执行。注册每个 IP 每小时最多 5 次，Redis Key 为 `rl:v1:register:<IP>`；登录窗口为 1 分钟。
 
 超限响应固定为 `429 Too Many Requests`，带 `Retry-After` 响应头；其值为正整数秒。响应体固定为：
 

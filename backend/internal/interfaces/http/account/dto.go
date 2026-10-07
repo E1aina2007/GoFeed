@@ -5,6 +5,11 @@ import (
 	domainaccount "gofeed/internal/domain/account"
 )
 
+type registrationRequest struct {
+	Username string `json:"username" binding:"required,min=3,max=32"`
+	Password string `json:"password" binding:"required,min=8,max=72"`
+}
+
 type publicAccount struct {
 	ID        uint   `json:"id"`
 	Username  string `json:"username"`

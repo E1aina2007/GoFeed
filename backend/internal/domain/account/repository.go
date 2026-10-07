@@ -2,6 +2,10 @@ package domainaccount
 
 import "context"
 
+type Creator interface {
+	Create(ctx context.Context, input CreateInput) (PublicAccount, error)
+}
+
 type Reader interface {
 	GetByID(ctx context.Context, id uint) (PublicAccount, error)
 	GetUserList(ctx context.Context) ([]PublicAccount, error)
