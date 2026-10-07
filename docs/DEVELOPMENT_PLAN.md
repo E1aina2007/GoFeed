@@ -1,8 +1,8 @@
 # GoFeed 开发计划
 
-> 更新日期：2026-10-06，R1-B1 已完成并纳入本次提交；前序 R1-A 为 `56c691a`，测试精简为 `01fc0bb`。页/卡片缓存、发布事件/预热、互动事实/派发/热度消费七项能力直接装配，布尔配置与环境变量入口已删除，见第 5.19 节；worker 参照 GCFeed 在入口内统一编排，热度规则由领域层统一校验，见第 5.21、5.22 节。F4-A1 `82c01d5`、A2 `65cebf6`、B1 `26a3f95` 已提交；真实链路验收、事实重建与 MySQL 快照仍待补，Hot/Recommend 仍为 501。指标仅有配置和请求回调，无采集器或监听装配；容量工具继续暂缓。R1-A 历史验证见第 6.4 节，R1-B1 的执行证据、模型排查与剩余适配见第 6.7 节；下一步 R1-B2 分析见第 6.8 节，R1-B2/R2 未实施。已实现摘要见 [README](../README.md)，接口见 [API](../API.md)，规则见 [AGENTS](../AGENTS.md)。
+> 更新日期：2026-10-07，R1-B1 已提交为 `7b01685`，R1-B2/R2-A 分别提交为 `a7bce52`、`0b08d92`；前序 R1-A 为 `56c691a`，测试精简为 `01fc0bb`。页/卡片缓存、发布事件/预热、互动事实/派发/热度消费七项能力直接装配，布尔配置与环境变量入口已删除，见第 5.19 节；worker 在入口内统一编排，热度规则由领域层统一校验，见第 5.21、5.22 节。F4-A1 `82c01d5`、A2 `65cebf6`、B1 `26a3f95` 已提交；真实链路验收、事实重建与 MySQL 快照仍待补，Hot/Recommend 仍为 501。指标仅有配置和请求回调，无采集器或监听装配；容量工具继续暂缓。R1-A/R1-B1 历史验证见第 6.4、6.7 节，R1-B2 统计迁移与 Relation 三接口迁移见第 6.8、6.9 节，R2-B 未实施。已实现摘要见 [README](../README.md)，接口见 [API](../API.md)，规则见 [AGENTS](../AGENTS.md)。
 
-本文统一维护全后端四层架构重构、未完成的 Feed 能力设计与验收缺口。2026-10-06 的目标已扩展为整个后端逐步统一到 GCFeed 的四层结构，执行路线见第 6 节；R1-A 已提交，第 6.7 节 R1-B1 已完成，后续 R1-B2 按第 6.8 节独立处理。第 3 节继续维护 Feed 功能路线，其待办不随架构规划删除。第 5.1–5.18 节为历史记录，其中旧功能开关与默认值不代表当前工作树；当前装配见第 5.19 节及 Interaction 六个路由。历史测试、隔离联调与编译证据不互相替代。
+本文统一维护全后端四层架构重构、未完成的 Feed 能力设计与验收缺口。2026-10-06 的目标已扩展为整个后端逐步统一到 GCFeed 的四层结构，执行路线见第 6 节；R1-A/R1-B1/R1-B2/R2-A 已提交，下一模块为 R2-B。第 3 节继续维护 Feed 功能路线，其待办不随架构规划删除。第 5.1–5.18 节为历史记录，其中旧功能开关与默认值不代表当前工作树；当前装配见第 5.19 节及 Interaction 六个路由。历史测试、隔离联调与编译证据不互相替代。
 
 ## 1. 当前基线与优先顺序
 
@@ -22,7 +22,7 @@ MySQL 是唯一业务事实源；Redis 用于可丢失的加速和限流，Rabbi
 
 Feed 是按 GCFeed 目录逐步迁移的业务边界：`domain/feed` 定义读模型与读取接口，`application/feed` 编排分页及缓存端口，`infra/persistence/feed` 适配既有仓储，`infra/cache/feed` 适配 Redis，`interfaces/http/feed` 负责 HTTP。Domain 只依赖标准库，Application 通过领域模型和小接口编排。当前 `video`、`social`、`user`、`auth` 仍采用旧组织方式，后续按第 6 节逐模块迁移；每次只切换一个可独立回归的边界。
 
-互动写入也按相同边界演进：`domain/interaction` 定义内容规则、变更事实及读写/Outbox 端口；`application/interaction` 编排读写、评论游标与租约派发；`infra/persistence/interaction` 拥有点赞/评论 ORM、直接读取、事务及事实领取，只在外层复用 `video.PublicVideoQuery`；`interfaces/http/interaction` 映射 HTTP DTO 与错误。`router` 与 worker 入口负责依赖装配，MQ 编码留在 worker 适配器，不把 GORM、旧模块类型或 MQ 依赖带入内层；六个互动接口已接入 Interaction，关注与批量统计继续使用原模块。
+互动写入也按相同边界演进：`domain/interaction` 定义内容规则、变更事实及读写/统计/Outbox 端口；`application/interaction` 编排读写、评论游标与租约派发；`infra/persistence/interaction` 拥有点赞/评论 ORM、直接与批量读取、事务及事实领取，只在外层复用 `video.PublicVideoQuery` 和转换旧统计类型；`interfaces/http/interaction` 映射 HTTP DTO 与错误。`router` 与 worker 入口负责依赖装配，MQ 编码留在 worker 适配器，不把 GORM、旧模块类型或 MQ 依赖带入内层；六个互动接口和批量/获赞统计已归 Interaction，关注继续使用原模块。
 
 当前首页使用 `/api/feed?scene=timeline&limit=12`；作者主页继续使用直接读取 MySQL 的旧 `/api/video?author_id=...`。`/api/feed` 首屏直读 MySQL，后续页使用缓存并校验当前公开卡片。新接口启用匿名 Timeline 与认证 Following；未知场景为 400，未启用的 Hot、Recommend 为 501。游标独立绑定场景、结构版本、排序版本与 `(published_at, video_id)`，不与旧视频游标混用。现有接口必须保持可用，每次只迁移一个读取场景或派生链路。
 
@@ -166,7 +166,7 @@ flowchart LR
 
 ### 3.3 下一模块顺序
 
-本节列出 Feed 功能路线内的顺序。架构路线已完成第 6.7 节 R1-B1，下一模块为第 6.8 节 R1-B2；以下功能与验收缺口继续保留，不在互动持久化重构中顺带实施。
+本节列出 Feed 功能路线内的顺序。架构路线第 6.8、6.9 节 R1-B2/R2-A 已提交，下一模块为 R2-B；以下功能与验收缺口继续保留，不在关注接口重构中顺带实施。
 
 | 顺序 | 状态与动作 | 边界 |
 | --- | --- | --- |
@@ -194,7 +194,7 @@ flowchart LR
 
 参考本地 `F:\work\Feed\GCFeed` 的提交 `8cf995c`：`apps/api/internal/application/feed/service.go` 已包含场景策略、混合推拉与推荐编排，`application/video/fanout_worker.go` 实现按粉丝规模分流和分批写索引，`infra/cache/feed_cache.go` 实现 Inbox/Author Outbox、分钟热榜与卡片/统计缓存，`infra/metrics/metrics.go` 实现 Feed、缓存和 worker 指标。该仓库文档与源码仍须分别核对；本轮只读参考源码，未运行或迁移其服务。
 
-GoFeed 已完成分层 Feed、Timeline 缓存、发布事件与基础卡片预热，以及 MySQL Following 和页面接入。本节继续维护派生读取和观测能力的功能路线，保持现有 Vue、接口和 MySQL 事实源。全后端四层重构另按第 6 节实施，R1-B1 已完成，下一模块为 R1-B2；架构迁移与新 Feed 功能分别 review、分别验证。
+GoFeed 已完成分层 Feed、Timeline 缓存、发布事件与基础卡片预热，以及 MySQL Following 和页面接入。本节继续维护派生读取和观测能力的功能路线，保持现有 Vue、接口和 MySQL 事实源。全后端四层重构另按第 6 节实施，R1-B2/R2-A 已提交，下一模块为 R2-B；架构迁移与新 Feed 功能分别 review、分别验证。
 
 **F4-A1/A2/B1 已提交；后续为 F4-B2 事实重建与 MySQL 快照 → F4-C Hot，独立交付边界见第 3.8 节。** F4-A/B1 的真实依赖验收仍待补，不能省略或以历史编译替代。容量基线工具继续暂缓，Following 仍使用已提交的 MySQL 读取；混合推拉和大小作者阈值尚无容量收益证据，已实现缓存当前直接装配。
 
@@ -230,7 +230,7 @@ A1 实现阶段按当时授权排除测试与前端，交付记录保留在第 5
 
 **事件 v1 与存储选择**
 
-已新增 `interaction_outbox_events` 的 `000010` up/down 迁移，同一行保存不可变事实与可变派发状态，不额外拆表或引入通用事件框架。事件实体及业务规则归 domain，GORM 事件模型与事务归 `infra/persistence/interaction`；R1-B1 已将既有点赞/评论 ORM 迁至该层，social 只保留统计和夹具需要的外层别名。原表 ID 为 unsigned bigint、创建时刻为 DATETIME(3)。2026-10-05 本机 `localhost:3306/feedsystem` 已由迁移 9 升至 10、`dirty=false`，结构核对见第 5.20 节；这是该时点的执行记录，其他目标及后续状态须单独核对。
+已新增 `interaction_outbox_events` 的 `000010` up/down 迁移，同一行保存不可变事实与可变派发状态，不额外拆表或引入通用事件框架。事件实体及业务规则归 domain，GORM 事件模型与事务归 `infra/persistence/interaction`；R1-B1 已将既有点赞/评论 ORM 迁至该层，R1-B2 已迁入统计并删除 social 的外层别名。原表 ID 为 unsigned bigint、创建时刻为 DATETIME(3)。2026-10-05 本机 `localhost:3306/feedsystem` 已由迁移 9 升至 10、`dirty=false`，结构核对见第 5.20 节；这是该时点的执行记录，其他目标及后续状态须单独核对。
 
 已实现领域事实、存储及 MQ 编码，版本为 `schema_version=1`，事件类型为 `interaction.changed`；MQ 载荷只由已提交行构造，租约接管与重试保持原事件身份及内容：
 
@@ -835,7 +835,7 @@ startWorkers 在原整数转换成 time.Duration 前，仅按 int64 可表示范
 
 ## 6. 全后端四层架构演进
 
-2026-10-06 用户明确最终目标：将 GoFeed 原有三层业务逐步重构为 GCFeed 的四层架构。本节覆盖整个后端，接续已建立的 Feed 与互动写入边界。按用户后续指令先提交原有测试精简与 R1-A，再仅实施 R1-B1；用户已完成命名 review 并授权本次提交，R1-B2/R2–R6 未实施。
+2026-10-06 用户明确最终目标：将 GoFeed 原有三层业务逐步重构为 GCFeed 的四层架构。本节覆盖整个后端，接续已建立的 Feed 与互动写入边界。测试精简、R1-A 与 R1-B1 已提交；R1-B2/R2-A 在实施后等待 review，2026-10-07 按用户“提交”指令分别提交，R2-B 及 R3–R6 未实施。
 
 ### 6.1 源码基线与剩余边界
 
@@ -844,8 +844,8 @@ startWorkers 在原整数转换成 time.Duration 前，仅按 int64 可表示范
 | 模块 | 已有基础 | 剩余边界及源码入口 |
 | --- | --- | --- |
 | Feed | Domain/Application/Infrastructure/Interfaces 已建立，内层通过接口编排 | [legacy_reader.go](../backend/internal/infra/persistence/feed/legacy_reader.go)、[following_reader.go](../backend/internal/infra/persistence/feed/following_reader.go) 仍复用旧 video/social 仓储和类型 |
-| Interaction | 六个互动入口、ORM、直接读取与写事务已归 Interaction | [reader.go](../backend/internal/infra/persistence/interaction/reader.go) 与 [writer.go](../backend/internal/infra/persistence/interaction/writer.go) 不再导入 social；完整公开视频仍依赖旧 video，批量统计留待 R1-B2 |
-| Social | 保留关注接口、稳定关注游标、批量与资料统计 | [controller.go](../backend/internal/social/controller.go)、[service.go](../backend/internal/social/service.go) 只承载关注；[repo.go](../backend/internal/social/repo.go) 保留关注与统计，ORM 仅为新模型别名，分别留待 R1-B2/R2 及夹具适配 |
+| Interaction | 六个互动入口、ORM、直接/批量读取与写事务已归 Interaction | [statistics.go](../backend/internal/infra/persistence/interaction/statistics.go) 实现领域统计端口，[legacy_reader.go](../backend/internal/infra/persistence/interaction/legacy_reader.go) 适配旧消费方；完整公开视频仍依赖旧 video，类型转换留至 R3/R4 |
+| Relation/Social | Relation 已承载关注状态/关注/取关 HTTP 与用例，social 保留列表、游标、Follow ORM 与全部关系 SQL | [Relation 适配器](../backend/internal/infra/persistence/relation/legacy_repository.go) 通过窄接口复用 social.Repository；列表留 R2-B，ORM/SQL、计数和 Following 适配继续分模块收口，活动账户边界另与 R3 对齐 |
 | User/Auth | 已有资料统计窄接口、数据库会话与刷新令牌轮换 | [user/service.go](../backend/internal/user/service.go) 依赖具体仓储并直接开启改密/注销事务；[auth/session.go](../backend/internal/auth/session.go) 混合会话模型、持久化与用例；登录/刷新编排也仍在 Controller |
 | Video | 已有 VideoRepository、AuthorReader、EngagementReader 接口 | [video_entity.go](../backend/internal/video/video_entity.go) 混合领域、ORM 与 HTTP 类型；[video_service.go](../backend/internal/video/video_service.go) 识别 GORM 错误；Controller 承载上传保存、绑定与失败清理 |
 | Worker/Sweeper | 入口已集中装配，部分业务已有小接口 | [worker.go](../backend/internal/worker/worker.go) 的视频 Relay/Consumer 依赖具体 video.Repository；[sweeper](../backend/internal/sweeper/) 混合清扫用例、调度和媒体引用仓储 |
@@ -886,8 +886,8 @@ backend/
 | 阶段 | 最小交付与拆分 | 验收及进入下一阶段的条件 |
 | --- | --- | --- |
 | R0：冻结兼容基线 | 实施前记录 Git 状态、实际路由/DTO、旧游标格式、查询预算与事务边界，列出本阶段允许修改的路径；检查生产包导入方向 | 保留已有改动，区分源码事实与历史/待补运行证据；已记录 Git/路由/游标/事务基线并运行兼容、预算及后端回归，证据见第 6.4 节 |
-| R1：Interaction 收口 | R1-A 已提交；R1-B1 已完成并纳入本次提交；R1-B2 尚未实施，范围见第 6.8 节 | B1 已解除 Interaction 持久化对 social 的依赖，B2 再切换 Feed/video 统计及用户获赞读取；各模块保留唯一键、软删除、同事务事实写入与原查询预算 |
-| R2：Relation 四层化 | 先关注写入/状态，再粉丝与关注列表；统计按消费方窄接口注入，整体收口后删除 social 剩余生产逻辑 | 自关注限制、活动用户校验、重复关注/取关、列表排序/游标、Following 当前关系过滤不变；不同时引入 Inbox 或 fanout |
+| R1：Interaction 收口 | R1-A/R1-B1/R1-B2 已提交，见第 6.8 节 | Feed/video 统计及用户获赞读取已切换；保留唯一键、软删除、同事务事实写入与原查询预算，功能路线的互动事实专项仍待补 |
+| R2：Relation 四层化 | R2-A 已迁关注状态/写入 HTTP 与用例并提交；下一模块 R2-B 迁粉丝/关注列表和游标，再迁 ORM/直接 SQL、计数及 Following 适配，整体收口后删除 social | 自关注限制、活动用户校验、重复关注/取关、列表排序/游标、Following 当前关系过滤不变；不同时引入 Inbox 或 fanout |
 | R3：Account 四层化 | user 与会话业务归入 account；先资料/注册读取，再登录、刷新、撤销、改密及注销；JWT/bcrypt 实现归 Infrastructure | Handler 不再编排账户与会话多步用例；改密与撤销全部会话、注销与撤销全部会话保持同事务；令牌轮换 CAS、刷新哈希、资料统计、头像与外部 avatar_url 契约不变 |
 | R4：Video 四层化 | 先领域/ORM/DTO 与读取，再草稿上传、发布/删除和 Outbox 端口；媒体存储实现从 video 业务包移出 | 保留批量作者/统计、公开过滤、旧游标和 202 受理语义；状态变更与 Outbox 同事务，仓储内复核权限/状态并执行锁或 CAS；存储成功后绑定失败的清理仍有覆盖 |
 | R5：Worker/Sweeper 分层 | 视频处理与 Relay 编排归 Application；消息解码、ACK、重试归 Interfaces，连接/拓扑/confirm 归 Infrastructure；清扫用例与定时入口分别迁移 | 处理成功后 ACK、重试发布确认后 ACK、租约接管/围栏、DLQ、草稿不可逆清扫及媒体删除检查点、先等任务退出再关连接的顺序不变 |
@@ -1082,7 +1082,7 @@ B1 初次实施（命名修正前）从 `backend` 实际执行：
 
 上述实施时日志和静态对照曾保存在本地忽略目录 `.run/r1b1-20261006-3093b9ec/`：`b1-vet.log`、`b1-test.log`、`b1-race.json`、`b1-imports.json`、`scope-audit.json`、`schema-before.json`、`schema-after.json`、`schema-comparison.json`、`delivery-check.json`、`diff-check.log`；原有改动提交前证据为 `original-*`。当前这些本地文件已不可用；本次提交重新验证并单独保存证据，见下文，不以这些历史记录替代当前结果。
 
-**剩余适配及具体调用方**
+**B1 交付时保留的适配及调用方（统计和别名已在第 6.8 节清理）**
 
 | 保留项 | 当前调用方与后续归属 |
 | --- | --- |
@@ -1119,21 +1119,72 @@ B1 初次实施（命名修正前）从 `backend` 实际执行：
 
 本次仅更新四份文档并提交已有 B1 代码，不改变读写/事务、配置或迁移，不额外操作业务库；真实数据库结构的只读核对仍是前述实施时记录。未覆盖范围沿用上文明确的失败注入、并发、结构专项和互动热度全链路验收缺口；没有运行前端、浏览器或部署检查。本次不推送，B2/R2 仍未实施。
 
-### 6.8 R1-B2 批量统计与获赞读取（下一模块，未实施）
+### 6.8 R1-B2 批量统计与获赞读取（已提交）
 
-当前 R1-B1 已完成。下一步先收口剩余互动统计，再进入 R2 关注四层化；本节为基于当前源码的实施分析，不构成开始开发的授权。
+本轮从 `7b01685` 的干净工作树开始，仅实施 R1-B2。Domain 的独立 `EngagementCounts`、`EngagementReader`、`TotalLikesReader` 已建立；现有 Interaction Repository 实现两个统计端口，转换旧消费方类型与组合资料统计均放在同一持久化包的外层适配器中。
 
-| 当前读取与消费方 | B2 的最小改动 | 必须保留的行为 |
-| --- | --- | --- |
-| `social.GetEngagementCounts` → `video.Service`、`infrafeed.Repository.BatchGetStats`，router 分别注入 socialRepo | 在 Interaction Domain 定义独立统计结果及窄读取端口，现有 Interaction 持久化层迁入两条聚合 SQL；外层转换成旧 `video.EngagementCounts` 并由 router 注入 | 空 ID 返回非 nil 空 map 且不查询；每个请求 ID 先补零；非空固定两条 `IN (...) GROUP BY video_id`，评论继续过滤软删除，不逐视频查询或增加公开过滤 SQL |
-| `social.GetProfileMetrics` → `user.Service.GetProfile` | 只将公开视频获赞查询迁入 Interaction，继续复用 `video.PublicVideoQuery`；外层资料统计适配器组合获赞与 social 的两个关注计数方法，返回旧 `user.ProfileMetrics` | 保持获赞→粉丝→关注的查询与错误顺序；accountID=0 返回零值且不查询；有效 ID 的统计部分仍为三条 SQL，关注计数仍只计活动对端账户 |
-| `social.VideoLike` / `social.Comment` → 旧批量统计与 social/router 夹具 | 生产统计切换后，将必要夹具导入改为 Interaction ORM，再删除确认无调用的两个 social 别名及旧统计 SQL/导入 | 每张表仅一份 ORM；字段、表名、时间、索引、唯一键、软删除、级联语义不变，不新增迁移 |
-| `video/video_repo_test.go` 的 `sqlEngagementReader` | 保留同包业务流程所需的测试读实现，明确它只在测试中使用 | video 同包测试直接导入 Interaction Infrastructure 会产生导入环；不能为清理测试夹具提前迁移整个 Video 或新建重复专项 |
+| 改动 | 当前链路与兼容行为 |
+| --- | --- |
+| [Domain 结果](../backend/internal/domain/interaction/entity.go)与[统计端口](../backend/internal/domain/interaction/repository.go) | 只依赖标准库，不使用旧业务类型、GORM 或 HTTP DTO |
+| [statistics.go](../backend/internal/infra/persistence/interaction/statistics.go) | 原批量点赞/评论聚合 SQL 迁入 Interaction；空 ID 返回非 nil 空 map 且不查询，每个 ID 预补零，非空固定两条聚合；评论仍通过同一 ORM 的软删除作用域过滤 |
+| [legacy_reader.go](../backend/internal/infra/persistence/interaction/legacy_reader.go) | 批量结果转为旧 `video.EngagementCounts`；获赞复用完整 `video.PublicVideoQuery`，资料按获赞→粉丝→关注组合旧 `user.ProfileMetrics`，任一步失败立即返回零值及原错误；accountID=0 不查询，有效 ID 的统计部分仍为三条 SQL |
+| [router.go](../backend/internal/router/router.go) | Video 与 Feed 共用统计适配器，User 使用资料适配器；粉丝/关注通过 `FollowCountReader` 注入 socialRepo，路由、认证、Handler/DTO 和三个旧消费方接口未变 |
+| [social/repo.go](../backend/internal/social/repo.go)、[entity.go](../backend/internal/social/entity.go) | 删除两项旧统计方法与点赞/评论 ORM 别名；social 只保留 Follow ORM、活动账户与关注能力，不再依赖 Interaction、user 或 video |
+| [social/repo_test.go](../backend/internal/social/repo_test.go)、[router/e2e_test.go](../backend/internal/router/e2e_test.go) | 仅改必要 ORM 夹具引用与既有公开边界用例的资料统计装配；仍为 8 个测试文件、57 个测试函数，没有新增或恢复专项 |
 
-建议继续使用现有 `infra/persistence/interaction` 包放置兼容转换，不为简单适配新建包。批量统计与资料统计可分别用窄适配器承接既有消费方接口；资料适配器通过 `GetFollowerCount`/`GetFollowingCount` 两项能力注入 socialRepo，禁止在 Interaction 持久化包导入 social。`user.Service` 的既有资料统计接口、`video.Service` 的既有统计接口和 Feed 内层均无需改变。
+真实读链路为 `router → 原 Video/Feed/User 用例 → 外层统计适配器 → Interaction 领域统计端口 → Interaction Repository → MySQL`。资料的两个关注计数继续调用原 social 方法，仍只统计活动对端账户。批量查询不额外添加公开视频过滤，由原消费方先确定当前页；作者获赞继续使用完整公开视频过滤。
 
-实施顺序：先建立独立结果与统计端口，迁移批量/获赞 SQL；再实现外层转换并切换 router 的三处统计注入；最后核对生产/测试调用方，删除 social 无调用统计方法和 ORM 别名。旧 `GetActiveUser`、Follow ORM、关注 Controller/Service/游标、Following 观看者与关系查询继续留在 R2/R3。完整公开视频仍有 `Interaction Infrastructure → video` 的过渡依赖，因此旧 video/user 包不能反向导入 Interaction Infrastructure；转换依赖只能留在外层。
+过渡的 `Interaction Infrastructure → user/video` 依赖仍留在外层，旧 user/video 不反向导入 Interaction Infrastructure。video 同包流程测试继续保留其测试专用 `sqlEngagementReader`，避免测试包循环；生产统计 SQL 只有 Interaction 一份。关注 Controller/Service/游标、Following 当前关系及活动观看者未改，留给 R2/R3；完整公开视频查询归属留至 R4。
 
-B2 验证复用现有测试：social 的完整公开视频边界读取适配新统计能力，router 的点赞/评论与资料流程、Timeline/Following、真实页/卡片缓存、视频和 worker 流程继续运行；只作必要夹具/导入适配，不恢复已删除测试、不新增互动单元测试或重复专项。保留互动预算 2/5/8、Following 非空 6/空页 3、卡片缓存既有 5→4 及页缓存命中/未命中预算一致性。两条批量 SQL 与三条资料统计 SQL 是源码约束，现有测试未对每个独立统计边界持续计数，不把静态对照宣称为新专项运行验收。
+**本轮验证（2026-10-06）**
 
-从 backend 执行 `go vet ./...`、`go test ./...`、`go test -race -count=1 ./...`，报告缓存、真实依赖、跳过与未覆盖范围，完成 `git diff --check` 和必要文档同步；完成 B2 后停止等待 review，不自动提交、推送或开始 R2。Feed 缓存规则、互动 Writer/事实事务、Outbox/Relay/热度、关注、账户/视频四层化、前端、配置、迁移和部署均不在 B2 范围；业务库仅只读核对。
+本轮执行结果汇总如下。原临时目录 `backend/.run/r1b2-20261006/` 当前已不存在，其中脚本、日志和检查快照不可用；下表文件名仅记录当时的验证过程，不代表文件仍被保留。按用户要求，后续测试与检查尽量直接使用命令行，不新增临时脚本或日志文件。
+
+| 实际执行 | 结果与边界 |
+| --- | --- |
+| `go vet ./...` | 退出 0，`vet.log` |
+| `go test -json ./...` | 退出 0，8 个测试包、57 个测试事件 PASS，无测试结果缓存、0 失败、0 用例跳过；`test.json`。`-json` 仅增加执行证据 |
+| `go test -race -count=1 -json ./...` | 退出 0，8 个测试包、57 个测试事件 PASS、0 失败、0 用例跳过；测试结果缓存禁用，构建缓存可复用；`race.json`、`validation.json` |
+| 真实依赖与预算 | 既有隔离 MySQL、真实 Redis 页/卡片缓存及故障回源/预热、RabbitMQ mandatory/重试确认/重投/DLQ/独立 worker 链路均实际运行；评论/关注者/点赞状态/评论创建仍为 2/2/5/8，Following 非空 6/空页 3 和卡片缓存冷读 5→命中 4 的既有断言通过 |
+| 业务库只读核对 | `schema_migrations` 为 10、dirty=false；users/videos/点赞/评论/关注/互动事实六表的 SHOW CREATE 与行数前后完全一致。原有 8 个测试库名单未变，没有新增残留测试库；`schema-before.json`、`schema-after.json`、`schema-comparison.json` |
+| 源码与范围 | 六个相关包的 `go list -json` 依赖检查通过，内层无技术驱动或旧业务类型，Interaction 不导入 social，social 不导入 user/video/Interaction。AST 对照确认批量统计除领域类型及仓储可用性保护外保持原样，获赞 SQL、11 个保留 social 函数与现有测试除必要适配外未变；104 个既有 Go 文件哈希对照无越界改动；`imports.json`、`architecture-audit.json`、`scope-audit.json` |
+| 格式与文档 | 本模块 Go 文件经 gofmt，`git diff --check` 通过；README、计划与源码导读的 241 个本地链接/锚点有效，围栏与空白检查通过，12 个既有 Mermaid 图内容未变，本轮未重新渲染；`docs-verification.json`、`diff-check.log` |
+
+两条批量 SQL、三条资料统计 SQL、空 ID/accountID=0 与错误顺序是迁移源码约束；现有流程测试未逐项独立计数或注入每个统计错误，不声明新增专项运行覆盖。四种互动事实失败回滚、提交后读取失败、互动并发/结构专项及热度 Relay/消费/覆盖/重建/快照全链路验收仍按原功能路线待补。本轮没有运行前端、浏览器、容量或部署验收。
+
+R1-B2 独立实施后按用户指令于 2026-10-07 提交为 `a7bce52`，仅包含九个后端 Go 文件及必要测试适配，不含 R2-A 或文档。三个共享文件的暂存内容与 R2-A 开始前的 R1-B2 源码 SHA256 完全一致；工作树未回退或覆盖，配套文档另行提交，没有推送。
+
+### 6.9 R2-A 关注状态与写入用例（已提交）
+
+本轮以 `7b01685` 加已有未提交 R1-B2/规范改动为基线，仅切换三个认证关注接口。没有提交上一模块；不把此次继续开发视为提交授权。
+
+| 层或改动 | 当前职责 |
+| --- | --- |
+| [Domain 状态/规则](../backend/internal/domain/relation/entity.go)、[错误](../backend/internal/domain/relation/errors.go)、[仓储端口](../backend/internal/domain/relation/repository.go) | 独立 `FollowState`，校验非零 ID 与自关注限制；只依赖标准库，不使用旧类型、ORM 或 HTTP 标签 |
+| [Application](../backend/internal/application/relation/service.go) | 按当前用户→目标用户校验活动账户，再查询/创建/删除关系；修改后独立读取实时粉丝数，忽略仓储变更布尔值并保持重复操作的原响应 |
+| [Infrastructure 适配器](../backend/internal/infra/persistence/relation/legacy_repository.go) | 通过五方法窄接口复用现有 social 仓储，不导入 social 包或类型；仅在活动账户校验中把 GORM 不存在结果转换为领域错误，ORM/SQL 仍归旧仓储 |
+| [HTTP Handler](../backend/internal/interfaces/http/relation/handler.go)、[DTO](../backend/internal/interfaces/http/relation/dto.go) | 使用原 JWT 上下文与路径解析，保持认证、200 状态、`following`/`follower_count` 字段及安全错误文案 |
+| [router](../backend/internal/router/router.go)、[旧 controller](../backend/internal/social/controller.go)、[service](../backend/internal/social/service.go)、[entity](../backend/internal/social/entity.go) | 仅切换 `GET/PUT/DELETE /api/user/auth/:id/follow`；清理三个旧 HTTP/Service 方法、写入专用校验/状态组装及旧响应类型，social Service 的端口缩减为活动账户与两项列表读取 |
+| [既有测试](../backend/internal/social/repo_test.go) | 只将自关注错误文本的引用改为新 Domain；复用既有 HTTP 业务流程，测试数量保持 8 个文件、57 个函数，不新增单测或专项 |
+
+实际链路是 `router → 原 JWT/session 中间件 → Relation Handler → Application → Domain Repository → Relation 外层适配 → social.Repository → MySQL`。认证用户仍只取服务端上下文，不接受请求体覆盖。非法路径及自关注为原 400，未认证为原 401，活动用户缺失/注销为原 404；未识别存储错误仍为 500 与 `social operation failed`，不泄露底层错误。写入成功后粉丝计数失败仍返回原错误，已完成的关系变更不回滚；没有引入新事务、缓存或关注事件。
+
+本轮没有修改 `social/repo.go` 的任何 SQL、Follow ORM 字段/标签/TableName、列表游标、统计装配、Feed/Following、互动 Writer/Outbox/热度、账户/视频、前端、配置、迁移或部署。业务库仅通过既有 MySQL CLI 只读核对；测试继续在隔离 MySQL 测试库运行并清理。所有检查直接使用命令行，结果输出终端，不新建临时脚本、日志或检查快照文件。
+
+**本轮验证（2026-10-06）**
+
+| 实际执行 | 本轮结果与边界 |
+| --- | --- |
+| `go vet ./...` | 退出 0 |
+| `go test -json ./...` | 退出 0，8 个测试包、57 个 PASS 事件、0 失败、0 用例跳过；application/feed、mq、sweeper、user、video 使用测试结果缓存，router/social/worker 本轮实际重新执行 |
+| `go test -race -count=1 -json ./...` | 退出 0，8 个测试包全部重新执行，57 个 PASS 事件、0 失败、0 用例跳过；结果缓存禁用，构建缓存可复用。真实 MySQL/Redis/RabbitMQ 的既有业务流程均参与 |
+| 既有查询预算 | 评论列表/关注者列表/点赞状态/评论创建为 2/2/5/8，Following 非空 6/空页 3 与真实卡片缓存冷读 5→命中 4 的原断言通过；未新增三个关注接口的独立计数专项 |
+| 业务库只读复核 | MySQL CLI 查询迁移版本 10、dirty=false，Follow 表字段、DATETIME(3)、唯一键、索引与级联外键符合 000005；前后 SHOW CREATE、users/user_follows 行数及原有 8 个测试库名单完全一致，没有新增残留测试库 |
+| 依赖与源码范围 | 新 Domain/Application 只有标准库和领域依赖；Infra 仅在外层处理 GORM，不导入旧 social 类型。对本轮开始时 106 个既有 Go 文件作 SHA256 对照，仅 router、social 的 controller/service/entity 和原测试适配五个文件改变，新增七个 Relation 生产文件，无删除；旧仓储 SQL 与 R1-B2 统计源码未变 |
+| 格式、路由与文档 | gofmt 与 `git diff --check` 通过；37 条路由的方法/路径序列保持一致。README、计划、源码导读的 255 个本地链接/锚点有效，围栏及空白检查通过，12 个既有 Mermaid 图内容未变，本轮未重新渲染。未生成临时脚本、日志或快照文件 |
+
+当前保留测试覆盖自关注、目标缺失、认证、状态查询、关注、重复关注、取关、重复取关、重新关注以及注销对端从列表排除，并回归旧列表与游标、资料、互动、Timeline/Following、缓存和 worker 流程。已精简删除的参数/错误注入/并发专项没有恢复；本轮不声明独立运行覆盖全部无效 ID、关注写入后计数失败、并发关注/注销竞态或各存储错误分类，也不替代热度功能链路验收。未运行前端、浏览器、容量与部署检查。
+
+R2-A 按用户提交指令于 2026-10-07 提交为 `0b08d92`，包含七个 Relation 生产文件、五个旧入口/路由及测试适配文件，不含文档。提交前从 backend 重新执行 `go vet ./...`、`go test ./...`，均退出 0；五个测试包使用结果缓存，router/social/worker 重新运行。源码逻辑未改，本次未重跑 race，不能将上一日的 race 记录当作本次重新执行的证据。两个代码提交及配套文档均不推送，未新增临时脚本或日志文件。
+
+下一模块 R2-B 只迁 `GET /api/user/:id/followers` 与 `GET /api/user/:id/following` 的 HTTP、列表结果及 Application 游标/分页；保持 v1 五字段、列表种类/目标用户绑定、默认 20/显式 0/最大 50、倒序位置及活动对端过滤。Follow ORM/直接 SQL、资料计数和 Following 仓储适配留在后续独立模块，不能把 R2-A/B 的 HTTP 切换写成整个 R2 已完成。
