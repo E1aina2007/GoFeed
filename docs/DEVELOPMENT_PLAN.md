@@ -11,7 +11,7 @@
 - [5. 待补验证与交付门槛](#5-待补验证与交付门槛)：历史证据、剩余专项和检查要求
 - [6. 全后端四层架构演进](#6-全后端四层架构演进)：分层规则、迁移路线和当前模块
 
-R2-B 已提交为 `f9481b2`。建议下一架构模块：[R2-C 关系持久化与旧 social 收口](#68-r2-c-关系持久化与旧-social-收口未实施)，目前仅完成范围分析，尚未实施。Feed 功能路线的下一步：[F4-B2 事实重建与 MySQL 快照](#38-f4-b2事实重建与-mysql-快照的下一步边界未实现)。两条路线分别 review，不同时实施。
+R2-B 已提交为 `f9481b2`，[R2-C 关系持久化与旧 social 收口](#68-r2-c-关系持久化与旧-social-收口已提交) 后端已提交为 `ea36d40`。架构下一模块为 [R3-A 三个匿名账户读取](#69-r3-a-三个匿名账户读取未实施)，尚未实施。Feed 功能路线的下一步：[F4-B2 事实重建与 MySQL 快照](#38-f4-b2事实重建与-mysql-快照的下一步边界未实现)。两条路线分别 review，不同时实施。
 
 ## 1. 当前基线与优先顺序
 
@@ -20,7 +20,7 @@ MySQL 是唯一业务事实源；Redis 是可重建缓存/索引及限流存储�
 | 路线 | 当前状态 | 下一动作 |
 | --- | --- | --- |
 | 架构 R1 | Interaction 六个 HTTP、ORM/直接读取、事务、批量统计与获赞读取已迁移 | 外层 user/video 转换随 R3/R4 收口 |
-| 架构 R2 | R2-A/B 已提交，五个 HTTP 与列表/游标已接入 Relation；持久化仍委托旧模块 | R2-C 迁关系 ORM/SQL、资料计数及 Following 活动观看者适配 |
+| 架构 R2 | R2-A/B/C 已提交，关系 ORM/SQL、资料计数及 Following 活动观看者已收口，social 已删除 | 下一步 R3-A 三个匿名账户读取，尚未实施 |
 | Feed F0/F1 | 匿名 Timeline、批量卡片、页/卡片缓存及首页接入已实现 | 补容量、收益与一致性专项 |
 | Feed F2 | 视频事件类型路由、发布事件及卡片预热已实现 | 保留未覆盖的双规格重连等可靠性专项 |
 | Feed F3 | MySQL Following 与页面已实现 | 指标出口待接通；容量工具暂缓，混合推拉须收益证据 |
@@ -163,8 +163,10 @@ SET/清理成功后 ACK；重试发布确认前不 ACK 原消息。生产 Runtim
 | 2026-10-06 R1/R2-A | vet、全量普通及无缓存 race 通过；保留 8 文件/57 测试，0 失败/用例跳过，真实 MySQL/Redis/RabbitMQ 参与 | 只代表保留用例；已删除参数、并发和故障专项不算持续覆盖 |
 | 2026-10-07 提交前 | vet、普通全量通过；5 测试包缓存，router/social/worker 重跑 | 未重跑 race；本轮文档精简只检查文档，不重新运行业务测试 |
 | 2026-10-07 R2-B | 从 backend 直接运行 vet、普通全量及无缓存 race 全量，均退出 0；race 重跑 8 个测试包。补充普通 JSON 输出为 57 PASS/0 FAIL/0 SKIP，5 包缓存，router/social/worker 重跑；真实 MySQL/Redis/RabbitMQ 参与 | 固定迁移前两个 v1 游标可续页；两个匿名列表各两条 SQL。只代表保留流程和迁移必要适配，全部非法组合、故障/并发与容量专项未覆盖 |
+| 2026-10-07 R2-C 实施轮 | Go 1.27.1 windows/amd64、CGO=1，从 backend 直接执行 vet、普通全量及 `go test -race -count=1 ./...`，均退出 0，普通/race 各重跑 8 个测试包；补充 `go test -json ./...` 为 57 PASS/0 FAIL/0 SKIP，8 包重跑、0 包缓存。真实 MySQL/Redis/RabbitMQ 参与；文档 219 个本地链接/锚点及围栏检查通过 | 当时为 8 文件/57 函数，两个固定旧 v1 续页与新游标一致，双向列表各 2、Following 非空 6/空页 3 SQL；后续提交轮 repo_test.go 已不存在，当前 7 文件/51 函数，不将已删除断言称为持续覆盖 |
+| 2026-10-07 R2-C 提交轮 | 保留 repo_test.go 删除状态后，从 backend 直接执行 vet、普通全量及无缓存 race 全量，均退出 0；普通 7 包缓存，race 重跑 7 包。补充普通 JSON 为 51 PASS/0 FAIL/0 SKIP，7 包缓存、0 包重跑；保留的真实 MySQL/Redis/RabbitMQ 流程参与 race 验证 | 当前 7 文件/51 函数；固定旧 v1 仍在 router 流程成功续页，与新游标一致。未恢复测试或增加断言，已删除列表预算/完整互动流程不算当前覆盖；没有前端、容量与部署验收 |
 
-原查询预算保留：评论/粉丝/关注列表 2，点赞状态含 session 5，评论创建 8，Following 非空 6/空页 3；卡片冷读 5→命中 4。R2-B 的默认/显式 0/limit=50 在粉丝、关注两个方向均直接断言两条 SQL。这些是查询次数证据，不是扫描量或性能证据。当前实际测试入口见 [源码导读第 11.4 节](./SOURCE_CODE_GUIDE.md#114-用测试理解契约不把测试文件当通过证据)。
+原查询预算保留：评论/粉丝/关注列表 2，点赞状态含 session 5，评论创建 8，Following 非空 6/空页 3；卡片冷读 5→命中 4。R2-B 与 R2-C 实施轮曾直接断言默认/显式 0/limit=50 在粉丝、关注两个方向各两条 SQL；对应 repo_test.go 已从当前工作区删除，这些断言不再持续运行。Following 六条/三条及卡片预算仍有保留流程；次数证据不代表扫描量或性能。当前实际测试入口见 [源码导读第 11.4 节](./SOURCE_CODE_GUIDE.md#114-用测试理解契约不把测试文件当通过证据)。
 
 ### 5.2 必须保留的验收缺口
 
@@ -177,6 +179,8 @@ SET/清理成功后 ACK；重试发布确认前不 ACK 原消息。生产 Runtim
 | F4-B2/Hot | 事实扫描、增量衔接、代际切换、快照存取、到期/覆盖/降级；热度完整性当前 unverified |
 | 账户/HTTP | 全部参数/存储错误分类、关注写入后计数失败、并发关注/注销、413 大上传、真实 429、refresh 并发轮换、broker 主动 nack |
 | 关系列表 | 全部非法游标字段/版本/时间/ID 组合、存储错误逐项注入、并发关注/注销及分页快照、超过 50 条关系的分页截断与大规模扫描；R2-B 的两个固定旧 v1、同时间 ID/毫秒、默认/显式 0、limit=50、两方向两条 SQL、空页/注销对端与校验顺序已运行 |
+| R2-C 持续覆盖 | 资料统计三条 SQL/账户 0、获赞→粉丝→关注顺序及立即失败、Relation/Following 活动观看者 404/401/500/503 文案仅核对当前实现和原 SQL；本轮对应新增断言已删除，原有流程不含这些独立预算/故障断言，不能将一次普通/race 通过视为专项验收 |
+| 删除测试后的边界 | 当前 7 文件/51 函数；原 repo_test.go 的完整公开视频互动边界、视频硬删除级联、点赞/评论/关注 HTTP 完整流程与列表查询预算六个函数不再保留。旧关系 v1 游标和 Following 动态关系/可见性/认证/预算仍在 router 流程，历史通过记录不代表已删除覆盖仍存在；不恢复删除的测试 |
 | 迁移/工程 | 真实 down/dirty 中断、EXPLAIN 索引选择；历史残留库/MQ 资源按归属确认，不能仅凭年龄删除；换行符统一另行决策；页缓存非法参数错误包装 |
 | 运维 | 采集器/监听/告警、恢复水位、事实/Outbox 保留清理、异常事件处置；processing/pending 不一致、最老积压和 DLQ 自动告警 |
 
@@ -202,9 +206,9 @@ race 用于共享行为变更；测试范围服从用户当轮指令。文档修
 
 | 模块 | 已建立边界 | 剩余迁移 |
 | --- | --- | --- |
-| Feed | 独立四层、缓存/读取端口 | Infra 仍复用旧 video/social 读取与类型 |
-| Interaction | 六个 HTTP、ORM/SQL、事务、批量统计与获赞 | 完整公开规则依赖 video；外层适配 user/video，资料关注计数复用 social |
-| Relation | 三个认证关注及两个匿名列表 HTTP/用例、v1 游标与独立读取端口 | Follow ORM/SQL、计数及 Following 关系适配 |
+| Feed | 独立四层、缓存/读取端口，Following 活动观看者接 Relation | Infra 仍复用旧 video/user；Following 视频 SQL 仍在 Video |
+| Interaction | 六个 HTTP、ORM/SQL、事务、批量统计与获赞，资料关注计数接 Relation | 完整公开规则依赖 video；外层仍适配 user/video |
+| Relation | 五个 HTTP/用例、v1 游标、独立读取/计数端口及唯一 Follow ORM/SQL；R2-C 已提交 | 专项验收缺口继续见第 5.2 节 |
 | User/Auth | 资料统计端口、DB 会话/刷新轮换 | Service 具体仓储与事务、Controller 登录/刷新编排、会话模型/持久化拆分 |
 | Video | 仓储、作者/统计小接口 | Domain/ORM/DTO 混合、GORM 错误、上传/绑定/补偿编排与媒体实现 |
 | Worker/Sweeper | 入口集中编排、小能力接口 | 用例、调度、消息 ACK/重试及媒体引用仓储分别归层 |
@@ -231,8 +235,8 @@ cmd/ 负责进程装配与生命周期；db/migrations/ 保留显式迁移
 | --- | --- |
 | R0 基线冻结 | Git/路由/DTO、游标、SQL 预算、事务及依赖图，保留用户改动 |
 | R1 Interaction | 已完成本阶段 HTTP、持久化与统计迁移，外层账户/视频适配随其归属模块收口 |
-| R2 Relation | R2-A/B 已提交；下一步 R2-C 迁 ORM/SQL、计数与 Following 活动观看者适配，确认无引用后删除 social |
-| R3 Account | 先资料/注册读取，再登录、刷新、撤销、改密/注销；保留会话轮换 CAS、哈希、事务与头像补偿 |
+| R2 Relation | R2-A/B/C 已提交；ORM/SQL、计数与 Following 活动观看者适配已收口，social 已删除 |
+| R3 Account | 先 R3-A 三个匿名账户读取，再分模块迁注册、登录、刷新、撤销、改密/注销；保留会话轮换 CAS、哈希、事务与头像补偿 |
 | R4 Video | 先模型/读取，再草稿上传、发布/删除与 Outbox；保留公开规则、旧游标、202、CAS/锁及文件补偿 |
 | R5 Worker/Sweeper | 用例归 Application，消息/ACK/调度归 Interfaces，连接/confirm/存储归 Infra；保留租约接管与关闭顺序 |
 | R6 收口 | 整理技术实现/HTTP 组合根、Feed 适配与文档，删除旧包和无用途过渡层 |
@@ -249,8 +253,11 @@ R 编号是架构路线，F 编号是功能路线。每个阶段可拆成多个�
 | R1-B2 | `a7bce52` | 非空批量统计固定两条 SQL、完整公开视频获赞读取、旧消费者外层转换 |
 | R2-A | `0b08d92` | GET/PUT/DELETE 关注状态/写入归 Relation，持久化仍委托 social |
 | R2-B | `f9481b2` | 两个匿名关系列表、独立读模型/位置/端口、分页与原 v1 游标归 Relation，复用旧仓储 SQL |
+| R2-C | `ea36d40` | 唯一 Follow ORM、原 SQL 与计数归 Relation，资料/Following 接独立端口，删除旧 social；保留测试删除状态，当前 7 文件/51 函数 |
 
 R1-B2 资料统计按获赞→粉丝→关注读取，有效账户统计部分三条 SQL；空视频批次/账户 0 不查库，失败立即返回。R2-A 保留认证、自关注/活动用户校验、幂等关注/取关及写后独立计数；计数失败不回滚已完成关系变更。两项均未引入新缓存/事务/关注事件，配套文档提交为 `b0e8dd0`。实际验证与未覆盖范围统一见第 5 节。
+
+R2-C 按用户指令提交，没有推送；实现与验证边界见第 6.8 节。下一模块 R3-A 的最小范围见第 6.9 节，本轮只准备实施 prompt，不开始新模块。
 
 ### 6.5 必须保留的原子性与恢复语义
 
@@ -270,26 +277,43 @@ R1-B2 资料统计按获赞→粉丝→关注读取，有效账户统计部分�
 
 ### 6.7 R2-B 粉丝/关注列表与游标（已提交）
 
-只迁 `GET /api/user/:id/followers` 和 `GET /api/user/:id/following`，现为 `Relation Handler → Application → Domain ListReader → Infra 适配 → social.Repository`。独立公开资料/列表行/时间-ID 位置归 Domain，分页和原 v1 编解码归 Application，DTO 归 HTTP；内层没有旧 social 或 Gin/GORM 依赖。旧 Controller/Service 及无用途响应/游标助手已删除；仓储和适配仍需要的类型保留，关系 ORM/SQL、资料计数与 Following 适配未迁移。结果摘要见 README，源码入口见[导读第 9.2 节](./SOURCE_CODE_GUIDE.md#92-互动先保存关系再读取聚合)。
+只迁 `GET /api/user/:id/followers` 和 `GET /api/user/:id/following`。R2-B 提交时链路为 `Relation Handler → Application → Domain ListReader → Infra 适配 → social.Repository`；R2-C 已将仓储直接归 Relation。独立公开资料/列表行/时间-ID 位置归 Domain，分页和原 v1 编解码归 Application，DTO 归 HTTP；内层没有旧 social 或 Gin/GORM 依赖。R2-B 删除旧 Controller/Service 及无用途响应/游标助手，当时关系 ORM/SQL、资料计数与 Following 适配留后续迁移。结果摘要见 README，源码入口见[导读第 9.2 节](./SOURCE_CODE_GUIDE.md#92-互动先保存关系再读取聚合)。
 
 复用三个既有 HTTP 流程，仅作迁移必要适配，测试仍为 8 文件/57 个函数，没有新增分层单测或恢复已删除专项。迁移前先在真实 MySQL 运行旧 HTTP 并固定两个 v1 输出，迁移后直接用它们续页，且与新游标续页一致；覆盖毫秒精度、同时间 ID 倒序、列表/用户绑定和无版本旧格式拒绝。默认/显式 0 返回 20、limit=50、末页/空数组、注销对端及校验优先级已运行；粉丝与关注两个方向均直接断言两条 SQL。完整检查结果与跳过范围见第 5.1 节。
 
-全部非法字段/版本/时间/ID 组合、存储失败分类与错误文案逐项注入、并发关注/注销及分页快照、超过 50 条关系的分页截断与大规模扫描尚未专项覆盖，继续列入第 5.2 节；不恢复已删除专项。实施轮未运行前端/浏览器、容量及部署验证。2026-10-07 按用户指令将后端、必要测试适配和 API 文档提交为 `f9481b2`，没有推送；提交轮未改 Go 源码，复用实施轮全量验证结果，检查暂存范围/空白及配套文档链接。下一步只分析，整个 R2 尚未完成。
+全部非法字段/版本/时间/ID 组合、存储失败分类与错误文案逐项注入、并发关注/注销及分页快照、超过 50 条关系的分页截断与大规模扫描尚未专项覆盖，继续列入第 5.2 节；不恢复已删除专项。实施轮未运行前端/浏览器、容量及部署验证。2026-10-07 按用户指令将后端、必要测试适配和 API 文档提交为 `f9481b2`，没有推送；提交轮未改 Go 源码，复用实施轮全量验证结果，检查暂存范围/空白及配套文档链接。后续 R2-C 的当前状态见第 6.8 节。
 
-### 6.8 R2-C 关系持久化与旧 social 收口（未实施）
+### 6.8 R2-C 关系持久化与旧 social 收口（已提交）
 
-五个关系 HTTP 和列表用例已迁入 Relation，剩余阻碍是旧仓储与消费者。建议本模块将关注持久化直接归 `infra/persistence/relation`，切换必要装配，确认生产和保留测试无引用后删除旧 social；不开始 Account 或 Video 的整体迁移。
+本模块已将关注持久化直接归 `infra/persistence/relation`，切换资料关注计数与 Following 活动观看者装配，确认生产和保留测试无引用后删除旧 social。五个关系 HTTP、Application 分页/游标及 JSON 契约保持原实现；没有开始 Account 或 Video 的整体迁移。2026-10-07 按用户指令将后端提交为 `ea36d40`，没有推送。
 
-| 当前依赖 | 建议迁移与保留边界 |
+| 当前实现 | 迁移与保留边界 |
 | --- | --- |
-| [social/entity.go](../backend/internal/social/entity.go)、[repo.go](../backend/internal/social/repo.go) | 唯一 Follow ORM 与活动账户、关注创建/删除/状态、两个计数、两个列表 SQL 迁到 Relation Infrastructure；不复制表模型、修改 TableName/唯一键/索引或 DDL |
-| [Relation 过渡仓储](../backend/internal/infra/persistence/relation/legacy_repository.go)、[列表转换](../backend/internal/infra/persistence/relation/list_reader.go) | 直接使用 DB 实现现有 Domain Repository/ListReader；删除 LegacyRepository 与旧列表/位置转换，按需要提供独立计数读取能力；Domain/Application 保持无旧类型或驱动依赖 |
-| [资料统计适配器](../backend/internal/infra/persistence/interaction/legacy_reader.go)、[router](../backend/internal/router/router.go) | 粉丝/关注计数改注入 Relation 读取能力；保留获赞→粉丝→关注、accountID=0 不查库、有效账户统计部分三条 SQL、失败立即返回及原资料字段；不迁 Account 用例 |
-| [FollowingReader](../backend/internal/infra/persistence/feed/following_reader.go) | 活动观看者改接 Relation 读取能力；缺失/注销仍映射 Feed 401，依赖失败仍为安全 503，不能沿用 Relation HTTP 的 404；保持 JWT/session、私有响应与独立游标 |
-| [保留业务测试](../backend/internal/social/repo_test.go)、[HTTP 流程](../backend/internal/router/e2e_test.go) | 必要迁移测试文件、仓储装配及 Follow 夹具引用，保留现有测试函数；不新增常规分层单测或恢复专项，删除旧包前检查全部引用 |
+| [Follow ORM](../backend/internal/infra/persistence/relation/follow.go)、[Repository](../backend/internal/infra/persistence/relation/repository.go)、[列表读取](../backend/internal/infra/persistence/relation/list_reader.go) | 唯一 ORM 与活动账户、创建/物理删除/状态、两个计数、两个列表的原 SQL 迁到 Relation；TableName/唯一键/索引及 DDL 未改。直接实现 Domain Repository/ListReader/CountReader，删除 LegacyRepository、旧列表/位置转换与 social 包 |
+| [Domain 端口](../backend/internal/domain/relation/repository.go) | 增加只含两个计数方法的 CountReader，资料适配器依赖独立能力；Domain/Application 仍无旧业务类型或 Gin/GORM/驱动依赖 |
+| [资料统计适配器](../backend/internal/infra/persistence/interaction/legacy_reader.go)、[router](../backend/internal/router/router.go) | 注入 Relation 仓储；保持获赞→粉丝→关注、accountID=0 不查库、有效账户统计部分三条 SQL、失败立即返回及原字段。Account 用例未迁 |
+| [FollowingReader](../backend/internal/infra/persistence/feed/following_reader.go) | 窄接口调用 Relation RequireActiveUser，将不存在映射 Feed 401、其他依赖失败映射安全 503；保持 JWT/session、私有头与独立游标。移除旧 social 和 GORM 判断依赖 |
+| [保留 HTTP 流程](../backend/internal/router/e2e_test.go) | 只切换 Follow 夹具的导入与 ORM 类型；提交前原 social/repo_test.go 和迁移后的 repo_test.go 均已不存在，保留当前删除状态。当前为 7 文件/51 个函数，没有新增测试或扩展断言；未经用户明确指令不新增单元测试，也不恢复已删除测试 |
 
-Following 的完整视频查询实际仍在 [video/following_repo.go](../backend/internal/video/following_repo.go)，包括当前关系、活动作者、完整公开视频和发布时间-ID keyset。R2-C 只切换活动观看者依赖；该视频 SQL 与 PublicVideoQuery 的归属留到 Video/Feed 对应模块，不复制 JOIN、不调整读取策略、不引入 Inbox/Outbox 混合推拉或缓存。
+Following 的完整视频查询仍在 [video/following_repo.go](../backend/internal/video/following_repo.go)，包括当前关系、活动作者、完整公开视频和发布时间-ID keyset。R2-C 只切换活动观看者依赖；视频 SQL 与 PublicVideoQuery 留到 Video/Feed 对应模块，没有复制 JOIN、调整读取策略或引入混合推拉/缓存。
 
-兼容重点是唯一键下重复关注、物理取关、写后独立计数、活动对端过滤、原 v1 五字段与列表/用户绑定、关系时间-ID 严格倒序和 limit+1。保留 Relation 的原 400/404/500 文案及校验顺序，外层处理 GORM/MySQL 错误；不能因删除旧 GORM 判断而改变列表的原错误契约。SQL 预算维持粉丝/关注各 2、资料统计部分 3、Following 非空 6/空页 3。
+保留唯一键下重复关注、物理取关、写后独立计数、活动对端过滤、原 v1 五字段与列表/用户绑定、关系时间-ID 严格倒序和 limit+1。Relation 400/404/500 文案及校验顺序未改，GORM/MySQL 错误由外层处理，列表原 GORM 不存在错误映射仍保留。既有 router 流程继续直接消费迁移前固定的两个 v1 游标，验证同刻 ID 边界、毫秒精度及与新游标一致续页；Following 非空 6/空页 3 的预算仍在该流程。双向列表各 2 的断言已随 repo_test.go 删除，资料统计部分 3 只核对源码，不将它们视为本轮运行覆盖。
 
-实施前核对 Git、目标 schema_migrations 与 user_follows 实际列/索引，沿用当前结构；无需新迁移。验证复用现有 HTTP、资料、互动、Following 和真实依赖流程，从 backend 直接运行 `go vet ./...`、`go test ./...`、`go test -race -count=1 ./...`，最后 `git diff --check`，分别报告实际执行、旧 v1 兼容、跳过与未覆盖项。前端、配置、DDL、缓存/MQ/热度、视频用例和部署不在范围内；完成后等待 review，不自动提交或开始 R3。
+实施前工作树干净；只读核对真实 feedsystem 的 schema_migrations 为 version=10、dirty=false，user_follows 为原四列、DATETIME(3)、原唯一键及双向分页索引，关系行数为 2，没有执行迁移或修改业务库数据。测试使用原有隔离数据库及自动清理流程。
+
+用户切换 Go 1.27.1 windows/amd64 后，实施轮曾完成 57 函数版本的验证。提交轮发现 repo_test.go 已不存在，保留该删除状态，并对当前 51 函数版本从 backend 直接执行 `go vet ./...`、`go test ./...`、`go test -race -count=1 ./...`，均退出 0；普通使用 7 包缓存，race 重跑 7 包。补充普通 JSON 为 51 PASS/0 FAIL/0 SKIP，7 包缓存、0 包重跑；真实 MySQL/Redis/RabbitMQ 的保留流程参与 race 验证。此前 386/race 环境拒绝与中断不计最终通过证据，没有恢复已删除测试或新增断言；全部结果直接输出终端。验证证据与剩余缺口见第 5.1、5.2 节。前端、配置、DDL、缓存/MQ/热度、视频用例和部署未改；没有新增临时脚本或日志文件。后端已提交，本轮不推送、不开始 R3。
+
+### 6.9 R3-A 三个匿名账户读取（未实施）
+
+下一模块只迁 `GET /api/user`、`GET /api/user/:id`、`GET /api/user/:id/profile`。当前入口为 [user/controller.go](../backend/internal/user/controller.go)，用例在 [user/service.go](../backend/internal/user/service.go)，用户列表 v1 编解码在 [user/pagination.go](../backend/internal/user/pagination.go)。本节只冻结下一步边界，不表示已经实施。
+
+| 迁移目标 | 必须保留 |
+| --- | --- |
+| Domain 独立公开账户/资料模型、ID 分页位置与读取/统计端口 | 内层只用独立模型；不导入旧 user/auth/video、Gin/GORM、bcrypt 或数据库驱动 |
+| Application 三个读取用例、列表双模式、分页与原 v1 游标 | 不带 limit/cursor 保留历史全量；任一 query 存在进入分页。仅省略 limit 使用 20，显式空/0/超出 1–50 均为 400；先校验 limit 再游标。`id ASC`、`id > i`、limit+1、最后返回 ID 续页，保持 RawURLEncoding、v/k/i、version=1、kind=users 与原字段检查，合法旧 v1 继续可用 |
+| Infrastructure 复用 [user.Repository](../backend/internal/user/repo.go)、视频计数与现有资料统计 | 只转换旧 ORM/游标/指标，不复制 SQL，不新增 User ORM。资料保持账户→完整公开视频数→获赞→粉丝→关注及失败立即返回；视频数继续复用 PublicVideoQuery。正常装配资料共 5 条 SQL、统计部分 3 条；这是当前实现预算，不表示已有独立持续断言 |
+| HTTP Account Handler/DTO 与 router 只切换三个匿名 GET | 保留 user/users/account 包装、avatar_url/bio 的 omitempty、四项零值统计、空数组、末页省略 next_cursor、状态码/错误文案与校验顺序；不暴露密码/软删除字段。当前 Gin 对 query 存在性的处理也须保留：`?cursor=` 进入分页，`?limit=` 拒绝 |
+
+确认引用后，仅删除被替代的旧读取 Controller 方法、列表/资料用例及无用途助手。旧 Service.GetByID、publicUser、登录/刷新/头像等仍用的共享类型与方法必须保留；user.Repository.GetByIDs 的作者批量读取不改。用户/会话 ORM、注册、登录/刷新/撤销、改密/注销事务、头像上传与补偿留后续 Account 模块；关系、Interaction、Following、Video/Feed、缓存/MQ/热度、前端、配置、DDL 与部署不在范围内。
+
+复用当前 7 文件/51 函数的 HTTP、业务与真实依赖流程，仅作迁移必要适配；未经用户明确指令不新增测试、扩展断言或恢复已删除专项。从 backend 直接执行 vet、普通全量、无缓存 race 全量，最后 git diff --check；不新增临时脚本或日志文件。同步必要文档，分别报告实际验证、账户旧 v1 兼容证据、缓存/重跑、跳过和未覆盖项；关系列表旧 v1 的通过不能代替账户游标兼容证明。完成后停止等待 review，不提交、不推送、不开始 R3 后续模块。
