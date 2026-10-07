@@ -1,8 +1,10 @@
-package user
+package applicationaccount
 
 import (
 	"encoding/base64"
 	"encoding/json"
+
+	domainaccount "gofeed/internal/domain/account"
 )
 
 const (
@@ -12,19 +14,16 @@ const (
 	userListCursorKind    = "users"
 )
 
-func normalizeUserListLimit(limit int) (int, error) {
-	if limit == 0 {
-		return defaultUserListLimit, nil
-	}
-	if limit < 1 || limit > maxUserListLimit {
-		return 0, ErrInvalidUserListLimit
-	}
-	return limit, nil
+// userCursor 保留原 v1 RawURL Base64 的字段及编码顺序
+type userCursor struct {
+	Version int    `json:"v"`
+	Kind    string `json:"k"`
+	ID      uint   `json:"i"`
 }
 
-func encodeUserCursor(cursor *UserCursor) (string, error) {
+func encodeUserCursor(cursor *userCursor) (string, error) {
 	if !validUserCursor(cursor) {
-		return "", ErrInvalidUserCursor
+		return "", domainaccount.ErrInvalidUserCursor
 	}
 
 	payload, err := json.Marshal(cursor)
@@ -34,35 +33,35 @@ func encodeUserCursor(cursor *UserCursor) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(payload), nil
 }
 
-func decodeUserCursor(raw string) (*UserCursor, error) {
+func decodeUserCursor(raw string) (*domainaccount.ListPosition, error) {
 	if raw == "" {
 		return nil, nil
 	}
 
 	payload, err := base64.RawURLEncoding.DecodeString(raw)
 	if err != nil {
-		return nil, ErrInvalidUserCursor
+		return nil, domainaccount.ErrInvalidUserCursor
 	}
 
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &fields); err != nil || len(fields) != 3 {
-		return nil, ErrInvalidUserCursor
+		return nil, domainaccount.ErrInvalidUserCursor
 	}
 	for field := range fields {
 		switch field {
 		case "v", "k", "i":
 		default:
-			return nil, ErrInvalidUserCursor
+			return nil, domainaccount.ErrInvalidUserCursor
 		}
 	}
 
-	var cursor UserCursor
+	var cursor userCursor
 	if err := json.Unmarshal(payload, &cursor); err != nil || !validUserCursor(&cursor) {
-		return nil, ErrInvalidUserCursor
+		return nil, domainaccount.ErrInvalidUserCursor
 	}
-	return &cursor, nil
+	return &domainaccount.ListPosition{ID: cursor.ID}, nil
 }
 
-func validUserCursor(cursor *UserCursor) bool {
+func validUserCursor(cursor *userCursor) bool {
 	return cursor != nil && cursor.Version == userListCursorVersion && cursor.Kind == userListCursorKind && cursor.ID != 0
 }

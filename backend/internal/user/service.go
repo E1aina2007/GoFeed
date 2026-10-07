@@ -12,9 +12,7 @@ import (
 )
 
 type Service struct {
-	Repo          *Repository
-	videoCounter  PublishedVideoCounter
-	metricsReader ProfileMetricsReader
+	Repo *Repository
 }
 
 // PublishedVideoCounter 是用户公开资料所需的视频统计能力
@@ -24,29 +22,21 @@ type PublishedVideoCounter interface {
 }
 
 // ProfileMetricsReader 是用户公开资料所需的互动统计能力
-// 接口定义在消费方，避免 user 包依赖 social 包而产生循环依赖
+// 保留旧结果类型供 Infrastructure 适配现有统计读取
 type ProfileMetricsReader interface {
 	GetProfileMetrics(ctx context.Context, accountID uint) (ProfileMetrics, error)
 }
 
 var (
-	ErrUsernameTaken           = errors.New("username already exists")
-	ErrNewUserNameRequired     = errors.New("new username is required")
-	ErrWrongPassword           = errors.New("wrong password")
-	ErrInvalidCredentials      = errors.New("invalid username or password")
-	ErrInvalidUserID           = errors.New("invalid user id")
-	ErrInvalidUserListLimit    = errors.New("invalid user list limit")
-	ErrInvalidUserCursor       = errors.New("invalid user cursor")
-	ErrInvalidInput            = errors.New("invalid user input")
-	ErrVideoCounterUnavailable = errors.New("video counter unavailable")
+	ErrUsernameTaken       = errors.New("username already exists")
+	ErrNewUserNameRequired = errors.New("new username is required")
+	ErrWrongPassword       = errors.New("wrong password")
+	ErrInvalidCredentials  = errors.New("invalid username or password")
+	ErrInvalidInput        = errors.New("invalid user input")
 )
 
-func NewService(repo *Repository, videoCounter PublishedVideoCounter, metricsReaders ...ProfileMetricsReader) *Service {
-	var metricsReader ProfileMetricsReader
-	if len(metricsReaders) > 0 {
-		metricsReader = metricsReaders[0]
-	}
-	return &Service{Repo: repo, videoCounter: videoCounter, metricsReader: metricsReader}
+func NewService(repo *Repository) *Service {
+	return &Service{Repo: repo}
 }
 
 func (s *Service) CreateUser(ctx context.Context, user *User) error {
@@ -142,34 +132,6 @@ func (s *Service) GetByID(ctx context.Context, id uint) (*User, error) {
 	return s.Repo.GetByID(ctx, id)
 }
 
-// GetProfile 返回活跃用户的公开资料及其当前公开可见的视频数量
-func (s *Service) GetProfile(ctx context.Context, id uint) (*Profile, error) {
-	account, err := s.Repo.GetByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if s.videoCounter == nil {
-		return nil, ErrVideoCounterUnavailable
-	}
-
-	videoCount, err := s.videoCounter.GetPublishedVideoCountByAuthor(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	profile := &Profile{Account: account, VideoCount: videoCount}
-	if s.metricsReader == nil {
-		return profile, nil
-	}
-	metrics, err := s.metricsReader.GetProfileMetrics(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	profile.TotalLikes = metrics.TotalLikes
-	profile.FollowerCount = metrics.FollowerCount
-	profile.VloggerCount = metrics.VloggerCount
-	return profile, nil
-}
-
 func (s *Service) GetByUsername(ctx context.Context, username string) (*User, error) {
 	return s.Repo.GetByUsername(ctx, username)
 }
@@ -183,42 +145,4 @@ func (s *Service) DeleteUser(ctx context.Context, id uint) error {
 		}
 		return auth.NewSessionRepository(tx).UpdateUserSessionRevocations(ctx, id)
 	})
-}
-
-func (s *Service) GetUserList(ctx context.Context) ([]*User, error) {
-	return s.Repo.GetUserList(ctx)
-}
-
-// GetUserListPage 按用户 ID 正序读取一页活跃用户
-// 调用方仅在显式请求分页时使用它，避免改变旧的无参数全量读取契约
-func (s *Service) GetUserListPage(ctx context.Context, rawCursor string, limit int) (UserListPage, error) {
-	limit, err := normalizeUserListLimit(limit)
-	if err != nil {
-		return UserListPage{}, err
-	}
-
-	cursor, err := decodeUserCursor(rawCursor)
-	if err != nil {
-		return UserListPage{}, err
-	}
-	users, err := s.Repo.GetUserListPage(ctx, cursor, limit+1)
-	if err != nil {
-		return UserListPage{}, err
-	}
-
-	page := UserListPage{Users: users}
-	if len(users) <= limit {
-		return page, nil
-	}
-
-	page.Users = users[:limit]
-	page.NextCursor, err = encodeUserCursor(&UserCursor{
-		Version: userListCursorVersion,
-		Kind:    userListCursorKind,
-		ID:      page.Users[len(page.Users)-1].ID,
-	})
-	if err != nil {
-		return UserListPage{}, err
-	}
-	return page, nil
 }

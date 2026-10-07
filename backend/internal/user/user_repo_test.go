@@ -1,4 +1,4 @@
-package user
+package user_test
 
 import (
 	"bytes"
@@ -14,9 +14,13 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
+	applicationaccount "gofeed/internal/application/account"
 	"gofeed/internal/auth"
+	infraaccount "gofeed/internal/infra/persistence/account"
+	interfaceshttpaccount "gofeed/internal/interfaces/http/account"
 	jwtmw "gofeed/internal/middleware/jwt"
 	"gofeed/internal/testutil"
+	legacyuser "gofeed/internal/user"
 )
 
 // 测试目标：配置用户仓储集成测试进程
@@ -34,7 +38,7 @@ const failSessionUpdateTrigger = "test_fail_auth_session_update"
 func TestUpdatePasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	service := NewService(NewRepository(db), &fakePublishedVideoCounter{})
+	service := legacyuser.NewService(legacyuser.NewRepository(db))
 	account := createUserWithSession(t, ctx, db, service, "atomic_password_user", "old-password-123")
 
 	forceSessionUpdateFailure(t, db)
@@ -62,7 +66,7 @@ func TestUpdatePasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
 func TestDeleteRollsBackWhenSessionRevocationFails(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	service := NewService(NewRepository(db), &fakePublishedVideoCounter{})
+	service := legacyuser.NewService(legacyuser.NewRepository(db))
 	account := createUserWithSession(t, ctx, db, service, "atomic_delete_user", "delete-password-123")
 
 	forceSessionUpdateFailure(t, db)
@@ -81,16 +85,16 @@ func TestDeleteRollsBackWhenSessionRevocationFails(t *testing.T) {
 // 测试目标：汇集测试用户、会话服务和会话标识
 // 预期效果：可同时断言事务后的用户与会话状态
 type userWithSession struct {
-	user      *User
+	user      *legacyuser.User
 	sessions  *auth.SessionService
 	sessionID string
 }
 
 // 测试目标：创建带有效会话的测试用户
 // 预期效果：返回可用于事务回滚断言的完整上下文
-func createUserWithSession(t *testing.T, ctx context.Context, db *gorm.DB, service *Service, username, password string) userWithSession {
+func createUserWithSession(t *testing.T, ctx context.Context, db *gorm.DB, service *legacyuser.Service, username, password string) userWithSession {
 	t.Helper()
-	user := &User{Username: username, Password: password}
+	user := &legacyuser.User{Username: username, Password: password}
 	if err := service.CreateUser(ctx, user); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -124,17 +128,6 @@ func forceSessionUpdateFailure(t *testing.T, db *gorm.DB) {
 	if err := db.Exec(statement).Error; err != nil {
 		t.Fatalf("create test trigger: %v", err)
 	}
-}
-
-type fakePublishedVideoCounter struct {
-	count     int64
-	err       error
-	authorIDs []uint
-}
-
-func (f *fakePublishedVideoCounter) GetPublishedVideoCountByAuthor(_ context.Context, authorID uint) (int64, error) {
-	f.authorIDs = append(f.authorIDs, authorID)
-	return f.count, f.err
 }
 
 // userJSONRequest 发送可选 JSON 请求体与可选访问令牌的 HTTP 请求
@@ -191,14 +184,16 @@ func newUserHTTPEngine(t *testing.T) (*gin.Engine, *auth.SessionService) {
 	t.Helper()
 	gdb := testutil.DB(t)
 	sessions := auth.NewSessionService(auth.NewSessionRepository(gdb))
-	controller := NewController(NewService(NewRepository(gdb), nil), sessions)
+	repo := legacyuser.NewRepository(gdb)
+	controller := legacyuser.NewController(legacyuser.NewService(repo), sessions)
+	accountHandler := interfaceshttpaccount.New(applicationaccount.New(infraaccount.NewReader(repo), nil))
 
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	engine.POST("/api/user/register", controller.CreateUser)
 	engine.POST("/api/user/login", controller.Login)
 	engine.POST("/api/user/refresh", controller.UpdateRefreshToken)
-	engine.GET("/api/user/:id", controller.GetUser)
+	engine.GET("/api/user/:id", accountHandler.GetUser)
 
 	protected := engine.Group("/api/user/auth", jwtmw.Auth(sessions))
 	protected.POST("/logout", controller.UpdateSessionRevocation)
@@ -251,7 +246,7 @@ func TestUserSessionHTTPContract(t *testing.T) {
 	}
 
 	duplicate := userJSONRequest(t, engine, http.MethodPost, "/api/user/register", "", credentials)
-	if message := userErrorMessage(t, duplicate, http.StatusConflict); message != ErrUsernameTaken.Error() {
+	if message := userErrorMessage(t, duplicate, http.StatusConflict); message != legacyuser.ErrUsernameTaken.Error() {
 		t.Fatalf("重名注册文案错误 got=%q", message)
 	}
 

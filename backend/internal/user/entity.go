@@ -27,10 +27,6 @@ type UpdateNameRequest struct {
 	NewUsername string `json:"new_username" binding:"required,min=3,max=32"`
 }
 
-type FindByIDRequest struct {
-	ID uint `json:"id"`
-}
-
 type FindByIDResponse struct {
 	ID        uint   `json:"id"`
 	Username  string `json:"username"`
@@ -44,13 +40,6 @@ type UserCursor struct {
 	Version int    `json:"v"`
 	Kind    string `json:"k"`
 	ID      uint   `json:"i"`
-}
-
-// UserListPage 表示用户分页读取的内部结果
-// HTTP 层负责将用户实体转换成公开响应字段
-type UserListPage struct {
-	Users      []*User
-	NextCursor string
 }
 
 type FindByUsernameRequest struct {
@@ -89,31 +78,9 @@ type LoginResponse struct {
 	User         FindByIDResponse `json:"user"`
 }
 
-type GetProfileRequest struct {
-	AccountID uint `json:"account_id"`
-}
-
-// Profile 表示公开资料读取所需的用户数据与聚合指标
-// HTTP 层负责将其中的用户实体转换为不含敏感字段的响应 DTO
-type Profile struct {
-	Account       *User
-	VideoCount    int64
-	TotalLikes    int64
-	FollowerCount int64
-	VloggerCount  int64
-}
-
 // ProfileMetrics 表示公开主页由互动关系计算出的实时统计值
 type ProfileMetrics struct {
 	TotalLikes    int64
 	FollowerCount int64
 	VloggerCount  int64
-}
-
-type GetProfileResponse struct {
-	Account       FindByIDResponse `json:"account"`
-	VideoCount    int64            `json:"video_count"`
-	TotalLikes    int64            `json:"total_likes"`
-	FollowerCount int64            `json:"follower_count"`
-	VloggerCount  int64            `json:"vlogger_count"`
 }

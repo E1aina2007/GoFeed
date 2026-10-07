@@ -3,13 +3,16 @@ package router
 import (
 	"log"
 
+	applicationaccount "gofeed/internal/application/account"
 	applicationfeed "gofeed/internal/application/feed"
 	applicationinteraction "gofeed/internal/application/interaction"
 	applicationrelation "gofeed/internal/application/relation"
 	"gofeed/internal/auth"
+	infraaccount "gofeed/internal/infra/persistence/account"
 	infrafeed "gofeed/internal/infra/persistence/feed"
 	infrainteraction "gofeed/internal/infra/persistence/interaction"
 	infrarelation "gofeed/internal/infra/persistence/relation"
+	interfaceshttpaccount "gofeed/internal/interfaces/http/account"
 	interfaceshttpfeed "gofeed/internal/interfaces/http/feed"
 	interfaceshttpinteraction "gofeed/internal/interfaces/http/interaction"
 	interfaceshttprelation "gofeed/internal/interfaces/http/relation"
@@ -85,16 +88,18 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	engagementReader := infrainteraction.NewEngagementReader(interactionRepo)
 	profileMetricsReader := infrainteraction.NewProfileMetricsReader(interactionRepo, relationRepo)
 	mediaStorage := video.NewLocalStorage(uploadDir)
-	userCtl := user.NewController(user.NewService(userRepo, videoRepo, profileMetricsReader), sessionService, mediaStorage)
+	userCtl := user.NewController(user.NewService(userRepo), sessionService, mediaStorage)
+	accountHandler := interfaceshttpaccount.New(applicationaccount.New(infraaccount.NewReader(userRepo),
+		infraaccount.NewPublishedVideoCounter(videoRepo), infraaccount.NewProfileMetricsReader(profileMetricsReader)))
 
 	api := r.Group("/api")
 	users := api.Group("/user")
 	users.POST("/register", ratelimit.Limit(opts.RateLimitCache, ratelimit.RegisterAction, ratelimit.RegisterMaxRequests, ratelimit.RegisterWindow), userCtl.CreateUser)
 	users.POST("/login", ratelimit.Limit(opts.RateLimitCache, ratelimit.LoginAction, ratelimit.LoginMaxRequests, ratelimit.LoginWindow), userCtl.Login)
 	users.POST("/refresh", userCtl.UpdateRefreshToken)
-	users.GET("", userCtl.GetUserList)
-	users.GET("/:id", userCtl.GetUser)
-	users.GET("/:id/profile", userCtl.GetProfile)
+	users.GET("", accountHandler.GetUserList)
+	users.GET("/:id", accountHandler.GetUser)
+	users.GET("/:id/profile", accountHandler.GetProfile)
 	users.GET("/:id/followers", relationHandler.GetFollowerList)
 	users.GET("/:id/following", relationHandler.GetFollowingList)
 
