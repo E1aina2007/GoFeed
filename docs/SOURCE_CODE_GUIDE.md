@@ -1,6 +1,6 @@
 # GoFeed 源码导读
 
-> 阅读基线：2026-10-07，`F:\work\Feed\GoFeed`。Interaction 已完成 HTTP、持久化及统计迁移，Relation 的五个 HTTP、用例与原 v1 游标已迁入四层，R2-B 后端/API 已提交为 `f9481b2`。R2-C 已迁关系 ORM/SQL、计数与 Following 活动观看者依赖并删除旧 social，后端为 `ea36d40`；Following 视频 SQL 仍在 Video。R3-A 三个匿名账户 GET 已迁入独立 Account 四层，后端/API 为 `35a6fe0`；写入和会话仍在旧 User/Auth。下一模块 R3-B 只迁注册，尚未实施。实施边界见开发计划第 6.8–6.10 节，提交摘要见第 6.4 节，验证与缺口见第 5 节。本文从当前源码推导；Hot/Recommend、完整热度覆盖及指标出口尚未实现。
+> 阅读基线：2026-10-07，`F:\work\Feed\GoFeed`。Interaction 已完成 HTTP、持久化及统计迁移，Relation 的五个 HTTP、用例与原 v1 游标已迁入四层，R2-B 后端/API 已提交为 `f9481b2`。R2-C 已迁关系 ORM/SQL、计数与 Following 活动观看者依赖并删除旧 social，后端为 `ea36d40`；Following 视频 SQL 仍在 Video。R3-A 三个匿名账户 GET 已迁入独立 Account 四层，后端/API 为 `35a6fe0`；R3-B 注册后端/API 已提交为 `a834d46`。登录/会话和其他写入仍在旧 User/Auth；下一模块建议 R3-C 登录、刷新与退出，尚未实施。实施边界见开发计划第 6.8–6.11 节，提交摘要见第 6.4 节，验证与缺口见第 5 节。本文从当前源码推导；Hot/Recommend、完整热度覆盖及指标出口尚未实现。
 >
 > 本文用于理解源码。运行与配置看 [README](../README.md)，接口字段看 [API](../API.md)，未完成设计与历史验收看 [开发计划](./DEVELOPMENT_PLAN.md)。本文中的“源码入口”均可直接点击。
 
@@ -93,10 +93,10 @@ backend/
    ├─ router/                   HTTP 组合根：创建依赖、注册路由
    ├─ user/ video/             既有 controller → service → repository
    ├─ auth/                    JWT、数据库会话与刷新令牌
-   ├─ domain/account/          独立公开账户/资料、ID 位置与小读取端口
-   ├─ application/account/     三个匿名读取、全量/分页双模式与原 v1 游标
-   ├─ infra/persistence/account/ 旧用户、视频计数与资料统计的类型/错误适配
-   ├─ interfaces/http/account/ 三个匿名账户 GET 的参数与独立 DTO
+   ├─ domain/account/          公开账户/资料、ID 位置、注册规则与小读/创建端口
+   ├─ application/account/     三个匿名读取/原 v1 游标、独立注册与小哈希端口
+   ├─ infra/persistence/account/ 旧用户读/创建及统计适配、bcrypt 默认成本哈希
+   ├─ interfaces/http/account/ 三个匿名账户 GET 与注册 POST 的参数/DTO
    ├─ domain/feed/             Feed 读模型、场景、读取端口、热度规则
    ├─ application/feed/        分页编排、缓存、卡片预热与热度事实映射
    ├─ infra/persistence/feed/  适配既有 MySQL 仓储
@@ -543,7 +543,11 @@ Following 另外检查观看者有效。匿名 Timeline 不会因携带 token �
 
 资料按账户→完整公开视频数→获赞→粉丝→关注读取并立即传播失败。视频计数继续调用 video.Repository 的 PublicVideoQuery，统计继续复用 Interaction 的旧资料适配器并转为独立 Account 指标；正常装配共五条 SQL，统计部分三条，未注入统计仍返回零值。旧读取 Controller/Service、pagination.go 与无用途读取类型已删除，写入、刷新和头像仍用的 Service.GetByID/publicUser/共享响应继续保留，User/AuthSession ORM 与作者 GetByIDs 未变。现有流程覆盖详情/注销 404 和资料头像；账户旧 v1 为迁移前后源码兼容证据，固定旧账户 v1 续页、资料预算和逐步失败尚无持续断言，不能用关系列表 v1 代替，详见[开发计划第 6.9 节](./DEVELOPMENT_PLAN.md#69-r3-a-三个匿名账户读取已提交)。
 
-注册当前仍走旧 user.Controller.CreateUser → Service.CreateUser → Repository.Create：原限流先执行，HTTP binding 后才对用户名 TrimSpace，并按字节长度做业务校验，再使用 bcrypt.DefaultCost 哈希并创建；重名依赖数据库唯一键，返回公开 user 且不创建会话。下一步只迁这条链路到 Account，范围见[开发计划第 6.10 节](./DEVELOPMENT_PLAN.md#610-r3-b-注册接口未实施)，登录/会话、改密/注销和头像留后续模块。
+注册走 [Account RegistrationHandler](../backend/internal/interfaces/http/account/registration.go) → [RegistrationService](../backend/internal/application/account/registration.go) → [Domain 注册规则/输入](../backend/internal/domain/account/registration.go) → [Creator](../backend/internal/infra/persistence/account/legacy_creator.go) → 原 user.Repository.Create。它与三个匿名读取复用 Account 包和公开 DTO，独立装配注册依赖。限流仍先执行；ShouldBindJSON 与原 required/min/max 标签先按 rune 校验，成功后才对用户名 TrimSpace 并按 Go len 字节长度检查 3–32，密码不 Trim、按字节检查 8–72。Application 的小 Hash 端口由 [BcryptPasswordHasher](../backend/internal/infra/persistence/account/password_hasher.go) 使用 GenerateFromPassword/DefaultCost 实现，始终先哈希再 Create，包括重名请求。
+
+创建适配器只将独立 CreateInput 转为旧 User，复用原仓储的唯一键/1062 处理并将旧错误转换为领域错误；不预查重、不重读、不增加 SQL 或外层事务。大小写语义和软删除用户名占用不变。返回 201 + user 包装及原公开字段，avatar_url/bio 仍 omitempty；不返回密码/软删除字段，不创建会话/令牌。400/409/500 文案及原 Redis Key、5 次/小时、429/Retry-After/fail-open 均保留。确认引用后已删除旧注册 Controller/Service 方法与 CreateRequest；其他写入仍使用的错误、bcrypt、GetByID/GetByUsername、publicUser 和 ORM 保留。以上为源码兼容证据，R3-B 实施轮完成 vet/build 与差异检查；提交轮代码未变，沿用该结果，没有运行 Go 测试或真实注册回归，剩余专项见[开发计划第 6.10 节](./DEVELOPMENT_PLAN.md#610-r3-b-注册接口已提交)。
+
+登录、刷新和退出仍由 [旧 Controller](../backend/internal/user/controller.go)、[用户 Service](../backend/internal/user/service.go)、[SessionService/Repository](../backend/internal/auth/session.go) 与 [JWT 签发](../backend/internal/auth/jwt.go) 配合。登录在 binding 后只 TrimSpace 用户名、读取密码哈希并比较，再先保存七天会话后签发十五分钟 JWT；没有复用注册的字节长度规则。刷新先查活动会话并以旧刷新哈希做 CAS 轮换，保留 session ID 和 expires_at，再读当前用户、签发 JWT；读取用户失败会尝试撤销该会话并返回 401。退出由原 [JWT 中间件](../backend/internal/middleware/jwt/jwt.go) 验证后，只撤销当前会话。登录落库后的签发失败、刷新 CAS 后的读取/签发失败均没有外层回滚；R3-C 计划保留这些既有顺序，详见[开发计划第 6.11 节](./DEVELOPMENT_PLAN.md#611-r3-c-登录刷新与退出未实施)，当前没有迁移这三个入口。
 
 ### 9.2 互动先保存关系，再读取聚合
 
