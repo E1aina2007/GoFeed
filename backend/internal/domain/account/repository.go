@@ -6,6 +6,16 @@ type Creator interface {
 	Create(ctx context.Context, input CreateInput) (PublicAccount, error)
 }
 
+type CredentialReader interface {
+	GetByUsername(ctx context.Context, username string) (Credentials, error)
+}
+
+type SessionLifecycle interface {
+	Create(ctx context.Context, userID uint, username string) (TokenPair, error)
+	UpdateRefreshToken(ctx context.Context, refreshToken string) (Session, string, error)
+	UpdateSessionRevocation(ctx context.Context, sessionID string, userID uint) error
+}
+
 type Reader interface {
 	GetByID(ctx context.Context, id uint) (PublicAccount, error)
 	GetUserList(ctx context.Context) ([]PublicAccount, error)

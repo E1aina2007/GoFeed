@@ -1,10 +1,6 @@
 package user
 
-import (
-	"time"
-
-	"gorm.io/gorm"
-)
+import "gorm.io/gorm"
 
 type User struct {
 	ID        uint   `gorm:"primaryKey" json:"id"`
@@ -20,13 +16,6 @@ type User struct {
 
 type UpdateNameRequest struct {
 	NewUsername string `json:"new_username" binding:"required,min=3,max=32"`
-}
-
-type FindByIDResponse struct {
-	ID        uint   `json:"id"`
-	Username  string `json:"username"`
-	AvatarURL string `json:"avatar_url,omitempty"`
-	Bio       string `json:"bio,omitempty"`
 }
 
 // UserCursor 记录用户列表分页位置及固定的列表范围
@@ -55,22 +44,6 @@ type UpdateProfileRequest struct {
 	// AvatarURL 保留对象存储等外部存储实现的兼容能力，当前前端优先使用头像上传接口
 	AvatarURL string `json:"avatar_url" binding:"omitempty,max=512"`
 	Bio       string `json:"bio" binding:"omitempty,max=255"`
-}
-
-type LoginRequest struct {
-	Username string `json:"username" binding:"required,min=3,max=32"`
-	Password string `json:"password" binding:"required,min=8,max=72"`
-}
-
-type RefreshRequest struct {
-	RefreshToken string `json:"refresh_token" binding:"required"`
-}
-
-type LoginResponse struct {
-	AccessToken  string           `json:"access_token"`
-	RefreshToken string           `json:"refresh_token"`
-	ExpiresAt    time.Time        `json:"expires_at"`
-	User         FindByIDResponse `json:"user"`
 }
 
 // ProfileMetrics 表示公开主页由互动关系计算出的实时统计值

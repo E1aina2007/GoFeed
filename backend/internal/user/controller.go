@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 
-	authn "gofeed/internal/auth"
 	"gofeed/internal/error"
 	"gofeed/internal/middleware/jwt"
 
@@ -16,86 +15,19 @@ import (
 
 type Controller struct {
 	Srv           *Service
-	Sessions      *authn.SessionService
 	AvatarStorage AvatarStorage
 }
 
-func NewController(srv *Service, sessions *authn.SessionService, avatarStorage ...AvatarStorage) *Controller {
+func NewController(srv *Service, avatarStorage ...AvatarStorage) *Controller {
 	var storage AvatarStorage
 	if len(avatarStorage) > 0 {
 		storage = avatarStorage[0]
 	}
-	return &Controller{Srv: srv, Sessions: sessions, AvatarStorage: storage}
+	return &Controller{Srv: srv, AvatarStorage: storage}
 }
 
 func currentUserID(c *gin.Context) (uint, bool) {
 	return jwt.UserID(c)
-}
-
-// 处理用户登录请求
-func (ctl *Controller) Login(c *gin.Context) {
-	var req LoginRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apierror.WriteCode(c, apierror.CodeInvalid, "invalid login payload")
-		return
-	}
-	user, err := ctl.Srv.Authenticate(c.Request.Context(), req.Username, req.Password)
-	if err != nil {
-		handleLoginError(c, err)
-		return
-	}
-	pair, err := ctl.Sessions.Create(c.Request.Context(), user.ID, user.Username)
-	if err != nil {
-		apierror.WriteCode(c, apierror.CodeInternal, "failed to create session")
-		return
-	}
-	c.JSON(http.StatusOK, loginResponse(pair, user))
-}
-
-// 处理刷新令牌请求并轮换刷新令牌
-func (ctl *Controller) UpdateRefreshToken(c *gin.Context) {
-	var req RefreshRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apierror.WriteCode(c, apierror.CodeInvalid, "invalid refresh payload")
-		return
-	}
-	session, nextRefreshToken, err := ctl.Sessions.UpdateRefreshToken(c.Request.Context(), req.RefreshToken)
-	if err != nil {
-		apierror.WriteCode(c, apierror.CodeUnauthorized, "invalid refresh token")
-		return
-	}
-	user, err := ctl.Srv.GetByID(c.Request.Context(), session.UserID)
-	if err != nil {
-		_ = ctl.Sessions.UpdateSessionRevocation(c.Request.Context(), session.ID, session.UserID)
-		apierror.WriteCode(c, apierror.CodeUnauthorized, "invalid refresh token")
-		return
-	}
-	accessToken, err := authn.GenerateToken(user.ID, user.Username, session.ID)
-	if err != nil {
-		apierror.WriteCode(c, apierror.CodeInternal, "failed to create access token")
-		return
-	}
-	c.JSON(http.StatusOK, LoginResponse{
-		AccessToken:  accessToken,
-		RefreshToken: nextRefreshToken,
-		ExpiresAt:    session.ExpiresAt,
-		User:         publicUser(user),
-	})
-}
-
-// 处理退出登录请求并仅撤销当前会话
-func (ctl *Controller) UpdateSessionRevocation(c *gin.Context) {
-	userID, ok := currentUserID(c)
-	sessionID, hasSession := jwt.SessionID(c)
-	if !ok || !hasSession {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	if err := ctl.Sessions.UpdateSessionRevocation(c.Request.Context(), sessionID, userID); err != nil {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	c.Status(http.StatusNoContent)
 }
 
 // 处理用户名修改请求
@@ -237,19 +169,6 @@ func (ctl *Controller) DeleteUser(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-func publicUser(user *User) FindByIDResponse {
-	return FindByIDResponse{ID: user.ID, Username: user.Username, AvatarURL: user.AvatarURL, Bio: user.Bio}
-}
-
-func loginResponse(pair *authn.TokenPair, user *User) LoginResponse {
-	return LoginResponse{
-		AccessToken:  pair.AccessToken,
-		RefreshToken: pair.RefreshToken,
-		ExpiresAt:    pair.ExpiresAt,
-		User:         publicUser(user),
-	}
-}
-
 // userErrorRules 按从最具体到最通用排列，决定用户模块领域错误的公共类别与对外文案
 var userErrorRules = []apierror.Rule{
 	{Match: apierror.Is(ErrNewUserNameRequired, ErrInvalidInput, ErrNothingToUpdate, ErrInvalidAvatar), Code: apierror.CodeInvalid, UseErrorText: true},
@@ -257,13 +176,6 @@ var userErrorRules = []apierror.Rule{
 	{Match: apierror.Is(ErrUsernameTaken), Code: apierror.CodeConflict, UseErrorText: true},
 	{Match: apierror.Is(ErrWrongPassword), Code: apierror.CodeForbidden, UseErrorText: true},
 	{Match: apierror.Is(gorm.ErrRecordNotFound), Code: apierror.CodeNotFound, PublicMessage: "user not found"},
-}
-
-func handleLoginError(c *gin.Context, err error) {
-	// 登录失败使用端点专用文案，避免区分用户名不存在与密码错误
-	apierror.Write(c, err, "failed to authenticate", apierror.Rule{
-		Match: apierror.Is(ErrInvalidCredentials), Code: apierror.CodeUnauthorized, PublicMessage: "invalid username or password",
-	})
 }
 
 func handleUserError(c *gin.Context, err error) {

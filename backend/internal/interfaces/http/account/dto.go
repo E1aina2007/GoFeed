@@ -1,6 +1,8 @@
 package interfaceshttpaccount
 
 import (
+	"time"
+
 	applicationaccount "gofeed/internal/application/account"
 	domainaccount "gofeed/internal/domain/account"
 )
@@ -8,6 +10,29 @@ import (
 type registrationRequest struct {
 	Username string `json:"username" binding:"required,min=3,max=32"`
 	Password string `json:"password" binding:"required,min=8,max=72"`
+}
+
+type loginRequest struct {
+	Username string `json:"username" binding:"required,min=3,max=32"`
+	Password string `json:"password" binding:"required,min=8,max=72"`
+}
+
+type refreshRequest struct {
+	RefreshToken string `json:"refresh_token" binding:"required"`
+}
+
+type sessionResponse struct {
+	AccessToken  string        `json:"access_token"`
+	RefreshToken string        `json:"refresh_token"`
+	ExpiresAt    time.Time     `json:"expires_at"`
+	User         publicAccount `json:"user"`
+}
+
+func sessionFromDomain(result domainaccount.SessionResult) sessionResponse {
+	return sessionResponse{
+		AccessToken: result.Tokens.AccessToken, RefreshToken: result.Tokens.RefreshToken, ExpiresAt: result.Tokens.ExpiresAt,
+		User: publicAccountFromDomain(result.Account),
+	}
 }
 
 type publicAccount struct {

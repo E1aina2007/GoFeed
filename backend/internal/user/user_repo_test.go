@@ -187,20 +187,23 @@ func newUserHTTPEngine(t *testing.T) (*gin.Engine, *auth.SessionService) {
 	gdb := testutil.DB(t)
 	sessions := auth.NewSessionService(auth.NewSessionRepository(gdb))
 	repo := legacyuser.NewRepository(gdb)
-	controller := legacyuser.NewController(legacyuser.NewService(repo), sessions)
+	controller := legacyuser.NewController(legacyuser.NewService(repo))
 	accountHandler := interfaceshttpaccount.New(applicationaccount.New(infraaccount.NewReader(repo), nil))
 	registrationHandler := interfaceshttpaccount.NewRegistration(applicationaccount.NewRegistration(
 		infraaccount.NewCreator(repo), infraaccount.BcryptPasswordHasher{}))
+	sessionHandler := interfaceshttpaccount.NewSessions(applicationaccount.NewSessions(
+		infraaccount.NewCredentialReader(repo), infraaccount.NewReader(repo), infraaccount.BcryptPasswordVerifier{},
+		infraaccount.NewSessions(sessions), infraaccount.AccessTokenIssuer{}))
 
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	engine.POST("/api/user/register", registrationHandler.CreateUser)
-	engine.POST("/api/user/login", controller.Login)
-	engine.POST("/api/user/refresh", controller.UpdateRefreshToken)
+	engine.POST("/api/user/login", sessionHandler.Login)
+	engine.POST("/api/user/refresh", sessionHandler.UpdateRefreshToken)
 	engine.GET("/api/user/:id", accountHandler.GetUser)
 
 	protected := engine.Group("/api/user/auth", jwtmw.Auth(sessions))
-	protected.POST("/logout", controller.UpdateSessionRevocation)
+	protected.POST("/logout", sessionHandler.UpdateSessionRevocation)
 	protected.DELETE("", controller.DeleteUser)
 	return engine, sessions
 }

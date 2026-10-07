@@ -31,7 +31,6 @@ var (
 	ErrUsernameTaken       = errors.New("username already exists")
 	ErrNewUserNameRequired = errors.New("new username is required")
 	ErrWrongPassword       = errors.New("wrong password")
-	ErrInvalidCredentials  = errors.New("invalid username or password")
 	ErrInvalidInput        = errors.New("invalid user input")
 )
 
@@ -79,20 +78,6 @@ func (s *Service) UpdatePassword(ctx context.Context, id uint, old, new string) 
 	})
 }
 
-func (s *Service) Authenticate(ctx context.Context, username, password string) (*User, error) {
-	user, err := s.GetByUsername(ctx, strings.TrimSpace(username))
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrInvalidCredentials
-		}
-		return nil, err
-	}
-	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)); err != nil {
-		return nil, ErrInvalidCredentials
-	}
-	return user, nil
-}
-
 func (s *Service) UpdateAvatar(ctx context.Context, id uint, url string) error {
 	url = strings.TrimSpace(url)
 	if url == "" {
@@ -117,10 +102,6 @@ func (s *Service) UpdateProfile(ctx context.Context, id uint, req *UpdateProfile
 
 func (s *Service) GetByID(ctx context.Context, id uint) (*User, error) {
 	return s.Repo.GetByID(ctx, id)
-}
-
-func (s *Service) GetByUsername(ctx context.Context, username string) (*User, error) {
-	return s.Repo.GetByUsername(ctx, username)
 }
 
 // 在同一事务中软删除用户并撤销其全部会话

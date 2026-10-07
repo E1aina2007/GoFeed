@@ -256,7 +256,7 @@ GET /static/videos/42/20260819/demo_0123456789abcdef0123456789abcdef.mp4
 
 ### 注册与登录的限流
 
-`POST /api/user/register` 与 `POST /api/user/login` 共享固定窗口限流，并在 JSON 请求体绑定、注册或认证处理前执行。注册每个 IP 每小时最多 5 次，Redis Key 为 `rl:v1:register:<IP>`；登录窗口为 1 分钟。
+`POST /api/user/register` 与 `POST /api/user/login` 共享固定窗口限流，并在 JSON 请求体绑定、注册或认证处理前执行。注册每个 IP 每小时最多 5 次，Redis Key 为 `rl:v1:register:<IP>`；登录每个 IP 每分钟最多 10 次，Redis Key 为 `rl:v1:login:<IP>`。
 
 超限响应固定为 `429 Too Many Requests`，带 `Retry-After` 响应头；其值为正整数秒。响应体固定为：
 
@@ -272,11 +272,18 @@ Redis 不可用时限流会 fail-open，注册或登录继续按原有业务契�
 
 `POST /api/user/login`
 
-请求体字段与注册接口相同。
+请求体字段为 `username`、`password`，仍用原 `required,min=3,max=32` 与 `required,min=8,max=72` 标签按 rune 绑定校验。绑定成功后仅对用户名 `TrimSpace`，密码保持原样；登录不增加注册的业务字节长度校验。
 
 成功响应：`200 OK`，响应体为 [`LoginResponse`](#loginresponse)。
 
-常见失败：`400` 请求体格式不合法，`401` 用户名或密码错误，或见上方共享限流行为的 `429`。
+| 状态码 | 错误文案 | 原因 |
+| --- | --- | --- |
+| `400` | `invalid login payload` | JSON 绑定或 binding 标签校验失败 |
+| `401` | `invalid username or password` | 用户不存在或密码比较失败 |
+| `500` | `failed to authenticate` | 其他用户读取错误 |
+| `500` | `failed to create session` | 会话创建阶段的随机生成、存储或访问令牌签发错误 |
+
+超限行为见上方共享限流说明。会话先保存再签发访问令牌；签发失败不额外回滚已保存的会话。
 
 ### 刷新令牌
 
@@ -290,9 +297,17 @@ Redis 不可用时限流会 fail-open，注册或登录继续按原有业务契�
 }
 ```
 
-成功响应：`200 OK`，响应体为 [`LoginResponse`](#loginresponse)。请使用响应中的新刷新令牌替换本地旧值。
+`refresh_token` 保留原 `required` 绑定规则，绑定后原样使用，不 Trim 或增加格式校验。
 
-常见失败：`400` 请求体缺少 `refresh_token`，`401` 令牌无效、过期、已撤销或已被使用。
+成功响应：`200 OK`，响应体为 [`LoginResponse`](#loginresponse)。请使用响应中的新刷新令牌替换本地旧值；轮换保留原会话 ID 和 `expires_at`，不延长七天会话期限。
+
+| 状态码 | 错误文案 | 原因 |
+| --- | --- | --- |
+| `400` | `invalid refresh payload` | JSON 绑定失败或缺少 `refresh_token` |
+| `401` | `invalid refresh token` | 轮换阶段任意错误，包括令牌无效、过期、撤销、已使用、存储或随机生成失败；轮换后用户读取失败也返回该错误 |
+| `500` | `failed to create access token` | 轮换后访问令牌签发失败 |
+
+先以旧刷新哈希做 CAS 轮换，再读取当前用户并签发访问令牌。用户读取失败时尝试撤销该会话，忽略撤销错误。轮换已提交后不回滚旧哈希或自动重试；刷新和退出不新增限流。
 
 ### 查询用户列表
 
@@ -408,11 +423,11 @@ Redis 不可用时限流会 fail-open，注册或登录继续按原有业务契�
 
 `POST /api/user/auth/logout`
 
-无需请求体。成功响应：`204 No Content`。
+无需请求体。成功响应：`204 No Content`，响应体为空。
 
 该操作仅撤销当前访问令牌所属的会话，不影响同一账号在其他设备创建的会话。
 
-常见失败：`401` 未携带、格式错误、过期或已撤销的访问令牌。
+常见失败：`401` 未携带、格式错误、过期或已撤销的访问令牌，沿用原 JWT 中间件文案。缺少当前用户/会话身份或撤销阶段任意错误为 `401 invalid or expired token`；重复退出仍为 `401`。
 
 ### 修改用户名
 

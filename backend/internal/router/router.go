@@ -88,17 +88,20 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	engagementReader := infrainteraction.NewEngagementReader(interactionRepo)
 	profileMetricsReader := infrainteraction.NewProfileMetricsReader(interactionRepo, relationRepo)
 	mediaStorage := video.NewLocalStorage(uploadDir)
-	userCtl := user.NewController(user.NewService(userRepo), sessionService, mediaStorage)
+	userCtl := user.NewController(user.NewService(userRepo), mediaStorage)
 	accountHandler := interfaceshttpaccount.New(applicationaccount.New(infraaccount.NewReader(userRepo),
 		infraaccount.NewPublishedVideoCounter(videoRepo), infraaccount.NewProfileMetricsReader(profileMetricsReader)))
 	registrationHandler := interfaceshttpaccount.NewRegistration(applicationaccount.NewRegistration(
 		infraaccount.NewCreator(userRepo), infraaccount.BcryptPasswordHasher{}))
+	sessionHandler := interfaceshttpaccount.NewSessions(applicationaccount.NewSessions(
+		infraaccount.NewCredentialReader(userRepo), infraaccount.NewReader(userRepo), infraaccount.BcryptPasswordVerifier{},
+		infraaccount.NewSessions(sessionService), infraaccount.AccessTokenIssuer{}))
 
 	api := r.Group("/api")
 	users := api.Group("/user")
 	users.POST("/register", ratelimit.Limit(opts.RateLimitCache, ratelimit.RegisterAction, ratelimit.RegisterMaxRequests, ratelimit.RegisterWindow), registrationHandler.CreateUser)
-	users.POST("/login", ratelimit.Limit(opts.RateLimitCache, ratelimit.LoginAction, ratelimit.LoginMaxRequests, ratelimit.LoginWindow), userCtl.Login)
-	users.POST("/refresh", userCtl.UpdateRefreshToken)
+	users.POST("/login", ratelimit.Limit(opts.RateLimitCache, ratelimit.LoginAction, ratelimit.LoginMaxRequests, ratelimit.LoginWindow), sessionHandler.Login)
+	users.POST("/refresh", sessionHandler.UpdateRefreshToken)
 	users.GET("", accountHandler.GetUserList)
 	users.GET("/:id", accountHandler.GetUser)
 	users.GET("/:id/profile", accountHandler.GetProfile)
@@ -108,7 +111,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	protectedUsers := users.Group("/auth")
 	protectedUsers.Use(jwt.Auth(sessionService))
 	{
-		protectedUsers.POST("/logout", userCtl.UpdateSessionRevocation)
+		protectedUsers.POST("/logout", sessionHandler.UpdateSessionRevocation)
 		protectedUsers.PATCH("/name", userCtl.UpdateName)
 		protectedUsers.PATCH("/password", userCtl.UpdatePassword)
 		protectedUsers.POST("/avatar", userCtl.UpdateAvatar)
