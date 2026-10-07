@@ -15,3 +15,8 @@ type ListReader interface {
 	GetFollowerList(ctx context.Context, userID uint, position *FollowPosition, limit int) ([]FollowListItem, error)
 	GetFollowingList(ctx context.Context, userID uint, position *FollowPosition, limit int) ([]FollowListItem, error)
 }
+
+type CountReader interface {
+	GetFollowerCount(ctx context.Context, userID uint) (int64, error)
+	GetFollowingCount(ctx context.Context, userID uint) (int64, error)
+}

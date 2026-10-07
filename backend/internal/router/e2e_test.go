@@ -36,8 +36,8 @@ import (
 	infracachefeed "gofeed/internal/infra/cache/feed"
 	infrafeed "gofeed/internal/infra/persistence/feed"
 	infrainteraction "gofeed/internal/infra/persistence/interaction"
+	infrarelation "gofeed/internal/infra/persistence/relation"
 	"gofeed/internal/middleware/cache"
-	"gofeed/internal/social"
 	"gofeed/internal/testutil"
 	"gofeed/internal/user"
 	videoModel "gofeed/internal/video"
@@ -818,7 +818,7 @@ func TestSocialCursorScopeContract(t *testing.T) {
 			target.AccessToken, nil, http.StatusOK, nil)
 	}
 
-	if err := gdb.Model(&social.Follow{}).Where("follower_id = ? OR followee_id = ?", target.UserID, target.UserID).
+	if err := gdb.Model(&infrarelation.Follow{}).Where("follower_id = ? OR followee_id = ?", target.UserID, target.UserID).
 		Update("created_at", time.Date(2026, 9, 5, 8, 0, 0, 123000000, time.UTC)).Error; err != nil {
 		t.Fatalf("固定关系游标夹具失败: %v", err)
 	}
@@ -969,7 +969,7 @@ func (e *followingHTTPEnv) video(id, author uint) videoModel.Video {
 // 预期效果：无需读请求补发历史事件即可把当前可见历史视频加入集合
 func (e *followingHTTPEnv) follow(author uint) {
 	e.t.Helper()
-	if err := e.gdb.Create(&social.Follow{FollowerID: e.viewer.UserID, FolloweeID: author}).Error; err != nil {
+	if err := e.gdb.Create(&infrarelation.Follow{FollowerID: e.viewer.UserID, FolloweeID: author}).Error; err != nil {
 		e.t.Fatal(err)
 	}
 }
@@ -1109,7 +1109,7 @@ func TestFollowingFeedMySQLDynamicRelations(t *testing.T) {
 	if !reflect.DeepEqual(followingIDs(first), []uint{102}) || first.NextCursor == "" {
 		t.Fatalf("首屏=%+v", first)
 	}
-	if err := e.gdb.Where("follower_id = ? AND followee_id = ?", e.viewer.UserID, 20).Delete(&social.Follow{}).Error; err != nil {
+	if err := e.gdb.Where("follower_id = ? AND followee_id = ?", e.viewer.UserID, 20).Delete(&infrarelation.Follow{}).Error; err != nil {
 		t.Fatal(err)
 	}
 	query := "&limit=1&cursor=" + url.QueryEscape(first.NextCursor)

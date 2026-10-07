@@ -2,50 +2,63 @@ package infrarelation
 
 import (
 	"context"
+	"time"
 
 	domainrelation "gofeed/internal/domain/relation"
-	"gofeed/internal/social"
 )
 
 func (r *Repository) GetFollowerList(ctx context.Context, userID uint, position *domainrelation.FollowPosition, limit int) ([]domainrelation.FollowListItem, error) {
-	if !r.available() {
-		return nil, domainrelation.ErrUnavailable
-	}
-	items, err := r.legacy.GetFollowerList(ctx, userID, legacyPosition(position), limit)
-	if err != nil {
-		return nil, err
-	}
-	return listFromLegacy(items), nil
+	return r.getFollowUserList(ctx, userID, position, limit, "followee_id", "follower_id")
 }
 
 func (r *Repository) GetFollowingList(ctx context.Context, userID uint, position *domainrelation.FollowPosition, limit int) ([]domainrelation.FollowListItem, error) {
+	return r.getFollowUserList(ctx, userID, position, limit, "follower_id", "followee_id")
+}
+
+func (r *Repository) getFollowUserList(ctx context.Context, targetID uint, position *domainrelation.FollowPosition, limit int, targetColumn, accountColumn string) ([]domainrelation.FollowListItem, error) {
 	if !r.available() {
 		return nil, domainrelation.ErrUnavailable
 	}
-	items, err := r.legacy.GetFollowingList(ctx, userID, legacyPosition(position), limit)
-	if err != nil {
+	type followRow struct {
+		RelationID uint
+		CreatedAt  time.Time
+		ID         uint
+		Username   string
+		AvatarURL  string
+		Bio        string
+	}
+
+	query := r.db.WithContext(ctx).Table("user_follows AS follows").
+		Select(
+			"follows.id AS relation_id, follows.created_at, accounts.id, accounts.username, accounts.avatar_url, accounts.bio",
+		).
+		Joins("JOIN users AS accounts ON accounts.id = follows."+accountColumn+" AND accounts.deleted_at IS NULL").
+		Where("follows."+targetColumn+" = ?", targetID)
+	if position != nil {
+		query = query.Where(
+			"(follows.created_at < ?) OR (follows.created_at = ? AND follows.id < ?)",
+			position.CreatedAt,
+			position.CreatedAt,
+			position.ID,
+		)
+	}
+
+	var rows []followRow
+	if err := query.Order("follows.created_at DESC, follows.id DESC").Limit(limit).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	return listFromLegacy(items), nil
-}
-
-func legacyPosition(position *domainrelation.FollowPosition) *social.FollowCursor {
-	if position == nil {
-		return nil
-	}
-	return &social.FollowCursor{CreatedAt: position.CreatedAt, ID: position.ID}
-}
-
-func listFromLegacy(items []social.FollowListItem) []domainrelation.FollowListItem {
-	result := make([]domainrelation.FollowListItem, 0, len(items))
-	for _, item := range items {
-		result = append(result, domainrelation.FollowListItem{
+	items := make([]domainrelation.FollowListItem, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, domainrelation.FollowListItem{
 			User: domainrelation.PublicUser{
-				ID: item.User.ID, Username: item.User.Username,
-				AvatarURL: item.User.AvatarURL, Bio: item.User.Bio,
+				ID:        row.ID,
+				Username:  row.Username,
+				AvatarURL: row.AvatarURL,
+				Bio:       row.Bio,
 			},
-			FollowedAt: item.FollowedAt, RelationID: item.RelationID,
+			FollowedAt: row.CreatedAt,
+			RelationID: row.RelationID,
 		})
 	}
-	return result
+	return items, nil
 }

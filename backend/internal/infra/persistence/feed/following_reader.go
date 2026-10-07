@@ -7,9 +7,8 @@ import (
 	"log"
 
 	domainfeed "gofeed/internal/domain/feed"
-	"gofeed/internal/social"
+	domainrelation "gofeed/internal/domain/relation"
 	"gofeed/internal/video"
-	"gorm.io/gorm"
 )
 
 type FollowingVideoReader interface {
@@ -17,7 +16,7 @@ type FollowingVideoReader interface {
 }
 
 type ActiveViewerReader interface {
-	GetActiveUser(context.Context, uint) error
+	RequireActiveUser(context.Context, uint) error
 }
 
 type FollowingReader struct {
@@ -28,7 +27,6 @@ type FollowingReader struct {
 var (
 	_ domainfeed.FollowingReader = (*FollowingReader)(nil)
 	_ FollowingVideoReader       = (*video.Repository)(nil)
-	_ ActiveViewerReader         = (*social.Repository)(nil)
 )
 
 func NewFollowingReader(videos FollowingVideoReader, viewers ActiveViewerReader) *FollowingReader {
@@ -43,8 +41,8 @@ func (r *FollowingReader) ListFollowingPage(ctx context.Context, viewerID uint, 
 	if r.videos == nil || r.viewers == nil {
 		return domainfeed.TimelinePage{}, domainfeed.ErrUnavailable
 	}
-	if err := r.viewers.GetActiveUser(ctx, viewerID); err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := r.viewers.RequireActiveUser(ctx, viewerID); err != nil {
+		if errors.Is(err, domainrelation.ErrUserNotFound) {
 			return domainfeed.TimelinePage{}, domainfeed.ErrUnauthenticated
 		}
 		return domainfeed.TimelinePage{}, fmt.Errorf("%w: %w", domainfeed.ErrUnavailable, err)

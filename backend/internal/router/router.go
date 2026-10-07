@@ -16,7 +16,6 @@ import (
 	"gofeed/internal/middleware/jwt"
 	"gofeed/internal/middleware/ratelimit"
 	"gofeed/internal/observability"
-	"gofeed/internal/social"
 	"gofeed/internal/user"
 	"gofeed/internal/video"
 
@@ -79,13 +78,12 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	sessionService := auth.NewSessionService(auth.NewSessionRepository(db))
 	userRepo := user.NewRepository(db)
 	videoRepo := video.NewRepository(db)
-	socialRepo := social.NewRepository(db)
-	relationRepo := infrarelation.New(socialRepo)
+	relationRepo := infrarelation.New(db)
 	relationHandler := interfaceshttprelation.New(applicationrelation.New(relationRepo, relationRepo))
 	interactionRepo := infrainteraction.New(db, true)
 	interactionHandler := interfaceshttpinteraction.New(applicationinteraction.New(interactionRepo, interactionRepo))
 	engagementReader := infrainteraction.NewEngagementReader(interactionRepo)
-	profileMetricsReader := infrainteraction.NewProfileMetricsReader(interactionRepo, socialRepo)
+	profileMetricsReader := infrainteraction.NewProfileMetricsReader(interactionRepo, relationRepo)
 	mediaStorage := video.NewLocalStorage(uploadDir)
 	userCtl := user.NewController(user.NewService(userRepo, videoRepo, profileMetricsReader), sessionService, mediaStorage)
 
@@ -120,7 +118,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	videoCtl := video.NewController(videoService, mediaStorage)
 	feedRepo := infrafeed.New(videoRepo, authorReader, engagementReader)
 	feedService := applicationfeed.New(feedRepo,
-		applicationfeed.WithFollowingReader(infrafeed.NewFollowingReader(videoRepo, socialRepo)),
+		applicationfeed.WithFollowingReader(infrafeed.NewFollowingReader(videoRepo, relationRepo)),
 		applicationfeed.WithPageCache(opts.FeedPageCache, infrafeed.NewCardReader(videoRepo), func(observation applicationfeed.CacheObservation) {
 			log.Printf("event=feed_page_cache result=%s duration_ms=%d", observation.Result, observation.Duration.Milliseconds())
 		}),

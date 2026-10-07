@@ -4,6 +4,7 @@ import (
 	"context"
 
 	domaininteraction "gofeed/internal/domain/interaction"
+	domainrelation "gofeed/internal/domain/relation"
 	"gofeed/internal/user"
 	"gofeed/internal/video"
 )
@@ -12,14 +13,9 @@ type EngagementReader struct {
 	reader domaininteraction.EngagementReader
 }
 
-type FollowCountReader interface {
-	GetFollowerCount(ctx context.Context, accountID uint) (int64, error)
-	GetFollowingCount(ctx context.Context, accountID uint) (int64, error)
-}
-
 type ProfileMetricsReader struct {
 	likes   domaininteraction.TotalLikesReader
-	follows FollowCountReader
+	follows domainrelation.CountReader
 }
 
 var (
@@ -31,7 +27,7 @@ func NewEngagementReader(reader domaininteraction.EngagementReader) *EngagementR
 	return &EngagementReader{reader: reader}
 }
 
-func NewProfileMetricsReader(likes domaininteraction.TotalLikesReader, follows FollowCountReader) *ProfileMetricsReader {
+func NewProfileMetricsReader(likes domaininteraction.TotalLikesReader, follows domainrelation.CountReader) *ProfileMetricsReader {
 	return &ProfileMetricsReader{likes: likes, follows: follows}
 }
 
