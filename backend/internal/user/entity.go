@@ -14,10 +14,6 @@ type User struct {
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
 }
 
-type UpdateNameRequest struct {
-	NewUsername string `json:"new_username" binding:"required,min=3,max=32"`
-}
-
 // UserCursor 记录用户列表分页位置及固定的列表范围
 // 游标由服务端签发，客户端只可原样传回同一列表
 type UserCursor struct {
@@ -33,12 +29,6 @@ type FindByUsernameRequest struct {
 type FindByUsernameResponse struct {
 	ID       uint   `json:"id"`
 	Username string `json:"username"`
-}
-
-type UpdateProfileRequest struct {
-	// AvatarURL 保留对象存储等外部存储实现的兼容能力，当前前端优先使用头像上传接口
-	AvatarURL string `json:"avatar_url" binding:"omitempty,max=512"`
-	Bio       string `json:"bio" binding:"omitempty,max=255"`
 }
 
 // ProfileMetrics 表示公开主页由互动关系计算出的实时统计值

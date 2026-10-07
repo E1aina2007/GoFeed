@@ -1,6 +1,6 @@
 # GoFeed 源码导读
 
-> 阅读基线：2026-10-07，`F:\work\Feed\GoFeed`。Interaction 已完成 HTTP、持久化及统计迁移，Relation 的五个 HTTP、用例与原 v1 游标已迁入四层，R2-B 后端/API 已提交为 `f9481b2`。R2-C 已迁关系 ORM/SQL、计数与 Following 活动观看者依赖并删除旧 social，后端为 `ea36d40`；Following 视频 SQL 仍在 Video。R3-A 三个匿名账户 GET 已迁入独立 Account 四层，后端/API 为 `35a6fe0`；R3-B 注册后端/API 已提交为 `a834d46`。R3-C 登录、刷新与退出提交为 `f20dcdf`；R3-D 改密与注销的用例/HTTP 和原子事务适配已迁入 Account，未提交，等待 review。会话/CAS/JWT 复用旧 Auth，改名/资料/头像仍在旧 User。实施边界见开发计划第 6.8–6.12 节，提交摘要见第 6.4 节，验证与缺口见第 5 节。本文从当前源码推导；Hot/Recommend、完整热度覆盖及指标出口尚未实现。
+> 阅读基线：2026-10-07，`F:\work\Feed\GoFeed`。Interaction 已完成 HTTP、持久化及统计迁移，Relation 的五个 HTTP、用例与原 v1 游标已迁入四层，R2-B 后端/API 已提交为 `f9481b2`。R2-C 已迁关系 ORM/SQL、计数与 Following 活动观看者依赖并删除旧 social，后端为 `ea36d40`；Following 视频 SQL 仍在 Video。R3-A 三个匿名账户 GET 已迁入独立 Account 四层，后端/API 为 `35a6fe0`；R3-B 注册后端/API 已提交为 `a834d46`。R3-C 登录、刷新与退出提交为 `f20dcdf`；R3-D 改密与注销提交为 `4f4838b`；R3-E 改名、资料与头像已迁入 Account，未提交，等待 review。账户 HTTP 全部归 Account，User 仓储/ORM、会话/CAS/JWT 与本地媒体仍复用旧实现。实施边界见开发计划第 6.8–6.13 节，提交摘要见第 6.4 节，验证与缺口见第 5 节。本文从当前源码推导；Hot/Recommend、完整热度覆盖及指标出口尚未实现。
 >
 > 本文用于理解源码。运行与配置看 [README](../README.md)，接口字段看 [API](../API.md)，未完成设计与历史验收看 [开发计划](./DEVELOPMENT_PLAN.md)。本文中的“源码入口”均可直接点击。
 
@@ -91,12 +91,12 @@ backend/
 ├─ db/migrations/               表、索引与状态机字段的版本迁移
 └─ internal/
    ├─ router/                   HTTP 组合根：创建依赖、注册路由
-   ├─ user/ video/             既有 controller → service → repository
+   ├─ user/ video/             旧 User 仓储/ORM/夹具接口及既有 Video 三层
    ├─ auth/                    JWT、数据库会话与刷新令牌
-   ├─ domain/account/          公开账户/资料、注册/新密码规则、凭据/会话及小端口
-   ├─ application/account/     匿名读取/原 v1 游标、注册、会话、改密/注销编排
-   ├─ infra/persistence/account/ 旧用户/统计/会话/JWT、原子写入适配及 bcrypt
-   ├─ interfaces/http/account/ 匿名读取、注册、会话及改密/注销的参数/DTO/错误
+   ├─ domain/account/          账户/资料、注册/改密/改名/头像规则、凭据/会话及小端口
+   ├─ application/account/     账户读写/原 v1 游标、会话与头像文件补偿编排
+   ├─ infra/persistence/account/ 旧用户/统计/会话/JWT/媒体适配、原子写入及 bcrypt
+   ├─ interfaces/http/account/ 全部账户 HTTP 的参数/DTO/错误及 multipart 解析
    ├─ domain/feed/             Feed 读模型、场景、读取端口、热度规则
    ├─ application/feed/        分页编排、缓存、卡片预热与热度事实映射
    ├─ infra/persistence/feed/  适配既有 MySQL 仓储
@@ -541,11 +541,11 @@ Following 另外检查观看者有效。匿名 Timeline 不会因携带 token �
 
 列表没有 limit/cursor 时继续复用 user.Repository 全量读取；任一参数存在即分页，Gin GetQuery 保留空值存在性，`?cursor=` 使用默认 20，`?limit=`/0/超出 1–50 先报 limit 错误。Application 保留 [v1 编解码](../backend/internal/application/account/cursor.go) 的 RawURLEncoding、v/k/i、version=1、kind=users、非零 ID 及原字段检查，再将独立位置交给旧仓储。原 SQL 的 id ASC/id > ID 不变，多读一条，以实际返回末条 ID 续页；[DTO](../backend/internal/interfaces/http/account/dto.go) 保持 user/users/account、资料 omitempty、四项零值统计、空数组和末页省略游标。
 
-资料按账户→完整公开视频数→获赞→粉丝→关注读取并立即传播失败。视频计数继续调用 video.Repository 的 PublicVideoQuery，统计继续复用 Interaction 的旧资料适配器并转为独立 Account 指标；正常装配共五条 SQL，统计部分三条，未注入统计仍返回零值。旧读取 Controller/Service、pagination.go 与无用途读取类型已删除；头像仍用的 Service.GetByID 和其他共享响应保留，R3-C 已删除无用途 publicUser/旧登录响应，会话 DTO 归 Account。User/AuthSession ORM 与作者 GetByIDs 未变。现有流程覆盖详情/注销 404 和资料头像；账户旧 v1 为迁移前后源码兼容证据，固定旧账户 v1 续页、资料预算和逐步失败尚无持续断言，不能用关系列表 v1 代替，详见[开发计划第 6.9 节](./DEVELOPMENT_PLAN.md#69-r3-a-三个匿名账户读取已提交)。
+资料按账户→完整公开视频数→获赞→粉丝→关注读取并立即传播失败。视频计数继续调用 video.Repository 的 PublicVideoQuery，统计继续复用 Interaction 的旧资料适配器并转为独立 Account 指标；正常装配共五条 SQL，统计部分三条，未注入统计仍返回零值。旧读取 Controller/Service、pagination.go 与无用途读取类型已删除；头像改由 Account 小 Reader 读取，旧 Service.GetByID 仅供保留测试夹具，其他共享响应保留，R3-C 已删除无用途 publicUser/旧登录响应，会话 DTO 归 Account。User/AuthSession ORM 与作者 GetByIDs 未变。现有流程覆盖详情/注销 404 和资料头像；账户旧 v1 为迁移前后源码兼容证据，固定旧账户 v1 续页、资料预算和逐步失败尚无持续断言，不能用关系列表 v1 代替，详见[开发计划第 6.9 节](./DEVELOPMENT_PLAN.md#69-r3-a-三个匿名账户读取已提交)。
 
 注册走 [Account RegistrationHandler](../backend/internal/interfaces/http/account/registration.go) → [RegistrationService](../backend/internal/application/account/registration.go) → [Domain 注册规则/输入](../backend/internal/domain/account/registration.go) → [Creator](../backend/internal/infra/persistence/account/legacy_creator.go) → 原 user.Repository.Create。它与三个匿名读取复用 Account 包和公开 DTO，独立装配注册依赖。限流仍先执行；ShouldBindJSON 与原 required/min/max 标签先按 rune 校验，成功后才对用户名 TrimSpace 并按 Go len 字节长度检查 3–32，密码不 Trim、按字节检查 8–72。Application 的小 Hash 端口由 [BcryptPasswordHasher](../backend/internal/infra/persistence/account/password_hasher.go) 使用 GenerateFromPassword/DefaultCost 实现，始终先哈希再 Create，包括重名请求。
 
-创建适配器只将独立 CreateInput 转为旧 User，复用原仓储的唯一键/1062 处理并将旧错误转换为领域错误；不预查重、不重读、不增加 SQL 或外层事务。大小写语义和软删除用户名占用不变。返回 201 + user 包装及原公开字段，avatar_url/bio 仍 omitempty；不返回密码/软删除字段，不创建会话/令牌。400/409/500 文案及原 Redis Key、5 次/小时、429/Retry-After/fail-open 均保留。确认引用后已删除旧注册 Controller/Service 方法与 CreateRequest；改名仍使用的错误、头像所需 Service.GetByID、仓储 GetByUsername 及 ORM 保留，改密的 bcrypt 由 Account Infrastructure 复用。以上为源码兼容证据，R3-B 实施轮完成 vet/build 与差异检查；提交轮代码未变，沿用该结果，没有运行 Go 测试或真实注册回归，剩余专项见[开发计划第 6.10 节](./DEVELOPMENT_PLAN.md#610-r3-b-注册接口已提交)。
+创建适配器只将独立 CreateInput 转为旧 User，复用原仓储的唯一键/1062 处理并将旧错误转换为领域错误；不预查重、不重读、不增加 SQL 或外层事务。大小写语义和软删除用户名占用不变。返回 201 + user 包装及原公开字段，avatar_url/bio 仍 omitempty；不返回密码/软删除字段，不创建会话/令牌。400/409/500 文案及原 Redis Key、5 次/小时、429/Retry-After/fail-open 均保留。确认引用后已删除旧注册 Controller/Service 方法与 CreateRequest；旧创建适配仍用的 ErrUsernameTaken/ErrInvalidInput、测试夹具 Service.GetByID、仓储 GetByUsername 及 ORM 保留；改名规则已归 Domain，bcrypt 由 Account Infrastructure 复用。以上为源码兼容证据，R3-B 实施轮完成 vet/build 与差异检查；提交轮代码未变，沿用该结果，没有运行 Go 测试或真实注册回归，剩余专项见[开发计划第 6.10 节](./DEVELOPMENT_PLAN.md#610-r3-b-注册接口已提交)。
 
 登录、刷新和退出走 [Account SessionHandler](../backend/internal/interfaces/http/account/session.go) → [SessionService 用例](../backend/internal/application/account/session.go) → [独立会话/凭据端口](../backend/internal/domain/account/repository.go) → [会话适配](../backend/internal/infra/persistence/account/legacy_sessions.go)与[凭据适配](../backend/internal/infra/persistence/account/legacy_credentials.go)，后者复用原 User 仓储及 [SessionService/Repository](../backend/internal/auth/session.go)。密码比较和访问令牌签发分别由小端口委托 bcrypt 与 [原 JWT 签发](../backend/internal/auth/jwt.go)，内层仅依赖标准库和 Domain，旧类型与错误仅在 Infrastructure 转换。
 
@@ -555,7 +555,13 @@ Following 另外检查观看者有效。匿名 Timeline 不会因携带 token �
 
 改密与注销走 [AccountSecurityHandler](../backend/internal/interfaces/http/account/security.go) → [AccountSecurityService](../backend/internal/application/account/security.go) → [原子写入端口](../backend/internal/domain/account/repository.go) → [事务适配](../backend/internal/infra/persistence/account/legacy_security.go)。改密先保留原 binding，两个密码不 Trim；[Domain 新密码规则](../backend/internal/domain/account/security.go) 仅检查新密码 8–72 字节，再通过凭据读取端口读用户、比较旧密码、生成 bcrypt 默认成本哈希。Infrastructure 使用同一个 tx 构造原用户和会话仓储，先用原密码哈希 CAS 更新，再撤销全部会话；CAS 未匹配为 403 wrong password，撤销失败会回滚更新。校验/读取/哈希仍在事务前，不增加锁、重读或重试。
 
-注销没有用户预读，在同一事务中先调用原 user.Repository.DeleteUser 软删除，再调用 SessionRepository.UpdateUserSessionRevocations；失败仍整体回滚。改密成功为 200 + 原 message，注销成功为空 204，原 400/401/403/404/500 文案保留，不创建会话或令牌，不改变媒体、关系或视频清扫。确认引用后删除旧两个 Controller/Service 方法、密码 DTO 与无用途 ErrWrongPassword/auth/bcrypt/GORM Service 依赖，保留改名/资料/头像、Service.GetByID、仓储与 ORM。两个回滚流程和注销 HTTP 流程仅作必要装配/调用适配，断言未改。以上为源码证据，vet/build 已通过，未运行 Go 测试、真实改密/注销及故障回滚回归；尚未提交，等待 review，详见[开发计划第 6.12 节](./DEVELOPMENT_PLAN.md#612-r3-d-改密与注销已实现待-review)。
+注销没有用户预读，在同一事务中先调用原 user.Repository.DeleteUser 软删除，再调用 SessionRepository.UpdateUserSessionRevocations；失败仍整体回滚。改密成功为 200 + 原 message，注销成功为空 204，原 400/401/403/404/500 文案保留，不创建会话或令牌，不改变媒体、关系或视频清扫。确认引用后删除旧两个 Controller/Service 方法、密码 DTO 与无用途 ErrWrongPassword/auth/bcrypt/GORM Service 依赖，保留改名/资料/头像、Service.GetByID、仓储与 ORM。两个回滚流程和注销 HTTP 流程仅作必要装配/调用适配，断言未改。以上为源码证据，vet/build 已通过，未运行 Go 测试、真实改密/注销及故障回滚回归；已提交为 `4f4838b`，未推送，详见[开发计划第 6.12 节](./DEVELOPMENT_PLAN.md#612-r3-d-改密与注销已提交)。
+
+改名、资料与头像走 [ProfileHandler](../backend/internal/interfaces/http/account/profile.go) → [ProfileService](../backend/internal/application/account/profile.go) → [Domain 规则/独立输入](../backend/internal/domain/account/profile.go)与[ProfileWriter](../backend/internal/domain/account/repository.go)。[写入适配](../backend/internal/infra/persistence/account/legacy_profile.go) 委托原 user.Repository.UpdateName/UpdateFields/UpdateAvatar，保留唯一键/1062、RowsAffected、软删除和大小写语义，不加预读或事务。改名仍先按原 binding 校验，再 TrimSpace 与 3–32 字节检查；资料先按原 omitempty/max 标签绑定，再分别 TrimSpace，只更新非空 bio/avatar_url，均空为 nothing to update，不支持清空或增加 URL 格式规则。
+
+头像的 multipart、大小限制、读取前 512 字节、原扩展名/文件头和 Seek 均保留在 HTTP，[Domain 头像规则](../backend/internal/domain/account/avatar.go) 与旧规则一致。Application 依次读取当前账户、保存新对象、TrimSpace URL 后写库；写库失败尝试清理新 URL，成功后才尝试清理不同的旧 URL，两处清理错误均忽略。[存储适配](../backend/internal/infra/persistence/account/legacy_avatar_storage.go) 委托原 LocalStorage.SaveAvatar/RemoveAvatar，不改物理路径、文件名、随机生成和安全删除；文件/数据库无共同事务，资料 JSON 直接改 avatar_url 仍不清理对象。
+
+三个成功响应仍为改名/资料 200 + 原 message、头像 201 + 原 avatar_url，认证、binding、400/404/409/413/500 文案保持原规则。旧 user/controller.go、avatar.go 与三项写 Service/DTO 已删除，User 仓储/ORM、旧创建适配所需错误/统计接口及测试夹具 Service.GetByID 保留。36 项源码对照、vet/build 通过，30 个保护源码及全部 5 个测试文件未改；未运行 Go 测试、真实 HTTP/MySQL/文件上传或补偿故障回归。尚未提交，等待 review，详见[开发计划第 6.13 节](./DEVELOPMENT_PLAN.md#613-r3-e-改名资料与头像已实现待-review)。
 
 ### 9.2 互动先保存关系，再读取聚合
 

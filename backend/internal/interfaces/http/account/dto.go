@@ -26,6 +26,15 @@ type passwordChangeRequest struct {
 	NewPassword string `json:"new_password" binding:"required,min=8,max=72"`
 }
 
+type nameChangeRequest struct {
+	NewUsername string `json:"new_username" binding:"required,min=3,max=32"`
+}
+
+type profileChangeRequest struct {
+	AvatarURL string `json:"avatar_url" binding:"omitempty,max=512"`
+	Bio       string `json:"bio" binding:"omitempty,max=255"`
+}
+
 type sessionResponse struct {
 	AccessToken  string        `json:"access_token"`
 	RefreshToken string        `json:"refresh_token"`

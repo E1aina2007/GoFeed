@@ -4,7 +4,7 @@
 
 系统阅读项目可从 [`GoFeed 源码导读`](./docs/SOURCE_CODE_GUIDE.md) 开始，包含 Timeline/Following、页与卡片缓存、Outbox 发布与预热、故障恢复，以及向量推荐的当前边界和扩展位置。
 
-后续任务与待补验收统一维护在[开发计划](./docs/DEVELOPMENT_PLAN.md)，开头提供阅读导航。[R2-B 粉丝/关注列表与游标](./docs/DEVELOPMENT_PLAN.md#67-r2-b-粉丝关注列表与游标已提交) 已提交为 `f9481b2`；[R2-C 关系持久化与旧 social 收口](./docs/DEVELOPMENT_PLAN.md#68-r2-c-关系持久化与旧-social-收口已提交) 后端为 `ea36d40`；[R3-A 三个匿名账户读取](./docs/DEVELOPMENT_PLAN.md#69-r3-a-三个匿名账户读取已提交) 后端/API 为 `35a6fe0`。[R3-B 注册接口](./docs/DEVELOPMENT_PLAN.md#610-r3-b-注册接口已提交) 后端/API 已提交为 `a834d46`，保留原绑定、字节长度校验、限流、错误和公开响应，复用原 User 仓储。[R3-C 登录、刷新与退出](./docs/DEVELOPMENT_PLAN.md#611-r3-c-登录刷新与退出已提交) 已提交为 `f20dcdf`，复用原会话、CAS 和 JWT 实现。[R3-D 改密与注销](./docs/DEVELOPMENT_PLAN.md#612-r3-d-改密与注销已实现待-review) 已迁入 Account，保留业务更新与全部会话撤销的同一事务，尚未提交，等待 review。后续不运行 Go 单元测试，默认仅静态检查、构建与差异检查，本轮没有真实注册、会话、改密或注销回归。Feed 功能路线分别推进，每个模块先 review 再提交。
+后续任务与待补验收统一维护在[开发计划](./docs/DEVELOPMENT_PLAN.md)，开头提供阅读导航。[R2-B 粉丝/关注列表与游标](./docs/DEVELOPMENT_PLAN.md#67-r2-b-粉丝关注列表与游标已提交) 已提交为 `f9481b2`；[R2-C 关系持久化与旧 social 收口](./docs/DEVELOPMENT_PLAN.md#68-r2-c-关系持久化与旧-social-收口已提交) 后端为 `ea36d40`；[R3-A 三个匿名账户读取](./docs/DEVELOPMENT_PLAN.md#69-r3-a-三个匿名账户读取已提交) 后端/API 为 `35a6fe0`。[R3-B 注册接口](./docs/DEVELOPMENT_PLAN.md#610-r3-b-注册接口已提交) 后端/API 已提交为 `a834d46`，保留原绑定、字节长度校验、限流、错误和公开响应，复用原 User 仓储。[R3-C 登录、刷新与退出](./docs/DEVELOPMENT_PLAN.md#611-r3-c-登录刷新与退出已提交) 已提交为 `f20dcdf`，复用原会话、CAS 和 JWT 实现。[R3-D 改密与注销](./docs/DEVELOPMENT_PLAN.md#612-r3-d-改密与注销已提交) 已提交为 `4f4838b`，保留业务更新与全部会话撤销的同一事务。[R3-E 改名、资料与头像](./docs/DEVELOPMENT_PLAN.md#613-r3-e-改名资料与头像已实现待-review) 已迁入 Account，保留原头像校验和文件补偿，尚未提交，等待 review。后续不运行 Go 单元测试，默认仅静态检查、构建与差异检查，本轮没有真实账户或头像/补偿回归。Feed 功能路线分别推进，每个模块先 review 再提交。
 
 ## 快速开始（Docker）
 
@@ -237,13 +237,15 @@ R3-A 将三个匿名账户 GET 接入独立 Account Domain/Application/Infrastru
 
 R3-C 将登录、刷新与退出接入 Account 会话用例和 HTTP，使用独立凭据/会话/令牌模型及小端口。Infrastructure 委托原 User 仓储、bcrypt 比较、SessionService 与 JWT 签发，保留登录限流和 binding、仅用户名 TrimSpace、先比较再建会话、刷新先 CAS 再读用户/签发及失败撤销、退出当前会话和原错误分类。确认引用后删除被替代的旧登录/刷新/退出方法、DTO 与助手，保留改密/注销事务、头像读取、User/AuthSession ORM 和原会话 SQL。仅适配保留测试的装配，未新增测试或断言。Go 1.27.1 下 vet/build、内层依赖和源码对照检查通过；未运行 Go 测试或真实 HTTP/MySQL/Redis 会话回归。已提交为 `f20dcdf`，未推送；提交轮没有 Go 源码变更，沿用实施轮 vet/build 结果并检查精确暂存范围/空白。边界见开发计划第 6.11 节。
 
-R3-D 将改密与注销接入 Account。Domain 保留新密码字节规则与独立输入，Application 编排校验→读取凭据→比较旧密码→哈希→原子写入；Infrastructure 将原密码 CAS/软删除与全部会话撤销分别放在同一个事务中，复用原仓储方法，没有新 SQL、ORM、锁或重试。保留 binding、密码不 Trim、原状态码/文案及成功响应。确认引用后删除替代的旧方法/DTO/错误依赖，保留改名、资料/头像和头像读取；保留测试仅适配装配/调用，断言未改。vet/build、依赖与 35 项源码对照检查通过，未运行 Go 测试或真实改密/注销及事务故障回归。尚未提交，等待 review；边界见开发计划第 6.12 节。
+R3-D 将改密与注销接入 Account。Domain 保留新密码字节规则与独立输入，Application 编排校验→读取凭据→比较旧密码→哈希→原子写入；Infrastructure 将原密码 CAS/软删除与全部会话撤销分别放在同一个事务中，复用原仓储方法，没有新 SQL、ORM、锁或重试。保留 binding、密码不 Trim、原状态码/文案及成功响应。确认引用后删除替代的旧方法/DTO/错误依赖，保留改名、资料/头像和头像读取；保留测试仅适配装配/调用，断言未改。vet/build、依赖与 35 项源码对照检查通过，未运行 Go 测试或真实改密/注销及事务故障回归。已提交为 `4f4838b`，未推送；提交轮代码未变，沿用实施轮 vet/build 结果并检查精确暂存范围/空白。边界见开发计划第 6.12 节。
+
+R3-E 将改名、资料与头像的 HTTP/用例迁入 Account，账户入口全部归四层。Domain 保留独立输入、原改名字节规则及头像大小/文件头规则；Application 使用小读取/写入/存储端口编排头像保存、写库及新旧对象清理。Infrastructure 复用原 User 仓储及 LocalStorage，不改 SQL、ORM、路径或文件补偿顺序。确认引用后删除旧 Controller/avatar.go 和替代的 Service 写方法/DTO，保留测试夹具读取、仓储/ORM与旧统计适配接口。vet/build、内层依赖及 36 项源码对照检查通过，30 个保护源码及 5 个测试文件未改；未运行 Go 测试或真实改名/资料/头像、文件补偿回归。尚未提交，等待 review；边界见开发计划第 6.13 节。
 
 当前 API 互动写入和 worker Relay 都依赖迁移 `000010_interaction_outbox`，启动前必须确认已应用。2026-10-05 已使用当前后端配置将本机 `localhost:3306/feedsystem` 从版本 9 迁移至 10，dirty=false；互动事实表的 18 个字段、7 个索引已核对，原有七张业务表记录数未变。这只证明迁移与结构，不代表真实互动/消费链路验收。worker 直接运行独立互动 Relay 与 F4-B1 热度消费（实现提交 `26a3f95`），沿用持久载荷、租约/attempt 围栏、publisher confirm、mandatory/Return、`1s/5s/30s` 重试/DLQ、重连与关闭生命周期。coverage 保持 unverified，真实依赖验收仍待补齐。
 
 热度新增与撤销都计入原互动创建分钟。Lua 在状态 Hash 中同时记录 event_id 收据与绝对分数，再写分钟 ZSET；重复投递可修复未完成的 ZSET 写入而不再次累加，负贡献不在写入时截断。分钟桶按原始时间到期，过期桶不重建；同一代际锁定权重/时间/容量规则。`unverified` 表示尚未证明整个窗口的事实与消费覆盖，当前代码没有将它改为完整的路径；它不是 Redis 连接状态。没有 MySQL 热榜快照、自动重建或完整消费水位，`scene=hot` 仍为 501，派发完成也不表示热榜完整。
 
-现有指标配置与 Feed 请求回调已单独提交为 `2ff0364`，采集器/监听出口仍未装配，容量工具继续暂缓。F4-A/B1 的并发、投递与消费专项仍待补；删除前的四种互动写入事实失败回滚/恢复记录不代表整个热度链路已验收。Feed 功能路线后续按独立模块推进 F4-B2 的覆盖契约、有界事实扫描、代际重建与 MySQL 快照，再接 F4-C Hot。Following 混合推拉仍需容量收益证据。详细范围与待补验收见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 3.5–3.8、5、6 节；架构模块 R3-A/B/C 已提交，R3-D 改密与注销已实现，等待 review。
+现有指标配置与 Feed 请求回调已单独提交为 `2ff0364`，采集器/监听出口仍未装配，容量工具继续暂缓。F4-A/B1 的并发、投递与消费专项仍待补；删除前的四种互动写入事实失败回滚/恢复记录不代表整个热度链路已验收。Feed 功能路线后续按独立模块推进 F4-B2 的覆盖契约、有界事实扫描、代际重建与 MySQL 快照，再接 F4-C Hot。Following 混合推拉仍需容量收益证据。详细范围与待补验收见 [开发计划](./docs/DEVELOPMENT_PLAN.md) 第 3.5–3.8、5、6 节；架构模块 R3-A/B/C/D 已提交，R3-E 改名、资料与头像已实现，等待 review。
 
 F3-A 后端支持 `GET /api/feed?scene=following`：复用 JWT/session 与活动观看者校验，在 MySQL 内关联当前关注关系、活动作者和完整公开视频，使用绑定观看者的独立 keyset 游标，并批量读取作者与当前统计。Following 响应为私有且不使用 Timeline 缓存；Timeline 保持匿名，Hot/Recommend 保持 501。真实 MySQL 用例验证非空页 6 次 SQL、空页 3 次，0/1/32/128 个关注作者下已执行 EXPLAIN ANALYZE；样本不代表生产容量或 p95。已提交的 F3-B 页面支持场景切换、独立分页、`/?scene=following` 与登录回跳；接口见 [API](./API.md)，历史验证与剩余范围见开发计划第 5、3.4 节。
 

@@ -441,7 +441,7 @@ Redis 不可用时限流会 fail-open，注册或登录继续按原有业务契�
 }
 ```
 
-`new_username` 去除首尾空格后长度必须为 3-32。
+`new_username` 保留原 `required,min=3,max=32` binding 标签，先按 rune 校验；绑定后再 `TrimSpace`，空值拒绝，其余按 Go `len` 检查 3-32 字节。仍复用原唯一键/MySQL 1062 处理、软删除占名和大小写语义，不预查重或增加会话撤销。
 
 成功响应：`200 OK`
 
@@ -451,7 +451,16 @@ Redis 不可用时限流会 fail-open，注册或登录继续按原有业务契�
 }
 ```
 
-常见失败：`400` 请求体或用户名不合法，`401` 未认证，`409` 用户名已存在。
+| 状态码 | 错误文案 | 原因 |
+| --- | --- | --- |
+| `400` | `invalid username payload` | JSON 绑定或 binding 标签校验失败 |
+| `400` | `new username is required` | 绑定后去空白为空 |
+| `400` | `invalid user input` | 绑定后用户名字节长度不在 3-32 |
+| `409` | `username already exists` | 原仓储识别的重名错误 |
+| `404` | `user not found` | 原仓储更新未找到用户 |
+| `500` | `user operation failed` | 其他未知更新错误 |
+
+认证失败仍为 `401` 并沿用原 JWT 文案；Handler 缺少当前用户身份时为 `401 invalid or expired token`。本接口不新增限流。
 
 ### 修改密码
 
@@ -501,6 +510,8 @@ JSON 绑定仍使用原规则，字符串长度标签按 rune 校验。两个密
 
 支持 JPG、JPEG、PNG、WebP，单文件最大 10 MiB。当前默认实现将文件保存到本地 `/static/avatars/{user_id}/{yyyyMMdd}/` 目录，并返回相对地址；存储抽象保留替换为 OSS 等对象存储的能力。
 
+总请求体仍限 11 MiB，包含原 1 MiB multipart 开销预留。先认证并检查存储可用性，再解析 `file`、检查文件大小、读取前 512 字节并按原扩展名/文件头规则校验、Seek 回开头。校验后读取当前用户，保存新对象并更新数据库；写库失败时尝试删除新对象，成功后才尝试删除不同的旧头像。清理失败不替换原错误或已成功响应；本地遗留对象保留既有孤儿回收规则，外部 URL 按原存储实现处理。
+
 成功响应：`201 Created`
 
 ```json
@@ -509,7 +520,17 @@ JSON 绑定仍使用原规则，字符串长度标签按 rune 校验。两个密
 }
 ```
 
-常见失败：`400` 文件格式或表单不合法，`401` 未认证，`413` 文件超过大小限制。
+| 状态码 | 错误文案 | 原因 |
+| --- | --- | --- |
+| `400` | `invalid avatar upload payload` | multipart/file 解析失败 |
+| `400` | `invalid avatar file` | 原扩展名或文件头校验失败 |
+| `413` | `avatar file too large` | 文件大小非正、超过 10 MiB 或触发总请求体限制 |
+| `500` | `avatar storage unavailable` | 头像存储未装配，先于 multipart 解析返回 |
+| `500` | `failed to read avatar upload` | 读取或 Seek 失败 |
+| `404` | `user not found` | 用户读取或原仓储更新未找到用户 |
+| `500` | `user operation failed` | 其他未知保存或写库错误 |
+
+认证失败仍为 `401` 并沿用原 JWT 文案；Handler 缺少当前用户身份时为 `401 invalid or expired token`。本接口不新增限流或数据库/文件外层事务。
 
 ### 修改个人资料
 
@@ -528,7 +549,7 @@ JSON 绑定仍使用原规则，字符串长度标签按 rune 校验。两个密
 | `avatar_url` | string | 否 | 最多 512 个字符，保留对象存储 URL 兼容能力 |
 | `bio` | string | 否 | 最多 255 个字符 |
 
-新前端通过头像上传接口更新头像；`avatar_url` 仍可由对象存储客户端直接提交。空字符串不会更新对应字段，因此该接口当前不能清空头像或简介。
+新前端通过头像上传接口更新头像；`avatar_url` 仍可由对象存储客户端直接提交。两个字段仍用原 `omitempty,max=512` / `omitempty,max=255` binding 标签按 rune 校验，绑定后分别 `TrimSpace`，只更新非空字段。空值或全空白不会更新对应字段，因此该接口当前不能清空头像或简介；两个字段均为空时拒绝更新。仍不增加 URL 格式规则、用户预读、文件清理或会话撤销。
 
 成功响应：`200 OK`
 
@@ -538,7 +559,7 @@ JSON 绑定仍使用原规则，字符串长度标签按 rune 校验。两个密
 }
 ```
 
-常见失败：`400` 请求体不合法，`401` 未认证。
+常见失败：绑定为 `400 invalid profile payload`，两个字段均为空/全空白为 `400 nothing to update`，原仓储未找到用户为 `404 user not found`，其他未知更新错误为 `500 user operation failed`。认证失败仍为 `401` 并沿用原 JWT 文案；Handler 缺少当前用户身份时为 `401 invalid or expired token`。本接口不新增限流。
 
 ### 查询关注状态
 

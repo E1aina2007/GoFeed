@@ -6,6 +6,12 @@ type Creator interface {
 	Create(ctx context.Context, input CreateInput) (PublicAccount, error)
 }
 
+type ProfileWriter interface {
+	UpdateName(ctx context.Context, userID uint, username string) error
+	UpdateProfile(ctx context.Context, userID uint, changes ProfileChanges) error
+	UpdateAvatar(ctx context.Context, userID uint, avatarURL string) error
+}
+
 type AccountSecurityWriter interface {
 	UpdatePasswordAndRevokeSessions(ctx context.Context, input PasswordChange) error
 	DeleteUserAndRevokeSessions(ctx context.Context, userID uint) error

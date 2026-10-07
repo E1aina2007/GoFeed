@@ -88,7 +88,6 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	engagementReader := infrainteraction.NewEngagementReader(interactionRepo)
 	profileMetricsReader := infrainteraction.NewProfileMetricsReader(interactionRepo, relationRepo)
 	mediaStorage := video.NewLocalStorage(uploadDir)
-	userCtl := user.NewController(user.NewService(userRepo), mediaStorage)
 	accountHandler := interfaceshttpaccount.New(applicationaccount.New(infraaccount.NewReader(userRepo),
 		infraaccount.NewPublishedVideoCounter(videoRepo), infraaccount.NewProfileMetricsReader(profileMetricsReader)))
 	registrationHandler := interfaceshttpaccount.NewRegistration(applicationaccount.NewRegistration(
@@ -99,6 +98,8 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	securityHandler := interfaceshttpaccount.NewAccountSecurity(applicationaccount.NewAccountSecurity(
 		infraaccount.NewCredentialReader(userRepo), infraaccount.BcryptPasswordVerifier{}, infraaccount.BcryptPasswordHasher{},
 		infraaccount.NewAccountSecurityWriter(db)))
+	profileHandler := interfaceshttpaccount.NewProfile(applicationaccount.NewProfile(
+		infraaccount.NewReader(userRepo), infraaccount.NewProfileWriter(userRepo), infraaccount.NewAvatarStorage(mediaStorage)))
 
 	api := r.Group("/api")
 	users := api.Group("/user")
@@ -115,10 +116,10 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	protectedUsers.Use(jwt.Auth(sessionService))
 	{
 		protectedUsers.POST("/logout", sessionHandler.UpdateSessionRevocation)
-		protectedUsers.PATCH("/name", userCtl.UpdateName)
+		protectedUsers.PATCH("/name", profileHandler.UpdateName)
 		protectedUsers.PATCH("/password", securityHandler.UpdatePassword)
-		protectedUsers.POST("/avatar", userCtl.UpdateAvatar)
-		protectedUsers.PATCH("/profile", userCtl.UpdateProfile)
+		protectedUsers.POST("/avatar", profileHandler.UpdateAvatar)
+		protectedUsers.PATCH("/profile", profileHandler.UpdateProfile)
 		protectedUsers.GET("/:id/follow", relationHandler.GetFollowState)
 		protectedUsers.PUT("/:id/follow", relationHandler.CreateFollow)
 		protectedUsers.DELETE("/:id/follow", relationHandler.RemoveFollow)

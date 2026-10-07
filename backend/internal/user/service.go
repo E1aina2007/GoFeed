@@ -3,7 +3,6 @@ package user
 import (
 	"context"
 	"errors"
-	"strings"
 )
 
 type Service struct {
@@ -23,47 +22,12 @@ type ProfileMetricsReader interface {
 }
 
 var (
-	ErrUsernameTaken       = errors.New("username already exists")
-	ErrNewUserNameRequired = errors.New("new username is required")
-	ErrInvalidInput        = errors.New("invalid user input")
+	ErrUsernameTaken = errors.New("username already exists")
+	ErrInvalidInput  = errors.New("invalid user input")
 )
 
 func NewService(repo *Repository) *Service {
 	return &Service{Repo: repo}
-}
-
-func (s *Service) UpdateName(ctx context.Context, id uint, newName string) error {
-	newName = strings.TrimSpace(newName)
-	if newName == "" {
-		return ErrNewUserNameRequired
-	}
-	if len(newName) < 3 || len(newName) > 32 {
-		return ErrInvalidInput
-	}
-
-	return s.Repo.UpdateName(ctx, id, newName)
-}
-
-func (s *Service) UpdateAvatar(ctx context.Context, id uint, url string) error {
-	url = strings.TrimSpace(url)
-	if url == "" {
-		return ErrInvalidInput
-	}
-	return s.Repo.UpdateAvatar(ctx, id, url)
-}
-
-func (s *Service) UpdateProfile(ctx context.Context, id uint, req *UpdateProfileRequest) error {
-	updates := map[string]any{}
-	if bio := strings.TrimSpace(req.Bio); bio != "" {
-		updates["bio"] = bio
-	}
-	if avatarURL := strings.TrimSpace(req.AvatarURL); avatarURL != "" {
-		updates["avatar_url"] = avatarURL
-	}
-	if len(updates) == 0 {
-		return ErrNothingToUpdate
-	}
-	return s.Repo.UpdateFields(ctx, id, updates)
 }
 
 func (s *Service) GetByID(ctx context.Context, id uint) (*User, error) {

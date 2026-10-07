@@ -3,6 +3,10 @@ package domainaccount
 import "errors"
 
 var (
+	ErrNewUserNameRequired       = errors.New("new username is required")
+	ErrNothingToUpdate           = errors.New("nothing to update")
+	ErrInvalidAvatar             = errors.New("invalid avatar file")
+	ErrAvatarTooLarge            = errors.New("avatar file too large")
 	ErrWrongPassword             = errors.New("wrong password")
 	ErrInvalidCredentials        = errors.New("invalid username or password")
 	ErrSessionCreationFailed     = errors.New("failed to create session")

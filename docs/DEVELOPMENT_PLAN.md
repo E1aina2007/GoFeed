@@ -11,7 +11,7 @@
 - [5. 待补验证与交付门槛](#5-待补验证与交付门槛)：历史证据、剩余专项和检查要求
 - [6. 全后端四层架构演进](#6-全后端四层架构演进)：分层规则、迁移路线和当前模块
 
-R2-B 已提交为 `f9481b2`，[R2-C 关系持久化与旧 social 收口](#68-r2-c-关系持久化与旧-social-收口已提交) 后端为 `ea36d40`；[R3-A 三个匿名账户读取](#69-r3-a-三个匿名账户读取已提交) 后端/API 为 `35a6fe0`，[R3-B 注册接口](#610-r3-b-注册接口已提交) 后端/API 为 `a834d46`，均未推送。[R3-C 登录、刷新与退出](#611-r3-c-登录刷新与退出已提交) 已提交为 `f20dcdf`，未推送。[R3-D 改密与注销](#612-r3-d-改密与注销已实现待-review) 已实现，尚未提交，等待 review。后续不运行 Go 单元测试，默认仅静态检查、构建与差异检查。Feed 功能路线下一步为 [F4-B2 事实重建与 MySQL 快照](#38-f4-b2事实重建与-mysql-快照的下一步边界未实现)，两条路线分别 review。
+R2-B 已提交为 `f9481b2`，[R2-C 关系持久化与旧 social 收口](#68-r2-c-关系持久化与旧-social-收口已提交) 后端为 `ea36d40`；[R3-A 三个匿名账户读取](#69-r3-a-三个匿名账户读取已提交) 后端/API 为 `35a6fe0`，[R3-B 注册接口](#610-r3-b-注册接口已提交) 后端/API 为 `a834d46`，均未推送。[R3-C 登录、刷新与退出](#611-r3-c-登录刷新与退出已提交) 已提交为 `f20dcdf`，未推送。[R3-D 改密与注销](#612-r3-d-改密与注销已提交) 已提交为 `4f4838b`，未推送。[R3-E 改名、资料与头像](#613-r3-e-改名资料与头像已实现待-review) 已实现，尚未提交，等待 review。后续不运行 Go 单元测试，默认仅静态检查、构建与差异检查。Feed 功能路线下一步为 [F4-B2 事实重建与 MySQL 快照](#38-f4-b2事实重建与-mysql-快照的下一步边界未实现)，两条路线分别 review。
 
 ## 1. 当前基线与优先顺序
 
@@ -21,7 +21,7 @@ MySQL 是唯一业务事实源；Redis 是可重建缓存/索引及限流存储�
 | --- | --- | --- |
 | 架构 R1 | Interaction 六个 HTTP、ORM/直接读取、事务、批量统计与获赞读取已迁移 | 外层 user/video 转换随 R3/R4 收口 |
 | 架构 R2 | R2-A/B/C 已提交，关系 ORM/SQL、资料计数及 Following 活动观看者已收口，social 已删除 | 保留专项验收缺口 |
-| 架构 R3 | R3-A 为 `35a6fe0`；R3-B 为 `a834d46`；R3-C 为 `f20dcdf`；R3-D 改密与注销已实现，未提交 | 先 review R3-D；改名/资料/头像与持久化收口后续分别推进 |
+| 架构 R3 | R3-A/B/C/D 已提交；R3-D 为 `4f4838b`；R3-E 改名/资料/头像已实现，未提交 | 先 review R3-E；用户/会话持久化收口后续推进 |
 | Feed F0/F1 | 匿名 Timeline、批量卡片、页/卡片缓存及首页接入已实现 | 补容量、收益与一致性专项 |
 | Feed F2 | 视频事件类型路由、发布事件及卡片预热已实现 | 保留未覆盖的双规格重连等可靠性专项 |
 | Feed F3 | MySQL Following 与页面已实现 | 指标出口待接通；容量工具暂缓，混合推拉须收益证据 |
@@ -170,7 +170,8 @@ SET/清理成功后 ACK；重试发布确认前不 ACK 原消息。生产 Runtim
 | 2026-10-07 R3-A 提交轮 | 按最新指令没有执行 Go 测试；从 backend 直接执行 `go vet ./...`、`go build ./...` 均退出 0，提交前检查精确暂存范围与空白 | 后端/API 为 `35a6fe0`，没有推送；Feed/Video 两个测试文件的删除未纳入 R3-A，随后已有独立提交 `a483843`。当前工作区与提交树均为 5 文件/36 函数；历史普通/race 结果不替代当前运行验证 |
 | 2026-10-07 R3-B 实施/提交轮 | 实施轮使用 Go 1.27.1 windows/amd64、CGO=1，从 backend 直接执行 `go vet ./...`、`go build ./...` 均退出 0；默认缓存可用，仅适配保留测试的注册装配/夹具。提交轮代码未变，沿用该结果，检查精确暂存范围与空白 | 后端/API 已提交为 `a834d46`，未推送；未运行任何 Go 测试及真实 HTTP/MySQL/Redis 注册回归。执行顺序、双重长度校验、响应/错误、限流和唯一键仅有源码兼容证据 |
 | 2026-10-07 R3-C 实施/提交轮 | Go 1.27.1 windows/amd64、CGO=1，从 backend 直接执行 `go vet ./...`、`go build ./...` 均退出 0；默认缓存可用。Account 内层依赖检查及 48 项源码对照检查通过；保留测试只适配三个入口的装配；提交轮 Go 源码未变，沿用实施轮结果并检查精确暂存范围/空白 | 已提交为 `f20dcdf`、未推送；未运行任何 Go 测试或真实 HTTP/MySQL/Redis 会话回归。执行顺序、阶段错误、响应、原限流及旧会话/CAS/JWT 复用仅有源码证据，构建不等于会话回归 |
-| 2026-10-07 R3-D 实施轮 | Go 1.27.1 windows/amd64、CGO=1，从 backend 直接执行 `go vet ./...`、`go build ./...` 均退出 0；Account 内层依赖检查及 35 项源码对照检查通过，两个事务体在类型/参数转换后与旧实现一致 | 未提交、未推送；保留测试只适配装配/调用，断言未改。未运行任何 Go 测试、真实 HTTP/MySQL 改密/注销或事务故障回归；构建不等于运行验收 |
+| 2026-10-07 R3-D 实施/提交轮 | Go 1.27.1 windows/amd64、CGO=1，从 backend 直接执行 `go vet ./...`、`go build ./...` 均退出 0；Account 内层依赖检查及 35 项源码对照检查通过，两个事务体在类型/参数转换后与旧实现一致；提交轮 Go 源码未变，沿用实施轮结果并检查精确暂存范围/空白 | 已提交为 `4f4838b`、未推送；保留测试只适配装配/调用，断言未改。未运行任何 Go 测试、真实 HTTP/MySQL 改密/注销或事务故障回归；构建不等于运行验收 |
+| 2026-10-07 R3-E 实施轮 | Go 1.27.1 windows/amd64、CGO=1，从 backend 直接执行 `go vet ./...`、`go build ./...` 均退出 0；内层依赖与 36 项源码对照检查通过，30 个保护源码及全部 5 个测试文件未变 | 未提交、未推送；未运行任何 Go 测试或真实改名/资料/头像上传及补偿故障回归；校验、执行顺序、错误和文件清理仅有源码证据 |
 
 原查询预算保留：评论/粉丝/关注列表 2，点赞状态含 session 5，评论创建 8，Following 非空 6/空页 3；卡片冷读 5→命中 4。R2-B 与 R2-C 实施轮曾直接断言默认/显式 0/limit=50 在粉丝、关注两个方向各两条 SQL；对应 repo_test.go 已从当前工作区删除，这些断言不再持续运行。Following 六条/三条及卡片预算仍有保留流程；次数证据不代表扫描量或性能。当前实际测试入口见 [源码导读第 11.4 节](./SOURCE_CODE_GUIDE.md#114-用测试理解契约不把测试文件当通过证据)。
 
@@ -190,6 +191,7 @@ SET/清理成功后 ACK；重试发布确认前不 ACK 原消息。生产 Runtim
 | R3-B 注册 | 本轮未运行 Go 测试或真实注册回归；空白/多字节用户名、密码字节边界与原 binding 规则并存、重名先哈希、软删除占名/大小写、未知哈希/存储故障分类、真实 Redis 429/Retry-After/fail-open 仅核对源码，尚无本轮运行证据 |
 | R3-C 会话 | 本轮未运行 Go 测试或真实会话回归；登录空白/多字节与 bcrypt 失败分类、随机/存储/签发故障、刷新 CAS 并发/旧令牌复用/到期、轮换后用户读取和签发失败状态、撤销失败/重复退出、真实登录 429/Retry-After/fail-open 仅核对源码，尚无本轮运行证据；未核对目标库元数据 |
 | R3-D 改密/注销 | 本轮未运行 Go 测试或真实回归；双重长度规则、多字节/空白密码、比较/哈希/读取/事务失败、密码 CAS 竞争、全部会话撤销与故障回滚、注销并发/软删除可见性和重复请求仅核对源码，未核对目标库元数据 |
+| R3-E 改名/资料/头像 | 本轮未运行 Go 测试或真实回归；双重用户名长度/空白/多字节、重名/软删除占名/大小写/RowsAffected、资料空白与外部 URL、multipart/大小/读/Seek/存储错误、写库失败清理新对象和旧对象清理失败、并发替换及孤儿回收仅核对源码，未核对目标库元数据或磁盘状态 |
 | 删除测试后的边界 | 当前工作区与提交树均为 5 文件/36 函数；application/feed/service_test.go 的 4 个缓存并发/容量/取消函数与 video/video_repo_test.go 的 11 个 Video 专项由独立提交 `a483843` 删除。原 repo_test.go 的六个互动/关注流程与预算函数也不再保留；router 的旧关系 v1、Following 和缓存 HTTP 流程仍在。历史通过不代表已删除覆盖仍存在，不恢复删除的测试 |
 | 迁移/工程 | 真实 down/dirty 中断、EXPLAIN 索引选择；历史残留库/MQ 资源按归属确认，不能仅凭年龄删除；换行符统一另行决策；页缓存非法参数错误包装 |
 | 运维 | 采集器/监听/告警、恢复水位、事实/Outbox 保留清理、异常事件处置；processing/pending 不一致、最老积压和 DLQ 自动告警 |
@@ -218,8 +220,8 @@ go build ./...
 | Feed | 独立四层、缓存/读取端口，Following 活动观看者接 Relation | Infra 仍复用旧 video/user；Following 视频 SQL 仍在 Video |
 | Interaction | 六个 HTTP、ORM/SQL、事务、批量统计与获赞，资料关注计数接 Relation | 完整公开规则依赖 video；外层仍适配 user/video |
 | Relation | 五个 HTTP/用例、v1 游标、独立读取/计数端口及唯一 Follow ORM/SQL；R2-C 已提交 | 专项验收缺口继续见第 5.2 节 |
-| Account | R3-A/B/C 已提交；R3-D 改密/注销、独立密码规则/输入及原子写入端口已实现，待 review | 改名、资料/头像与 ORM 收口后续分别 review |
-| User/Auth | DB 会话/刷新轮换与 JWT 仍复用原实现；旧改名/资料/头像写入保留 | 其余用例、用户/会话模型与持久化拆分 |
+| Account | R3-A/B/C/D 已提交；R3-E 改名/资料/头像的规则、用例、HTTP 与兼容适配已实现，待 review | 用户/会话持久化与旧兼容类型收口后续 review |
+| User/Auth | 原 User 仓储/ORM 与会话/CAS/JWT 仍复用；账户 HTTP 已全部归 Account；旧 Service.GetByID 只用于保留测试夹具 | 用户/会话模型与持久化、清扫及旧兼容类型收口 |
 | Video | 仓储、作者/统计小接口 | Domain/ORM/DTO 混合、GORM 错误、上传/绑定/补偿编排与媒体实现 |
 | Worker/Sweeper | 入口集中编排、小能力接口 | 用例、调度、消息 ACK/重试及媒体引用仓储分别归层 |
 
@@ -246,7 +248,7 @@ cmd/ 负责进程装配与生命周期；db/migrations/ 保留显式迁移
 | R0 基线冻结 | Git/路由/DTO、游标、SQL 预算、事务及依赖图，保留用户改动 |
 | R1 Interaction | 已完成本阶段 HTTP、持久化与统计迁移，外层账户/视频适配随其归属模块收口 |
 | R2 Relation | R2-A/B/C 已提交；ORM/SQL、计数与 Following 活动观看者适配已收口，social 已删除 |
-| R3 Account | R3-A/B/C 已提交，R3-D 改密/注销已实现待 review；之后迁改名及资料/头像，再收口用户/会话持久化，保留 CAS、哈希、事务与补偿 |
+| R3 Account | R3-A/B/C/D 已提交，R3-E 改名/资料/头像已实现待 review；之后收口用户/会话持久化与旧兼容类型，保留 CAS、哈希、事务与补偿 |
 | R4 Video | 先模型/读取，再草稿上传、发布/删除与 Outbox；保留公开规则、旧游标、202、CAS/锁及文件补偿 |
 | R5 Worker/Sweeper | 用例归 Application，消息/ACK/调度归 Interfaces，连接/confirm/存储归 Infra；保留租约接管与关闭顺序 |
 | R6 收口 | 整理技术实现/HTTP 组合根、Feed 适配与文档，删除旧包和无用途过渡层 |
@@ -268,10 +270,11 @@ R 编号是架构路线，F 编号是功能路线。每个阶段可拆成多个�
 | 后续测试精简 | `a483843` | 独立删除 Feed/Video 两个测试文件，当前保留 5 文件/36 函数；不将早先普通/race 结果称为当前运行验证 |
 | R3-B | `a834d46` | 注册 POST 接入 Account 四层；独立注册规则、创建/哈希端口、原 binding/限流/响应，复用 User 仓储，删除旧注册方法 |
 | R3-C | `f20dcdf` | 登录/刷新/退出接入 Account，独立凭据/会话/令牌与小端口，复用原会话/CAS/JWT，删除旧入口/DTO/助手；后端/API/必要文档共 19 文件 |
+| R3-D | `4f4838b` | 改密/注销接入 Account，独立密码规则/输入、小密码端口与原子写入端口，复用原 CAS、软删除及全部会话撤销的同一事务；后端/API/必要文档共 17 文件 |
 
 R1-B2 资料统计按获赞→粉丝→关注读取，有效账户统计部分三条 SQL；空视频批次/账户 0 不查库，失败立即返回。R2-A 保留认证、自关注/活动用户校验、幂等关注/取关及写后独立计数；计数失败不回滚已完成关系变更。两项均未引入新缓存/事务/关注事件，配套文档提交为 `b0e8dd0`。实际验证与未覆盖范围统一见第 5 节。
 
-R2-C、R3-A/B/C 均按用户指令提交，没有推送；范围与验证边界见第 6.8–6.11 节。R3-D 已按用户继续下一步指令实施，尚未提交，等待 review，范围与验证边界见第 6.12 节。
+R2-C、R3-A/B/C/D 均按用户指令提交，没有推送；范围与验证边界见第 6.8–6.12 节。R3-E 已按用户继续指令实施，尚未提交，等待 review，范围与验证边界见第 6.13 节。
 
 ### 6.5 必须保留的原子性与恢复语义
 
@@ -388,9 +391,9 @@ R3-A/B、改名、改密/注销与全部会话撤销事务、资料/头像及补
 
 运行边界：未运行任何 Go 测试或全量/race/JSON 命令，未运行真实 HTTP/MySQL/Redis 会话回归，也未核对目标库元数据。随机/签发/存储故障、CAS 并发、到期边界、刷新后的失败状态、重复退出和真实限流仅有源码证据，详见第 5.2 节；不能把 vet/build 称为真实会话回归。当前仍为 5 个测试文件、36 个测试函数。实施轮完成后停止等待 review。2026-10-07 用户明确要求提交并继续下一步，提交轮 Go 源码未变，沿用实施轮 vet/build 结果，仅检查精确暂存范围与空白；19 个文件提交为 `f20dcdf`，未推送。后续 R3-D 见第 6.12 节。
 
-### 6.12 R3-D 改密与注销（已实现，待 review）
+### 6.12 R3-D 改密与注销（已提交）
 
-已仅迁 `PATCH /api/user/auth/password` 与 `DELETE /api/user/auth` 到现有 Account 四层。原 JWT/session 中间件和上下文检查保留，两个业务事务移入 Infrastructure，使用明确的“更新并撤销全部会话”原子端口，复用原仓储方法与同一个事务句柄。尚未提交、未推送，完成本模块后停止等待 review。
+已仅迁 `PATCH /api/user/auth/password` 与 `DELETE /api/user/auth` 到现有 Account 四层。原 JWT/session 中间件和上下文检查保留，两个业务事务移入 Infrastructure，使用明确的“更新并撤销全部会话”原子端口，复用原仓储方法与同一个事务句柄。后端/API 与必要文档共 17 文件已提交为 `4f4838b`，未推送。
 
 | 入口/分支 | 保留的契约与顺序 |
 | --- | --- |
@@ -407,10 +410,38 @@ R3-A/B、改名、改密/注销与全部会话撤销事务、资料/头像及补
 | [凭据适配](../backend/internal/infra/persistence/account/legacy_credentials.go)与[事务适配](../backend/internal/infra/persistence/account/legacy_security.go) | 旧 User/密码哈希和 GORM 错误仅在外层转换；原两个事务体仅作类型/参数转换，同一个 tx 构造原用户与会话仓储，算法、仓储/SQL 和 ORM 不变 |
 | [Handler](../backend/internal/interfaces/http/account/security.go)、[DTO](../backend/internal/interfaces/http/account/dto.go)与[router](../backend/internal/router/router.go) | 原身份/binding/响应/错误与安全固定文案，仅切换两个最终 Handler 和依赖装配；原中间件、注册、会话和三个匿名读取保持原契约 |
 
-确认生产与保留测试引用后，删除旧 user.Controller.UpdatePassword/DeleteUser、user.Service.UpdatePassword/DeleteUser、UpdatePasswordRequest 和无用途旧 ErrWrongPassword/Controller 规则，以及旧 Service 不再使用的 auth/bcrypt/GORM 导入。保留改名所需 ErrUsernameTaken/ErrInvalidInput、资料/头像用例、Service.GetByID、共享响应、user.Repository.GetByID/GetByUsername/UpdatePassword/DeleteUser 和 User/AuthSession ORM。两个原回滚测试仅装配新用例/切换调用，newUserHTTPEngine 仅改注销入口装配；全部断言和其他流程未改，没有新增或恢复测试，仍为 5 文件/36 函数。
+确认生产与保留测试引用后，删除旧 user.Controller.UpdatePassword/DeleteUser、user.Service.UpdatePassword/DeleteUser、UpdatePasswordRequest 和无用途旧 ErrWrongPassword/Controller 规则，以及旧 Service 不再使用的 auth/bcrypt/GORM 导入。R3-D 当时保留改名所需 ErrUsernameTaken/ErrInvalidInput、资料/头像用例、Service.GetByID、共享响应、user.Repository.GetByID/GetByUsername/UpdatePassword/DeleteUser 和 User/AuthSession ORM；后续三个入口迁移见第 6.13 节。两个原回滚测试仅装配新用例/切换调用，newUserHTTPEngine 仅改注销入口装配；全部断言和其他流程未改，没有新增或恢复测试，仍为 5 文件/36 函数。
 
 静态/构建：Go 1.27.1 windows/amd64、CGO=1，从 backend 直接执行 go vet ./...、go build ./...，均退出 0，默认缓存可用；go list 非标准库依赖闭包仅含 Account Domain/Application。35 项源码对照检查通过，包括原 binding/业务字节规则、两个事务体转换后相同、HTTP 身份/绑定/成功顺序相同、原错误分类、完整 router 差异、24 个保护源码文件与保留断言不变。git diff --check、13 个 Go 文件的 gofmt、17 文件精确范围/空白及四份文档的 289 个本地链接/锚点与围栏检查通过，暂存为 0。同步 README、API、源码导读与本计划；结果直接输出终端，没有临时脚本或日志文件。
 
 运行边界：未运行任何 Go 测试或全量/race/JSON 命令；未运行真实 HTTP/MySQL/Redis 改密/注销、多会话失效或故障回滚回归，未核对目标库元数据。原 CAS 与事务、软删除及错误转换只提供源码兼容证据，不能把 vet/build 或已有回滚测试文件称为本轮运行回归。多字节/空白、故障/并发、事务提交和全部会话撤销等验收缺口保留于第 5.2 节。
 
-改名、资料/头像及文件补偿、User/AuthSession ORM/SQL 收口、用户清扫、JWT/session 算法/配置、Relation/Interaction、Following、Video/Feed、缓存/MQ/热度、前端、配置、迁移和部署未改。完成后停止等待 review，不提交、推送或开始下一模块。
+改名、资料/头像及文件补偿、User/AuthSession ORM/SQL 收口、用户清扫、JWT/session 算法/配置、Relation/Interaction、Following、Video/Feed、缓存/MQ/热度、前端、配置、迁移和部署未改。实施轮完成后停止等待 review。2026-10-07 用户明确要求提交并继续，提交轮代码未变，沿用实施轮 vet/build 结果并检查精确暂存范围/空白；17 文件提交为 `4f4838b`，未推送。后续 R3-E 见第 6.13 节。
+
+### 6.13 R3-E 改名、资料与头像（已实现，待 review）
+
+已仅迁 `PATCH /api/user/auth/name`、`PATCH /api/user/auth/profile`、`POST /api/user/auth/avatar` 到现有 Account 四层。所有账户 HTTP 已归 Account；User 仓储/ORM 与本地媒体实现继续复用，ORM/SQL 和其余消费者收口留待后续独立 review。尚未提交、未推送，完成本模块后停止等待 review。
+
+| 入口/分支 | 保留的契约与顺序 |
+| --- | --- |
+| 改名 | 原 JWT/session→当前用户→ShouldBindJSON，new_username 保留 required,min=3,max=32 标签和原绑定规则。binding 后 TrimSpace，空值为 new username is required，其余按 Go len 3–32 字节检查。直接调用原仓储 UpdateName，保留唯一键/1062、软删除占名/大小写与 RowsAffected=0 的 404；不预查重、重读、改为幂等成功或撤销会话 |
+| 资料 JSON | 原 JWT/session→当前用户→ShouldBindJSON，avatar_url/bio 保留 omitempty,max=512 与 omitempty,max=255。标签仍按 rune，binding 后分别 TrimSpace，仅将非空 bio/avatar_url 放入原更新 map；均空为 nothing to update，不能清空字段，不添加 URL/业务长度规则，不读用户/清理对象/撤销会话 |
+| 头像 HTTP | JWT/session→当前用户→检查存储可用→MaxBytesReader→FormFile(file)→文件大小→前 512 字节→原扩展名/文件头→Seek。保留 10 MiB 文件、1 MiB multipart 开销、11 MiB 总请求限制、defer Close 和原读取/Seek/格式/413 分支，不增加解码规则 |
+| 头像用例/补偿 | 校验后 GetByID→SaveAvatar(TrimSpace(filename))→对保存的 URL TrimSpace/非空校验→原 UpdateAvatar。写库/URL 校验失败时尝试删除新原始 URL，仍返回原错误；成功后旧 URL 非空且不同才尝试清理旧对象。两处删除错误均忽略，响应返回原保存 URL。失败不增加重试、事务、锁、CAS、持久补偿记录或新清扫机制 |
+| 成功响应/鉴权 | 改名/资料仍 200 + 原 message，头像仍 201 + avatar_url。原 JWT 文案及身份缺失的 401 invalid or expired token 保留；不创建会话/令牌，不新增限流 |
+| 错误映射 | 原绑定文案 invalid username payload/invalid profile payload、400 业务文案 new username is required/invalid user input/nothing to update/invalid avatar file、409 username already exists、404 user not found、413 avatar file too large 保留。头像缺存储/读取/Seek 的原 500 avatar storage unavailable/failed to read avatar upload 保留，其余未知错误仍 500 user operation failed；不暴露底层存储错误 |
+
+| 四层实现 | 实际边界 |
+| --- | --- |
+| [Domain 改名/资料规则](../backend/internal/domain/account/profile.go)、[头像规则](../backend/internal/domain/account/avatar.go)与[ProfileWriter](../backend/internal/domain/account/repository.go) | 独立 ProfileChanges、改名/URL/非空字段规则及原头像大小/文件头；仅依赖标准库，不含 ORM/HTTP 标签 |
+| [Application](../backend/internal/application/account/profile.go) | 使用小 AccountReader/ProfileWriter/AvatarStorage，编排三个用例及原头像补偿；存储可用状态供 HTTP 在解析前检查，不依赖旧 user/auth/video、Gin/GORM 或驱动 |
+| [写入适配](../backend/internal/infra/persistence/account/legacy_profile.go)与[存储适配](../backend/internal/infra/persistence/account/legacy_avatar_storage.go) | 复用原 user.Repository.UpdateName/UpdateFields/UpdateAvatar 和 video.LocalStorage.SaveAvatar/RemoveAvatar；旧错误与类型只在外层转换，原 SQL/路径/文件名/随机与安全删除不变 |
+| [Handler](../backend/internal/interfaces/http/account/profile.go)、[DTO](../backend/internal/interfaces/http/account/dto.go)与[router](../backend/internal/router/router.go) | 保留原 JSON/multipart 参数、认证、状态码与文案，只切换三个最终 Handler 和依赖装配。文件解析/Close/Seek 归 HTTP，保存/写库/清理归 Application |
+
+确认生产与保留测试引用后，删除旧 user/controller.go、avatar.go、Service.UpdateName/UpdateProfile/UpdateAvatar、UpdateNameRequest/UpdateProfileRequest 和无用途旧头像/改名专用错误。保留原 User、user.Repository 全部方法/作者批量读取、旧创建适配仍用的 ErrUsernameTaken/ErrInvalidInput、PublishedVideoCounter/ProfileMetricsReader 及统计结果；旧 Service/GetByID/构造器仅供现有回滚测试夹具。全部 5 个测试文件与 36 个测试函数原样保留，没有新增、修改断言或恢复测试。
+
+静态/构建：Go 1.27.1 windows/amd64、CGO=1，从 backend 直接执行 go vet ./...、go build ./...，均退出 0；默认缓存可用，go list 非标准库依赖闭包仅含 Account Domain/Application。36 项源码对照检查通过：DTO 标签、改名/资料/URL 规则、原头像校验/大小/HTTP 解析、读取/保存/写库/补偿、原错误映射和完整 router 差异一致；30 个保护源码及全部测试文件不变。git diff --check、12 个现有 Go 文件的 gofmt、18 路径精确范围/空白（14 个 Go 路径含 2 删除，4 文档）和四份文档的 308 个本地链接/锚点与围栏检查通过，暂存为 0。必要文档为 README、API、源码导读与本计划；结果直接输出终端，没有临时脚本或日志文件。
+
+运行边界：未运行任何 Go 测试或全量/race/JSON 命令；未运行真实 HTTP/MySQL/Redis/文件上传、改名/资料/头像与清理故障回归，未核对目标库元数据或磁盘状态。编译与源码对照不证明真实重名/软删除/大小写、RowsAffected、multipart 边界、存储故障、补偿或并发替换，待补项保留于第 5.2 节。
+
+匿名账户读取、注册、登录/刷新/退出、改密/注销事务、User/AuthSession ORM/SQL 收口、本地媒体实现与孤儿回收/清扫、Relation/Interaction、Following、Video/Feed、缓存/MQ/热度、前端、配置、迁移和部署未改。完成后停止等待 review，不提交、推送或开始下一模块。
