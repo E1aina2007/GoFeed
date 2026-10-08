@@ -3,8 +3,6 @@ package video
 import (
 	"context"
 	"errors"
-	"net/url"
-	"path/filepath"
 
 	domainvideo "gofeed/internal/domain/video"
 
@@ -180,15 +178,6 @@ func isPublicVideo(video Video) bool {
 	})
 }
 
-// isValidStoredFile 校验请求中的实际存储文件名与媒体 URL 最后一段一致，
-// 且该文件名本身已满足物理文件名清洗规则（即服务端生成的结果）
 func isValidStoredFile(rawURL, fileName string) bool {
-	if fileName == "" || sanitizeFilename(fileName) != fileName {
-		return false
-	}
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	return filepath.Base(u.Path) == fileName
+	return domainvideo.IsValidStoredFile(rawURL, fileName)
 }

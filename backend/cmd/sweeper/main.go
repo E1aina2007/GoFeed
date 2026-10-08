@@ -12,6 +12,8 @@ import (
 	"gofeed/internal/config"
 	"gofeed/internal/db"
 	infraaccount "gofeed/internal/infra/persistence/account"
+	infravideo "gofeed/internal/infra/persistence/video"
+	inframedia "gofeed/internal/infra/storage/media"
 	"gofeed/internal/sweeper"
 	"gofeed/internal/video"
 
@@ -103,18 +105,20 @@ func main() {
 
 	userPurgeJob := sweeper.NewUserPurgeJob(infraaccount.NewRepository(dbConn), userRetention)
 	videoRepository := video.NewRepository(dbConn)
-	mediaStorage := video.NewLocalStorage("./.run/uploads")
-	videoPurgeJob := sweeper.NewVideoPurgeJob(videoRepository, mediaStorage, videoRetention)
+	mediaStorage := inframedia.NewLocalStorage("./.run/uploads")
+	mediaRemover := infravideo.NewMediaRemover(mediaStorage)
+	mediaCandidates := infravideo.NewMediaCandidateLister(mediaStorage)
+	videoPurgeJob := sweeper.NewVideoPurgeJob(videoRepository, mediaRemover, videoRetention)
 	draftPurgeJob := sweeper.NewDraftPurgeJob(
 		videoRepository,
-		mediaStorage,
+		mediaRemover,
 		draftRetention,
 		draftPurgeLease,
 	)
 	mediaOrphanPurgeJob := sweeper.NewMediaOrphanPurgeJob(
 		sweeper.NewMediaReferenceRepository(dbConn),
-		mediaStorage,
-		mediaStorage,
+		mediaCandidates,
+		mediaRemover,
 		mediaOrphanRetention,
 	)
 	run := func() {

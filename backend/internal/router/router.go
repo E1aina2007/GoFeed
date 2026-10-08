@@ -14,6 +14,7 @@ import (
 	infrainteraction "gofeed/internal/infra/persistence/interaction"
 	infrarelation "gofeed/internal/infra/persistence/relation"
 	infravideo "gofeed/internal/infra/persistence/video"
+	inframedia "gofeed/internal/infra/storage/media"
 	interfaceshttpaccount "gofeed/internal/interfaces/http/account"
 	interfaceshttpauth "gofeed/internal/interfaces/http/auth"
 	interfaceshttpfeed "gofeed/internal/interfaces/http/feed"
@@ -91,7 +92,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	interactionHandler := interfaceshttpinteraction.New(applicationinteraction.New(interactionRepo, interactionRepo))
 	engagementReader := infrainteraction.NewEngagementReader(interactionRepo)
 	profileMetricsReader := infrainteraction.NewProfileMetricsReader(interactionRepo, relationRepo)
-	mediaStorage := video.NewLocalStorage(uploadDir)
+	mediaStorage := inframedia.NewLocalStorage(uploadDir)
 	accountHandler := interfaceshttpaccount.New(applicationaccount.New(infraaccount.NewReader(userRepo),
 		infraaccount.NewPublishedVideoCounter(videoRepo), infraaccount.NewProfileMetricsReader(profileMetricsReader)))
 	registrationHandler := interfaceshttpaccount.NewRegistration(applicationaccount.NewRegistration(
@@ -133,7 +134,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	// 视频路由的公开读取和认证写入操作使用不同分组
 	authorReader := infraaccount.NewAuthorReader(infraaccount.NewReader(userRepo))
 	videoService := video.NewService(videoRepo)
-	videoCtl := video.NewController(videoService, mediaStorage)
+	videoCtl := video.NewController(videoService, infravideo.NewMediaStorage(mediaStorage))
 	publicVideoHandler := interfaceshttpvideo.New(applicationvideo.New(infravideo.NewReader(videoRepo),
 		infravideo.NewAuthorReader(authorReader), infravideo.NewEngagementReader(engagementReader)))
 	myVideoHandler := interfaceshttpvideo.New(applicationvideo.NewMyVideoList(infravideo.NewAuthorVideoListReader(videoRepo),

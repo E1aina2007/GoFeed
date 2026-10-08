@@ -34,6 +34,8 @@ import (
 	"gofeed/internal/db"
 	infracachefeed "gofeed/internal/infra/cache/feed"
 	infrafeed "gofeed/internal/infra/persistence/feed"
+	infravideo "gofeed/internal/infra/persistence/video"
+	inframedia "gofeed/internal/infra/storage/media"
 	interfaceshttpvideo "gofeed/internal/interfaces/http/video"
 	"gofeed/internal/mq"
 	infraredis "gofeed/internal/redis"
@@ -1467,7 +1469,7 @@ func assertPipelineDraftPurge(t *testing.T, gdb *gorm.DB, storageRoot string, vi
 		lease          = time.Minute
 	)
 	repo := video.NewRepository(gdb)
-	purger := sweeper.NewDraftPurgeJob(repo, video.NewLocalStorage(storageRoot), retentionHours*time.Hour, lease)
+	purger := sweeper.NewDraftPurgeJob(repo, infravideo.NewMediaRemover(inframedia.NewLocalStorage(storageRoot)), retentionHours*time.Hour, lease)
 
 	// 测试目标：确认保留期内拒绝视频不被清扫
 	// 预期效果：本轮删除数为零；非零时输出当时的候选与拒绝行

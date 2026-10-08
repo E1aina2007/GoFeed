@@ -5,16 +5,16 @@ import (
 	"io"
 
 	applicationaccount "gofeed/internal/application/account"
-	"gofeed/internal/video"
+	inframedia "gofeed/internal/infra/storage/media"
 )
 
 type AvatarStorage struct {
-	storage *video.LocalStorage
+	storage *inframedia.LocalStorage
 }
 
 var _ applicationaccount.AvatarStorage = (*AvatarStorage)(nil)
 
-func NewAvatarStorage(storage *video.LocalStorage) applicationaccount.AvatarStorage {
+func NewAvatarStorage(storage *inframedia.LocalStorage) applicationaccount.AvatarStorage {
 	if storage == nil {
 		return nil
 	}

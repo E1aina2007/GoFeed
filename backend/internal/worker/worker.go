@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	infravideo "gofeed/internal/infra/persistence/video"
 	"gofeed/internal/mq"
 	"gofeed/internal/video"
 
@@ -286,7 +287,7 @@ func (c *Consumer) republishRetry(ctx context.Context, body []byte, attempt int,
 // 媒体缺陷等确定性失败在函数内部完成 rejected 流转并返回 nil；
 // 返回错误表示数据库等基础设施故障，由调用方决定重试
 func (c *Consumer) process(ctx context.Context, msg ProcessMessage) error {
-	if err := video.ValidatePublishedMedia(c.storageRoot, msg.PlayURL, msg.CoverURL); err != nil {
+	if err := infravideo.ValidatePublishedMedia(c.storageRoot, msg.PlayURL, msg.CoverURL); err != nil {
 		rejected, rejectErr := c.repo.RejectVideoProcessing(ctx, msg.VideoID, err.Error())
 		if rejectErr != nil {
 			return rejectErr
