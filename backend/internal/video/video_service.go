@@ -3,11 +3,8 @@ package video
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/url"
 	"path/filepath"
-	"strings"
-	"unicode/utf8"
 
 	domainvideo "gofeed/internal/domain/video"
 
@@ -32,7 +29,6 @@ var (
 
 // VideoRepository 是服务层依赖的完整仓储能力，包含发布/删除等写操作
 type VideoRepository interface {
-	Create(ctx context.Context, video *Video) error
 	GetByID(ctx context.Context, id uint) (*Video, error)
 	DeletePublishedVideo(ctx context.Context, id, authorID uint) error
 	UpdateDraftMedia(ctx context.Context, draftID, authorID uint, kind MediaKind, saved SavedFile, originalName string) error
@@ -57,62 +53,6 @@ type Service struct {
 
 func NewService(repository VideoRepository) *Service {
 	return &Service{repository: repository}
-}
-
-// CreateDraft 创建一个仅当前用户可写的草稿，媒体字段只会由后续上传接口填充
-func (s *Service) CreateDraft(ctx context.Context, authorID uint, req DraftRequest) (DraftItem, error) {
-	if authorID == 0 {
-		return DraftItem{}, ErrInvalidVideoID
-	}
-	if s.repository == nil {
-		return DraftItem{}, ErrRepositoryUnavailable
-	}
-
-	req.Title = strings.TrimSpace(req.Title)
-	req.Description = strings.TrimSpace(req.Description)
-	if req.Title == "" || utf8.RuneCountInString(req.Title) > 255 {
-		return DraftItem{}, fmt.Errorf("%w: title is required", ErrInvalidPublishRequest)
-	}
-	if utf8.RuneCountInString(req.Description) > 1000 {
-		return DraftItem{}, fmt.Errorf("%w: description must be at most 1000 characters", ErrInvalidPublishRequest)
-	}
-
-	draft := &Video{
-		AuthorID:    authorID,
-		Title:       req.Title,
-		Description: req.Description,
-		Status:      VideoStatusDraft,
-	}
-	if err := s.repository.Create(ctx, draft); err != nil {
-		return DraftItem{}, err
-	}
-	return draftItem(*draft), nil
-}
-
-// GetDraft 返回当前作者可继续处理或已进入清扫的草稿快照
-// 媒体地址和物理存储名不暴露给客户端，完成状态由 has_video 和 has_cover 表示
-func (s *Service) GetDraft(ctx context.Context, draftID, authorID uint) (DraftItem, error) {
-	if draftID == 0 || authorID == 0 {
-		return DraftItem{}, ErrInvalidVideoID
-	}
-	if s.repository == nil {
-		return DraftItem{}, ErrRepositoryUnavailable
-	}
-
-	draft, err := s.repository.GetByID(ctx, draftID)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return DraftItem{}, ErrVideoNotFound
-		}
-		return DraftItem{}, err
-	}
-	if draft.AuthorID != authorID {
-		return DraftItem{}, ErrNotAuthor
-	}
-	if draft.Status != VideoStatusDraft && draft.Status != VideoStatusPurging {
-		return DraftItem{}, ErrVideoNotFound
-	}
-	return draftItem(*draft), nil
 }
 
 // UpdateDraftMedia 将已经落盘的文件绑定到草稿，客户端不能提交或覆盖任何媒体元数据
@@ -174,8 +114,8 @@ func draftItem(video Video) DraftItem {
 		Title:             video.Title,
 		Description:       video.Description,
 		Status:            video.Status,
-		HasVideo:          video.PlayURL != "" && video.PlayFileName != "" && video.PlayOriginalName != "",
-		HasCover:          video.CoverURL != "" && video.CoverFileName != "" && video.CoverOriginalName != "",
+		HasVideo:          domainvideo.HasDraftMedia(video.PlayURL, video.PlayFileName, video.PlayOriginalName),
+		HasCover:          domainvideo.HasDraftMedia(video.CoverURL, video.CoverFileName, video.CoverOriginalName),
 		PlayOriginalName:  video.PlayOriginalName,
 		CoverOriginalName: video.CoverOriginalName,
 		CreatedAt:         video.CreatedAt,

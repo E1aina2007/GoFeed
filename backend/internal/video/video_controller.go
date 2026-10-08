@@ -23,48 +23,6 @@ func NewController(srv *Service, storage MediaStorage) *Controller {
 	return &Controller{srv: srv, storage: storage}
 }
 
-// CreateDraft 处理 POST /api/video/auth/drafts
-func (ctl *Controller) CreateDraft(c *gin.Context) {
-	userID, ok := interfaceshttpauth.UserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-
-	var req DraftRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apierror.WriteCode(c, apierror.CodeInvalid, "invalid draft payload")
-		return
-	}
-	draft, err := ctl.srv.CreateDraft(c.Request.Context(), userID, req)
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"draft": draft})
-}
-
-// GetDraft 处理 GET /api/video/auth/drafts/:id
-func (ctl *Controller) GetDraft(c *gin.Context) {
-	userID, ok := interfaceshttpauth.UserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	draftID, err := parsePathID(c.Param("id"))
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-
-	draft, err := ctl.srv.GetDraft(c.Request.Context(), draftID, userID)
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"draft": draft})
-}
-
 // UpdateDraftVideo 处理 POST /api/video/auth/drafts/:id/play
 func (ctl *Controller) UpdateDraftVideo(c *gin.Context) {
 	ctl.uploadDraftMedia(c, MediaVideo, "play_url", "play_file_name", "play_original_name")

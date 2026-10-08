@@ -86,9 +86,9 @@ func parseAuthorID(raw string) (uint, error) {
 }
 
 var videoErrorRules = []apierror.Rule{
-	{Match: apierror.Is(domainvideo.ErrInvalidVideoID, domainvideo.ErrInvalidLimit, domainvideo.ErrInvalidCursor, domainvideo.ErrInvalidAuthorID, domainvideo.ErrInvalidInput), Code: apierror.CodeInvalid, UseErrorText: true},
+	{Match: apierror.Is(domainvideo.ErrInvalidVideoID, domainvideo.ErrInvalidLimit, domainvideo.ErrInvalidCursor, domainvideo.ErrInvalidAuthorID, domainvideo.ErrInvalidInput, domainvideo.ErrInvalidPublishRequest), Code: apierror.CodeInvalid, UseErrorText: true},
 	{Match: apierror.Is(domainvideo.ErrVideoNotFound), Code: apierror.CodeNotFound, PublicMessage: "video not found"},
-	{Match: apierror.Is(domainvideo.ErrForbidden), Code: apierror.CodeForbidden, UseErrorText: true},
+	{Match: apierror.Is(domainvideo.ErrForbidden, domainvideo.ErrNotAuthor), Code: apierror.CodeForbidden, UseErrorText: true},
 	{Match: apierror.Is(domainvideo.ErrConflict), Code: apierror.CodeConflict, UseErrorText: true},
 	{Match: apierror.Is(domainvideo.ErrEngagementUnavailable), Code: apierror.CodeUnavailable, PublicMessage: "engagement stats temporarily unavailable"},
 }

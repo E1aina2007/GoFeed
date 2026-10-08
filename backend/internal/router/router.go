@@ -140,6 +140,8 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		infravideo.NewAuthorReader(authorReader), infravideo.NewEngagementReader(engagementReader)))
 	processingStatusHandler := interfaceshttpvideo.NewProcessingStatus(applicationvideo.NewProcessingStatus(
 		infravideo.NewProcessingStatusReader(videoRepo)))
+	draftHandler := interfaceshttpvideo.NewDrafts(applicationvideo.NewDrafts(
+		infravideo.NewDraftCreator(videoRepo), infravideo.NewDraftReader(videoRepo)))
 	feedRepo := infrafeed.New(videoRepo, authorReader, engagementReader)
 	feedService := applicationfeed.New(feedRepo,
 		applicationfeed.WithFollowingReader(infrafeed.NewFollowingReader(videoRepo, relationRepo)),
@@ -160,8 +162,8 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	protectedVideos := videos.Group("/auth")
 	protectedVideos.Use(interfaceshttpauth.Auth(sessionService))
 	{
-		protectedVideos.POST("/drafts", videoCtl.CreateDraft)
-		protectedVideos.GET("/drafts/:id", videoCtl.GetDraft)
+		protectedVideos.POST("/drafts", draftHandler.CreateDraft)
+		protectedVideos.GET("/drafts/:id", draftHandler.GetDraft)
 		protectedVideos.POST("/drafts/:id/play", videoCtl.UpdateDraftVideo)
 		protectedVideos.POST("/drafts/:id/cover", videoCtl.UpdateDraftCover)
 		protectedVideos.POST("/drafts/:id/publish", videoCtl.UpdateDraftPublication)

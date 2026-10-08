@@ -130,12 +130,6 @@ type EngagementCounts struct {
 	CommentsCount int64
 }
 
-// DraftRequest 表示创建草稿时可由用户编辑的元数据
-type DraftRequest struct {
-	Title       string `json:"title" binding:"required,max=255"`
-	Description string `json:"description" binding:"omitempty,max=1000"`
-}
-
 // DraftItem 表示当前用户可继续上传或发布的草稿
 type DraftItem struct {
 	ID                uint      `json:"id"`
