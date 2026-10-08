@@ -33,6 +33,11 @@ type Reader interface {
 	GetUserListPage(ctx context.Context, position *ListPosition, limit int) ([]PublicAccount, error)
 }
 
+type PublicAccountReader interface {
+	GetByID(ctx context.Context, id uint) (PublicAccount, error)
+	GetByIDs(ctx context.Context, ids []uint) ([]PublicAccount, error)
+}
+
 type PublishedVideoCounter interface {
 	GetPublishedVideoCountByAuthor(ctx context.Context, authorID uint) (int64, error)
 }

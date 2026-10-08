@@ -1,6 +1,6 @@
 # GoFeed 源码导读
 
-> 阅读基线：2026-10-07，`F:\work\Feed\GoFeed`。Interaction 已完成 HTTP、持久化及统计迁移，Relation 的五个 HTTP、用例与原 v1 游标已迁入四层，R2-B 后端/API 已提交为 `f9481b2`。R2-C 已迁关系 ORM/SQL、计数与 Following 活动观看者依赖并删除旧 social，后端为 `ea36d40`；Following 视频 SQL 仍在 Video。R3-A 三个匿名账户 GET 已迁入独立 Account 四层，后端/API 为 `35a6fe0`；R3-B 注册后端/API 已提交为 `a834d46`。R3-C 登录、刷新与退出提交为 `f20dcdf`；R3-D 改密与注销提交为 `4f4838b`；R3-E 改名、资料与头像已迁入 Account，未提交，等待 review。账户 HTTP 全部归 Account，User 仓储/ORM、会话/CAS/JWT 与本地媒体仍复用旧实现。实施边界见开发计划第 6.8–6.13 节，提交摘要见第 6.4 节，验证与缺口见第 5 节。本文从当前源码推导；Hot/Recommend、完整热度覆盖及指标出口尚未实现。
+> 阅读基线：2026-10-08，`F:\work\Feed\GoFeed`。Interaction 已完成 HTTP、持久化及统计迁移，Relation 的五个 HTTP、用例与原 v1 游标已迁入四层，R2-B 后端/API 已提交为 `f9481b2`。R2-C 已迁关系 ORM/SQL、计数与 Following 活动观看者依赖并删除旧 social，后端为 `ea36d40`；Following 视频 SQL 仍在 Video。R3-A 三个匿名账户 GET 已迁入独立 Account 四层，后端/API 为 `35a6fe0`；R3-B 注册后端/API 已提交为 `a834d46`。R3-C 登录、刷新与退出提交为 `f20dcdf`；R3-D 改密与注销提交为 `4f4838b`；R3-E 改名、资料与头像提交为 `f5c1260`。R3-F1 作者读取与资料统计已解除旧 user 类型耦合，未暂存/提交，等待 review。账户 HTTP 全部归 Account，User 仓储/ORM、会话/CAS/JWT 与本地媒体仍复用旧实现。实施边界见开发计划第 6.8–6.14 节，提交摘要见第 6.4 节，验证与缺口见第 5 节；第 6.14 节其余模块尚未实施。本文从当前源码推导；Hot/Recommend、完整热度覆盖及指标出口尚未实现。
 >
 > 本文用于理解源码。运行与配置看 [README](../README.md)，接口字段看 [API](../API.md)，未完成设计与历史验收看 [开发计划](./DEVELOPMENT_PLAN.md)。本文中的“源码入口”均可直接点击。
 
@@ -83,7 +83,7 @@ worker 的 `main` 负责加载配置、连接 MySQL/视频 MQ、接收退出信�
 
 这里参考的是 GCFeed 的 `cmd/worker/main.go:startWorkers` 编排方式。GCFeed 没有独立热度消费者，互动应用服务直接调用 Redis 计分；GoFeed 保留 MySQL 同事务事实 → Outbox → Relay → 热度消费，避免把参考项目的请求内 Redis 写入当成当前实现。
 
-### 2.2 既有三层业务与 Feed 四层边界并存
+### 2.2 既有三层业务与四层模块并存
 
 ```text
 backend/
@@ -95,7 +95,7 @@ backend/
    ├─ auth/                    JWT、数据库会话与刷新令牌
    ├─ domain/account/          账户/资料、注册/改密/改名/头像规则、凭据/会话及小端口
    ├─ application/account/     账户读写/原 v1 游标、会话与头像文件补偿编排
-   ├─ infra/persistence/account/ 旧用户/统计/会话/JWT/媒体适配、原子写入及 bcrypt
+   ├─ infra/persistence/account/ 公开账户/作者/统计与旧仓储/会话/JWT/媒体适配、原子写入及 bcrypt
    ├─ interfaces/http/account/ 全部账户 HTTP 的参数/DTO/错误及 multipart 解析
    ├─ domain/feed/             Feed 读模型、场景、读取端口、热度规则
    ├─ application/feed/        分页编排、缓存、卡片预热与热度事实映射
@@ -118,6 +118,8 @@ backend/
 ```
 
 Feed 采取渐进拆层：通过读取边界和小接口复用已有仓储。互动事实写入、Relay 与热度消费直接装配；六个互动入口、ORM、直接读取及批量统计已归 Interaction。R1-B2 通过外层适配器将领域统计注入 Feed/Video，并组合用户获赞与关注计数；R2-A/B 已迁入五个关系 HTTP、用例及游标，R2-C 将 ORM/SQL 和计数收口到 Relation，并接管 Following 活动观看者检查。Following 的完整视频查询保留在 Video。
+
+账户 HTTP 已全部迁入四层。R3-F1 将作者读取迁入 Account Infrastructure，公开读模型及资料统计使用 Domain Account 小端口；用户/会话 ORM 与 JWT 尚未收口。后续按[开发计划第 6.14 节](./DEVELOPMENT_PLAN.md#614-r3-后续收口与-r4r6-重构路线)迁用户仓储、JWT/会话、Video、Worker/Sweeper 及技术包；这些其余模块尚未实施。下图旧仓储仍经 Infrastructure 适配复用。
 
 ```mermaid
 flowchart TD
@@ -537,11 +539,13 @@ Redis 缓存失败仍回源 MySQL。计划性回退使用对应代码版本，�
 
 Following 另外检查观看者有效。匿名 Timeline 不会因携带 token 而自动返回“我是否点赞”等个性化字段；当前 DTO 返回的是公共作者与统计。
 
-三个匿名账户 GET 从 [Account Handler](../backend/internal/interfaces/http/account/handler.go) → [Application](../backend/internal/application/account/service.go) → [Domain 读取/统计端口](../backend/internal/domain/account/repository.go) → [Infrastructure](../backend/internal/infra/persistence/account/legacy_reader.go) 读取。公开账户、资料统计和 ID 位置不携带 ORM/HTTP 标签；内层只依赖标准库及独立领域模型，旧 User、UserCursor、ProfileMetrics 和 GORM 错误仅在 Infrastructure 转换。
+三个匿名账户 GET 从 [Account Handler](../backend/internal/interfaces/http/account/handler.go) → [Application](../backend/internal/application/account/service.go) → [Domain 读取/统计端口](../backend/internal/domain/account/repository.go) → [Infrastructure](../backend/internal/infra/persistence/account/legacy_reader.go) 读取。公开账户、资料统计和 ID 位置不携带 ORM/HTTP 标签；内层只依赖标准库及独立领域模型，旧 User、UserCursor 和 GORM 错误仅在 Infrastructure 转换。Interaction 直接返回现有 Domain Account ProfileMetrics，账户统计/视频数适配仅通过领域小接口委托，并保留原 accountError 与可选依赖 nil 语义。
 
 列表没有 limit/cursor 时继续复用 user.Repository 全量读取；任一参数存在即分页，Gin GetQuery 保留空值存在性，`?cursor=` 使用默认 20，`?limit=`/0/超出 1–50 先报 limit 错误。Application 保留 [v1 编解码](../backend/internal/application/account/cursor.go) 的 RawURLEncoding、v/k/i、version=1、kind=users、非零 ID 及原字段检查，再将独立位置交给旧仓储。原 SQL 的 id ASC/id > ID 不变，多读一条，以实际返回末条 ID 续页；[DTO](../backend/internal/interfaces/http/account/dto.go) 保持 user/users/account、资料 omitempty、四项零值统计、空数组和末页省略游标。
 
-资料按账户→完整公开视频数→获赞→粉丝→关注读取并立即传播失败。视频计数继续调用 video.Repository 的 PublicVideoQuery，统计继续复用 Interaction 的旧资料适配器并转为独立 Account 指标；正常装配共五条 SQL，统计部分三条，未注入统计仍返回零值。旧读取 Controller/Service、pagination.go 与无用途读取类型已删除；头像改由 Account 小 Reader 读取，旧 Service.GetByID 仅供保留测试夹具，其他共享响应保留，R3-C 已删除无用途 publicUser/旧登录响应，会话 DTO 归 Account。User/AuthSession ORM 与作者 GetByIDs 未变。现有流程覆盖详情/注销 404 和资料头像；账户旧 v1 为迁移前后源码兼容证据，固定旧账户 v1 续页、资料预算和逐步失败尚无持续断言，不能用关系列表 v1 代替，详见[开发计划第 6.9 节](./DEVELOPMENT_PLAN.md#69-r3-a-三个匿名账户读取已提交)。
+资料按账户→完整公开视频数→获赞→粉丝→关注读取并立即传播失败。视频计数继续调用 video.Repository 的 PublicVideoQuery，Interaction 资料适配器实现 Domain Account 统计端口；正常装配共五条 SQL，统计部分三条，未注入统计仍返回零值。旧读取 Controller/Service、pagination.go 与无用途读取类型已删除；头像改由 Account 小 Reader 读取，旧 Service.GetByID 仅供保留测试夹具，其他共享响应保留，R3-C 已删除无用途 publicUser/旧登录响应，会话 DTO 归 Account。User/AuthSession ORM 与原仓储 GetByIDs 未变。现有保留流程涉及详情/注销 404 和资料头像，本轮未运行；账户旧 v1 为迁移前后源码兼容证据，固定旧账户 v1 续页、资料预算和逐步失败尚无持续断言，不能用关系列表 v1 代替，详见[开发计划第 6.9 节](./DEVELOPMENT_PLAN.md#69-r3-a-三个匿名账户读取已提交)。
+
+Video 与 Feed 共用 [Account AuthorReader](../backend/internal/infra/persistence/account/legacy_author_reader.go)，旧 Video 输出转换仅在 Infrastructure。它通过独立 PublicAccountReader 读取 PublicAccount；单个不存在/注销账户返回原 ID 和“已注销用户”，其他错误传播。批量将 0 放入占位结果且不查询，非零 ID 按首次出现顺序去重，空批次不查库，非空批次只调用一次原 user.Repository.GetByIDs，保留 id/username/avatar_url 与软删除过滤。Reader 过滤原 nil 行，作者适配补缺失/注销占位，数据库故障返回失败；不逐作者查询或增加预读/重读。旧 video/user_author_reader.go、user 的统计接口/结果已删除，User 仓储全部方法、User ORM、Service.GetByID/构造器及仍用错误/DTO 保留。5 个测试文件未改，vet/build 与源码检查通过；没有真实作者读取、资料统计或 HTTP 回归，见[开发计划 R3-F1](./DEVELOPMENT_PLAN.md#r3-f1账户跨模块读适配已实现待-review)。
 
 注册走 [Account RegistrationHandler](../backend/internal/interfaces/http/account/registration.go) → [RegistrationService](../backend/internal/application/account/registration.go) → [Domain 注册规则/输入](../backend/internal/domain/account/registration.go) → [Creator](../backend/internal/infra/persistence/account/legacy_creator.go) → 原 user.Repository.Create。它与三个匿名读取复用 Account 包和公开 DTO，独立装配注册依赖。限流仍先执行；ShouldBindJSON 与原 required/min/max 标签先按 rune 校验，成功后才对用户名 TrimSpace 并按 Go len 字节长度检查 3–32，密码不 Trim、按字节检查 8–72。Application 的小 Hash 端口由 [BcryptPasswordHasher](../backend/internal/infra/persistence/account/password_hasher.go) 使用 GenerateFromPassword/DefaultCost 实现，始终先哈希再 Create，包括重名请求。
 
@@ -561,7 +565,7 @@ Following 另外检查观看者有效。匿名 Timeline 不会因携带 token �
 
 头像的 multipart、大小限制、读取前 512 字节、原扩展名/文件头和 Seek 均保留在 HTTP，[Domain 头像规则](../backend/internal/domain/account/avatar.go) 与旧规则一致。Application 依次读取当前账户、保存新对象、TrimSpace URL 后写库；写库失败尝试清理新 URL，成功后才尝试清理不同的旧 URL，两处清理错误均忽略。[存储适配](../backend/internal/infra/persistence/account/legacy_avatar_storage.go) 委托原 LocalStorage.SaveAvatar/RemoveAvatar，不改物理路径、文件名、随机生成和安全删除；文件/数据库无共同事务，资料 JSON 直接改 avatar_url 仍不清理对象。
 
-三个成功响应仍为改名/资料 200 + 原 message、头像 201 + 原 avatar_url，认证、binding、400/404/409/413/500 文案保持原规则。旧 user/controller.go、avatar.go 与三项写 Service/DTO 已删除，User 仓储/ORM、旧创建适配所需错误/统计接口及测试夹具 Service.GetByID 保留。36 项源码对照、vet/build 通过，30 个保护源码及全部 5 个测试文件未改；未运行 Go 测试、真实 HTTP/MySQL/文件上传或补偿故障回归。尚未提交，等待 review，详见[开发计划第 6.13 节](./DEVELOPMENT_PLAN.md#613-r3-e-改名资料与头像已实现待-review)。
+三个成功响应仍为改名/资料 200 + 原 message、头像 201 + 原 avatar_url，认证、binding、400/404/409/413/500 文案保持原规则。旧 user/controller.go、avatar.go 与三项写 Service/DTO 已删除，User 仓储/ORM、旧创建适配所需错误及测试夹具 Service.GetByID 保留；R3-E 当时保留的旧统计接口/结果已由 R3-F1 清理。R3-E 实施轮 36 项源码对照、vet/build 通过，30 个保护源码及全部 5 个测试文件未改；未运行 Go 测试、真实 HTTP/MySQL/文件上传或补偿故障回归。18 个文件已提交为 `f5c1260`，未推送，详见[开发计划第 6.13 节](./DEVELOPMENT_PLAN.md#613-r3-e-改名资料与头像已提交)。
 
 ### 9.2 互动先保存关系，再读取聚合
 
@@ -579,7 +583,7 @@ Following 另外检查观看者有效。匿名 Timeline 不会因携带 token �
 
 四种写操作直接走 [HTTP handler](../backend/internal/interfaces/http/interaction/handler.go) → [application/interaction/service.go](../backend/internal/application/interaction/service.go) → [writer.go](../backend/internal/infra/persistence/interaction/writer.go)，读写统一使用 [interaction_model.go](../backend/internal/infra/persistence/interaction/interaction_model.go) 的 `VideoLike`、`Comment`，持久化包与领域包区分同名类型。实际点赞/取消、评论创建/软删除与 `interaction_outbox_events` 在同一事务提交；创建/取消先锁活动用户，再锁并复核完整公开视频。删评只锁活动用户及当前未删除评论并复核归属，不额外要求视频公开。重复点赞/取消不追加事实，重复删评仍为 404，评论 POST 仍无请求幂等键。提交后的统计/作者读取失败不撤销已提交事实。
 
-必要互动夹具直接使用 Interaction ORM。[legacy_reader.go](../backend/internal/infra/persistence/interaction/legacy_reader.go) 将独立领域统计转换为旧 `video.EngagementCounts`，router 同时注入 Video 与 Feed；资料适配器按获赞→粉丝→关注组合旧 `user.ProfileMetrics`。获赞使用完整 `video.PublicVideoQuery`，粉丝/关注通过 Relation CountReader 注入直接仓储，仍只统计活动对端账户；accountID=0 不查询，有效 ID 的统计部分仍为三条 SQL，出错即停止并返回零值和原错误。过渡的 user/video 类型转换留在外层，旧 user/video 不反向导入该持久化包。[FollowingReader](../backend/internal/infra/persistence/feed/following_reader.go) 通过窄接口调用 Relation RequireActiveUser，将不存在映射 Feed 401、其他依赖失败映射安全 503；会话校验、私有头与观看者游标保持原契约，非空六条/空页三条 SQL。完整视频与当前关系 JOIN 仍在 [video/following_repo.go](../backend/internal/video/following_repo.go)，Account/Video 剩余边界留给 R3/R4。迁移摘要见[开发计划第 6.4 节](./DEVELOPMENT_PLAN.md#64-已提交迁移摘要)，查询预算与未覆盖范围见第 5 节。
+必要互动夹具直接使用 Interaction ORM。[legacy_reader.go](../backend/internal/infra/persistence/interaction/legacy_reader.go) 的 EngagementReader 继续将独立领域统计转换为旧 `video.EngagementCounts`，router 同时注入 Video 与 Feed；资料适配器按获赞→粉丝→关注直接组合 Domain Account ProfileMetrics，并实现其独立统计端口。获赞使用完整 `video.PublicVideoQuery`，粉丝/关注通过 Relation CountReader 注入直接仓储，仍只统计活动对端账户；accountID=0 不查询，有效 ID 的统计部分仍为三条 SQL，出错即停止并返回零值和原错误。旧 Video 转换留在外层，Interaction 不再依赖旧 user 类型，旧 Video 不反向导入该持久化包。[FollowingReader](../backend/internal/infra/persistence/feed/following_reader.go) 通过窄接口调用 Relation RequireActiveUser，将不存在映射 Feed 401、其他依赖失败映射安全 503；会话校验、私有头与观看者游标保持原契约，非空六条/空页三条 SQL。完整视频与当前关系 JOIN 仍在 [video/following_repo.go](../backend/internal/video/following_repo.go)，Account/Video 剩余边界留给 R3/R4。迁移摘要见[开发计划第 6.4 节](./DEVELOPMENT_PLAN.md#64-已提交迁移摘要)，查询预算与未覆盖范围见第 5 节。
 
 [domain/interaction/event.go](../backend/internal/domain/interaction/event.go) 固定 `event_id`、版本、类型、互动 ID、正负 delta、变更时间及原创建时间；[event_model.go](../backend/internal/infra/persistence/interaction/event_model.go) 的 `OutboxEvent` 映射 [000010](../backend/db/migrations/000010_interaction_outbox.up.sql) 的独立事实表，原视频/互动删除不会级联清理该表。2026-10-05 本机 feedsystem 已完成版本 9→10、dirty=false 的增量迁移及结构核对，摘要见开发计划第 5.1 节；其他部署目标仍须单独确认。
 

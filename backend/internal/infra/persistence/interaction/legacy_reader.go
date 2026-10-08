@@ -3,9 +3,9 @@ package infrainteraction
 import (
 	"context"
 
+	domainaccount "gofeed/internal/domain/account"
 	domaininteraction "gofeed/internal/domain/interaction"
 	domainrelation "gofeed/internal/domain/relation"
-	"gofeed/internal/user"
 	"gofeed/internal/video"
 )
 
@@ -19,8 +19,8 @@ type ProfileMetricsReader struct {
 }
 
 var (
-	_ video.EngagementReader    = (*EngagementReader)(nil)
-	_ user.ProfileMetricsReader = (*ProfileMetricsReader)(nil)
+	_ video.EngagementReader             = (*EngagementReader)(nil)
+	_ domainaccount.ProfileMetricsReader = (*ProfileMetricsReader)(nil)
 )
 
 func NewEngagementReader(reader domaininteraction.EngagementReader) *EngagementReader {
@@ -47,22 +47,22 @@ func (r *EngagementReader) GetEngagementCounts(ctx context.Context, videoIDs []u
 	return counts, nil
 }
 
-// GetProfileMetrics 按获赞、粉丝、关注顺序组合旧公开资料统计
-func (r *ProfileMetricsReader) GetProfileMetrics(ctx context.Context, accountID uint) (user.ProfileMetrics, error) {
+// GetProfileMetrics 按获赞、粉丝、关注顺序组合账户领域统计
+func (r *ProfileMetricsReader) GetProfileMetrics(ctx context.Context, accountID uint) (domainaccount.ProfileMetrics, error) {
 	if accountID == 0 {
-		return user.ProfileMetrics{}, nil
+		return domainaccount.ProfileMetrics{}, nil
 	}
 	likes, err := r.likes.GetTotalLikes(ctx, accountID)
 	if err != nil {
-		return user.ProfileMetrics{}, err
+		return domainaccount.ProfileMetrics{}, err
 	}
 	followers, err := r.follows.GetFollowerCount(ctx, accountID)
 	if err != nil {
-		return user.ProfileMetrics{}, err
+		return domainaccount.ProfileMetrics{}, err
 	}
 	following, err := r.follows.GetFollowingCount(ctx, accountID)
 	if err != nil {
-		return user.ProfileMetrics{}, err
+		return domainaccount.ProfileMetrics{}, err
 	}
-	return user.ProfileMetrics{TotalLikes: likes, FollowerCount: followers, VloggerCount: following}, nil
+	return domainaccount.ProfileMetrics{TotalLikes: likes, FollowerCount: followers, VloggerCount: following}, nil
 }

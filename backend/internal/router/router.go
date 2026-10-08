@@ -127,7 +127,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	}
 
 	// 视频路由的公开读取和认证写入操作使用不同分组
-	authorReader := video.NewUserAuthorReader(userRepo)
+	authorReader := infraaccount.NewAuthorReader(infraaccount.NewReader(userRepo))
 	videoService := video.NewService(videoRepo, authorReader, engagementReader)
 	videoCtl := video.NewController(videoService, mediaStorage)
 	feedRepo := infrafeed.New(videoRepo, authorReader, engagementReader)

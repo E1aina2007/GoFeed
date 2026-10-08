@@ -15,15 +15,16 @@ type Reader struct {
 }
 
 type PublishedVideoCounter struct {
-	counter user.PublishedVideoCounter
+	counter domainaccount.PublishedVideoCounter
 }
 
 type ProfileMetricsReader struct {
-	reader user.ProfileMetricsReader
+	reader domainaccount.ProfileMetricsReader
 }
 
 var (
 	_ domainaccount.Reader                = (*Reader)(nil)
+	_ domainaccount.PublicAccountReader   = (*Reader)(nil)
 	_ domainaccount.PublishedVideoCounter = (*PublishedVideoCounter)(nil)
 	_ domainaccount.ProfileMetricsReader  = (*ProfileMetricsReader)(nil)
 )
@@ -32,14 +33,14 @@ func NewReader(users *user.Repository) *Reader {
 	return &Reader{users: users}
 }
 
-func NewPublishedVideoCounter(counter user.PublishedVideoCounter) domainaccount.PublishedVideoCounter {
+func NewPublishedVideoCounter(counter domainaccount.PublishedVideoCounter) domainaccount.PublishedVideoCounter {
 	if counter == nil {
 		return nil
 	}
 	return &PublishedVideoCounter{counter: counter}
 }
 
-func NewProfileMetricsReader(reader user.ProfileMetricsReader) domainaccount.ProfileMetricsReader {
+func NewProfileMetricsReader(reader domainaccount.ProfileMetricsReader) domainaccount.ProfileMetricsReader {
 	if reader == nil {
 		return nil
 	}
@@ -52,6 +53,24 @@ func (r *Reader) GetByID(ctx context.Context, id uint) (domainaccount.PublicAcco
 		return domainaccount.PublicAccount{}, accountError(err)
 	}
 	return publicAccount(account), nil
+}
+
+// GetByIDs 复用原批量作者投影，只向消费方返回公开字段
+func (r *Reader) GetByIDs(ctx context.Context, ids []uint) ([]domainaccount.PublicAccount, error) {
+	result := make([]domainaccount.PublicAccount, 0, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	accounts, err := r.users.GetByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, account := range accounts {
+		if account != nil {
+			result = append(result, domainaccount.PublicAccount{ID: account.ID, Username: account.Username, AvatarURL: account.AvatarURL})
+		}
+	}
+	return result, nil
 }
 
 func (r *Reader) GetUserList(ctx context.Context) ([]domainaccount.PublicAccount, error) {
@@ -84,9 +103,7 @@ func (r *ProfileMetricsReader) GetProfileMetrics(ctx context.Context, accountID 
 	if err != nil {
 		return domainaccount.ProfileMetrics{}, accountError(err)
 	}
-	return domainaccount.ProfileMetrics{
-		TotalLikes: metrics.TotalLikes, FollowerCount: metrics.FollowerCount, VloggerCount: metrics.VloggerCount,
-	}, nil
+	return metrics, nil
 }
 
 func publicAccount(account *user.User) domainaccount.PublicAccount {
