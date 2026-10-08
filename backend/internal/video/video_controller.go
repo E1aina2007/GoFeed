@@ -23,11 +23,6 @@ func NewController(srv *Service, storage MediaStorage) *Controller {
 	return &Controller{srv: srv, storage: storage}
 }
 
-// UpdateDraftVideo 处理 POST /api/video/auth/drafts/:id/play
-func (ctl *Controller) UpdateDraftVideo(c *gin.Context) {
-	ctl.uploadDraftMedia(c, MediaVideo, "play_url", "play_file_name", "play_original_name")
-}
-
 // UpdateDraftCover 处理 POST /api/video/auth/drafts/:id/cover
 func (ctl *Controller) UpdateDraftCover(c *gin.Context) {
 	ctl.uploadDraftMedia(c, MediaCover, "cover_url", "cover_file_name", "cover_original_name")

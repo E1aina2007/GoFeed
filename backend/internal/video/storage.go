@@ -71,10 +71,6 @@ func validateMedia(kind MediaKind, filename string, head []byte) bool {
 	return domainvideo.ValidateMedia(domainvideo.MediaKind(kind), filename, head)
 }
 
-func isOwnedMediaURL(raw string, kind MediaKind, ownerID uint) bool {
-	return domainvideo.IsOwnedMediaURL(raw, domainvideo.MediaKind(kind), ownerID)
-}
-
 func mediaURLPath(raw string) (string, error) {
 	return domainvideo.MediaURLPath(raw)
 }

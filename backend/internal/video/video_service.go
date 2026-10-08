@@ -55,8 +55,7 @@ func NewService(repository VideoRepository) *Service {
 
 // UpdateDraftMedia 将已经落盘的文件绑定到草稿，客户端不能提交或覆盖任何媒体元数据
 func (s *Service) UpdateDraftMedia(ctx context.Context, draftID, ownerID uint, kind MediaKind, saved SavedFile, originalName string) error {
-	if draftID == 0 || ownerID == 0 || (kind != MediaVideo && kind != MediaCover) ||
-		!isOwnedMediaURL(saved.PublicURL, kind, ownerID) || !isValidStoredFile(saved.PublicURL, saved.FileName) {
+	if !domainvideo.IsValidDraftMedia(draftID, ownerID, domainvideo.MediaKind(kind), saved.PublicURL, saved.FileName) {
 		return ErrInvalidMedia
 	}
 	if s.repository == nil {
@@ -176,8 +175,4 @@ func isPublicVideo(video Video) bool {
 		PlayURL: video.PlayURL, PlayFileName: video.PlayFileName, PlayOriginalName: video.PlayOriginalName,
 		CoverURL: video.CoverURL, CoverFileName: video.CoverFileName, CoverOriginalName: video.CoverOriginalName,
 	})
-}
-
-func isValidStoredFile(rawURL, fileName string) bool {
-	return domainvideo.IsValidStoredFile(rawURL, fileName)
 }
