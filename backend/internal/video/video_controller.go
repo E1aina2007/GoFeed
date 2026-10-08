@@ -171,27 +171,6 @@ func (ctl *Controller) UpdateDraftPublication(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"draft": item})
 }
 
-// GetVideoStatus 处理 GET /api/video/auth/:id/status
-func (ctl *Controller) GetVideoStatus(c *gin.Context) {
-	userID, ok := interfaceshttpauth.UserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	videoID, err := parsePathID(c.Param("id"))
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-	status, err := ctl.srv.GetVideoStatus(c.Request.Context(), videoID, userID)
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-	// 状态响应使用顶层固定字段，客户端无需区分额外包装层
-	c.JSON(http.StatusOK, status)
-}
-
 // DiscardDraft 处理 DELETE /api/video/auth/drafts/:id
 func (ctl *Controller) DiscardDraft(c *gin.Context) {
 	userID, ok := interfaceshttpauth.UserID(c)

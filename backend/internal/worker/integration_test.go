@@ -34,6 +34,7 @@ import (
 	"gofeed/internal/db"
 	infracachefeed "gofeed/internal/infra/cache/feed"
 	infrafeed "gofeed/internal/infra/persistence/feed"
+	interfaceshttpvideo "gofeed/internal/interfaces/http/video"
 	"gofeed/internal/mq"
 	infraredis "gofeed/internal/redis"
 	"gofeed/internal/router"
@@ -1257,7 +1258,7 @@ func publishPipelineDraft(t *testing.T, client *http.Client, base, token string,
 
 // 测试目标：轮询作者状态接口直到 processing 进入终态
 // 预期效果：返回顶层状态字段，超时保留最后一次状态用于诊断
-func waitPipelineTerminal(t *testing.T, client *http.Client, base, token string, videoID uint) video.VideoProcessingStatus {
+func waitPipelineTerminal(t *testing.T, client *http.Client, base, token string, videoID uint) interfaceshttpvideo.VideoProcessingStatus {
 	t.Helper()
 	deadline := time.Now().Add(pipelinePollTimeout)
 	last := fetchPipelineStatus(t, client, base, token, videoID)
@@ -1275,9 +1276,9 @@ func waitPipelineTerminal(t *testing.T, client *http.Client, base, token string,
 
 // 测试目标：读取作者视角的处理状态
 // 预期效果：返回服务端顶层状态字段
-func fetchPipelineStatus(t *testing.T, client *http.Client, base, token string, videoID uint) video.VideoProcessingStatus {
+func fetchPipelineStatus(t *testing.T, client *http.Client, base, token string, videoID uint) interfaceshttpvideo.VideoProcessingStatus {
 	t.Helper()
-	var status video.VideoProcessingStatus
+	var status interfaceshttpvideo.VideoProcessingStatus
 	doPipelineJSON(t, client, http.MethodGet,
 		fmt.Sprintf("%s/api/video/auth/%d/status", base, videoID), token, nil, http.StatusOK, &status)
 	return status

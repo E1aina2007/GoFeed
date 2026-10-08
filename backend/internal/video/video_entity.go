@@ -149,12 +149,3 @@ type DraftItem struct {
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }
-
-// VideoProcessingStatus 表示作者视角的异步处理结果
-// 仅 processing、published、rejected 三种状态可查询
-type VideoProcessingStatus struct {
-	Status         string     `json:"status"`
-	PublishedAt    *time.Time `json:"published_at"`
-	RejectedAt     *time.Time `json:"rejected_at"`
-	RejectedReason string     `json:"rejected_reason"`
-}

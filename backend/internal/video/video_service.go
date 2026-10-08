@@ -214,40 +214,6 @@ func (s *Service) DeleteVideo(ctx context.Context, id, authorID uint) error {
 	return nil
 }
 
-// GetVideoStatus 返回当前用户视频的异步处理状态
-// 处于 draft 或 purging 的视频、他人视频与不存在的视频统一按不存在处理，
-// 避免以该端点探测他人资源或推断非公开状态
-func (s *Service) GetVideoStatus(ctx context.Context, videoID, viewerID uint) (VideoProcessingStatus, error) {
-	if videoID == 0 || viewerID == 0 {
-		return VideoProcessingStatus{}, ErrInvalidVideoID
-	}
-	if s.repository == nil {
-		return VideoProcessingStatus{}, ErrRepositoryUnavailable
-	}
-
-	row, err := s.repository.GetByID(ctx, videoID)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return VideoProcessingStatus{}, ErrVideoNotFound
-		}
-		return VideoProcessingStatus{}, err
-	}
-	if row.AuthorID != viewerID {
-		return VideoProcessingStatus{}, ErrVideoNotFound
-	}
-	switch row.Status {
-	case VideoStatusProcessing, VideoStatusPublished, VideoStatusRejected:
-		return VideoProcessingStatus{
-			Status:         row.Status,
-			PublishedAt:    row.PublishedAt,
-			RejectedAt:     row.RejectedAt,
-			RejectedReason: row.RejectedReason,
-		}, nil
-	default:
-		return VideoProcessingStatus{}, ErrVideoNotFound
-	}
-}
-
 // filterPublicVideos 丢弃不满足公开响应契约的实体
 // 公开列表宁可少返回一项，也不能把缺媒体或缺发布时间的记录暴露给客户端
 func filterPublicVideos(videos []Video) []Video {
