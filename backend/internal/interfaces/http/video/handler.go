@@ -7,6 +7,7 @@ import (
 	applicationvideo "gofeed/internal/application/video"
 	domainvideo "gofeed/internal/domain/video"
 	apierror "gofeed/internal/error"
+	interfaceshttpauth "gofeed/internal/interfaces/http/auth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -94,4 +95,24 @@ var videoErrorRules = []apierror.Rule{
 
 func handleVideoError(c *gin.Context, err error) {
 	apierror.Write(c, err, "video operation failed", videoErrorRules...)
+}
+
+func (h *Handler) GetMyVideoList(c *gin.Context) {
+	userID, ok := interfaceshttpauth.UserID(c)
+	if !ok {
+		apierror.WriteUnauthorized(c, "invalid or expired token")
+		return
+	}
+
+	limit, err := parseLimit(c.Query("limit"))
+	if err != nil {
+		handleVideoError(c, err)
+		return
+	}
+	resp, err := h.service.GetMyVideoList(c.Request.Context(), userID, c.Query("cursor"), limit)
+	if err != nil {
+		handleVideoError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, listResponseFrom(resp))
 }

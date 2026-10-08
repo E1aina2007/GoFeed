@@ -2,14 +2,11 @@ package video
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	domainvideo "gofeed/internal/domain/video"
@@ -17,41 +14,26 @@ import (
 	"gorm.io/gorm"
 )
 
-const (
-	DefaultListLimit     = 20
-	MaxListLimit         = 50
-	currentCursorVersion = 1
-)
-
-type cursorScope struct {
-	kind     CursorKind
-	authorID uint
-}
-
-func mineCursorScope(authorID uint) cursorScope {
-	return cursorScope{kind: CursorKindMine, authorID: authorID}
-}
+const MaxListLimit = 50
 
 var (
-	ErrInvalidVideoID          = errors.New("invalid video id")
-	ErrInvalidLimit            = errors.New("invalid limit")
-	ErrInvalidCursor           = errors.New("invalid cursor")
-	ErrInvalidAuthorID         = errors.New("invalid author_id")
-	ErrInvalidPublishRequest   = errors.New("invalid publish request")
-	ErrVideoNotFound           = errors.New("video not found")
-	ErrNotAuthor               = errors.New("only the author can modify this video")
-	ErrRepositoryUnavailable   = errors.New("video repository unavailable")
-	ErrAuthorReaderUnavailable = errors.New("author reader unavailable")
-	ErrEngagementUnavailable   = errors.New("engagement stats unavailable")
-	ErrDraftNotWritable        = errors.New("video draft is not writable")
-	ErrDraftIncomplete         = errors.New("video draft is incomplete")
+	ErrInvalidVideoID        = errors.New("invalid video id")
+	ErrInvalidLimit          = errors.New("invalid limit")
+	ErrInvalidCursor         = errors.New("invalid cursor")
+	ErrInvalidAuthorID       = errors.New("invalid author_id")
+	ErrInvalidPublishRequest = errors.New("invalid publish request")
+	ErrVideoNotFound         = errors.New("video not found")
+	ErrNotAuthor             = errors.New("only the author can modify this video")
+	ErrRepositoryUnavailable = errors.New("video repository unavailable")
+	ErrEngagementUnavailable = errors.New("engagement stats unavailable")
+	ErrDraftNotWritable      = errors.New("video draft is not writable")
+	ErrDraftIncomplete       = errors.New("video draft is incomplete")
 )
 
 // VideoRepository 是服务层依赖的完整仓储能力，包含发布/删除等写操作
 type VideoRepository interface {
 	Create(ctx context.Context, video *Video) error
 	GetByID(ctx context.Context, id uint) (*Video, error)
-	GetAuthorVideoList(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error)
 	DeletePublishedVideo(ctx context.Context, id, authorID uint) error
 	UpdateDraftMedia(ctx context.Context, draftID, authorID uint, kind MediaKind, saved SavedFile, originalName string) error
 	UpdateDraftPublication(ctx context.Context, draftID, authorID uint) (*Video, error)
@@ -70,17 +52,11 @@ type EngagementReader interface {
 }
 
 type Service struct {
-	repository       VideoRepository
-	authorReader     AuthorReader
-	engagementReader EngagementReader
+	repository VideoRepository
 }
 
-func NewService(repository VideoRepository, authorReader AuthorReader, engagementReaders ...EngagementReader) *Service {
-	var engagementReader EngagementReader
-	if len(engagementReaders) > 0 {
-		engagementReader = engagementReaders[0]
-	}
-	return &Service{repository: repository, authorReader: authorReader, engagementReader: engagementReader}
+func NewService(repository VideoRepository) *Service {
+	return &Service{repository: repository}
 }
 
 // CreateDraft 创建一个仅当前用户可写的草稿，媒体字段只会由后续上传接口填充
@@ -207,36 +183,6 @@ func draftItem(video Video) DraftItem {
 	}
 }
 
-// GetMyVideoList 返回当前用户已发布的视频管理列表
-// draft 和 purging 都没有可供 VideoItem 表达的公开媒体，不应混入该接口
-func (s *Service) GetMyVideoList(ctx context.Context, authorID uint, encodedCursor string, limit int) (ListResponse, error) {
-	if authorID == 0 {
-		return ListResponse{}, ErrInvalidVideoID
-	}
-	if s.repository == nil {
-		return ListResponse{}, ErrRepositoryUnavailable
-	}
-
-	limit, err := normalizeLimit(limit)
-	if err != nil {
-		return ListResponse{}, err
-	}
-	scope := mineCursorScope(authorID)
-	cursor, err := decodeCursor(encodedCursor)
-	if err != nil {
-		return ListResponse{}, err
-	}
-	if err := validateCursorScope(cursor, scope); err != nil {
-		return ListResponse{}, err
-	}
-
-	videos, err := s.repository.GetAuthorVideoList(ctx, authorID, cursor, limit+1)
-	if err != nil {
-		return ListResponse{}, err
-	}
-	return s.buildListResponse(ctx, videos, limit, scope)
-}
-
 // DeleteVideo 仅作者本人可软删除自己的已发布视频
 func (s *Service) DeleteVideo(ctx context.Context, id, authorID uint) error {
 	if id == 0 {
@@ -266,74 +212,6 @@ func (s *Service) DeleteVideo(ctx context.Context, id, authorID uint) error {
 		return err
 	}
 	return nil
-}
-
-// buildListResponse 构建视频列表响应，包含作者资料与分页游标
-func (s *Service) buildListResponse(ctx context.Context, videos []Video, limit int, scope cursorScope) (ListResponse, error) {
-	// 仓储查询已按公开条件过滤，这里再做一次实体级检查，防止替代实现或并发快照
-	// 把残缺记录映射成半完整的公开响应
-	videos = filterPublicVideos(videos)
-	hasMore := len(videos) > limit
-	if hasMore {
-		videos = videos[:limit]
-	}
-
-	engagements, err := s.engagements(ctx, videos)
-	if err != nil {
-		return ListResponse{}, err
-	}
-	authors, err := s.listAuthors(ctx, videos)
-	if err != nil {
-		return ListResponse{}, err
-	}
-	items := make([]VideoItem, 0, len(videos))
-	for i := range videos {
-		item := videoItem(videos[i], authors[videos[i].AuthorID])
-		applyEngagement(&item, engagements[videos[i].ID])
-		items = append(items, item)
-	}
-
-	response := ListResponse{Items: items}
-	if hasMore {
-		last := videos[len(videos)-1]
-		if last.PublishedAt == nil {
-			return ListResponse{}, fmt.Errorf("published video %d has no publication time", last.ID)
-		}
-		next, err := encodeCursor(&Cursor{
-			Version:     currentCursorVersion,
-			Kind:        scope.kind,
-			AuthorID:    scope.authorID,
-			PublishedAt: *last.PublishedAt,
-			ID:          last.ID,
-		})
-		if err != nil {
-			return ListResponse{}, err
-		}
-		response.NextCursor = next
-	}
-	return response, nil
-}
-
-// listAuthors 对截断后的最终列表执行一次批量作者读取
-// 重复作者只读取一次；作者依赖缺失且列表非空时返回不可用错误
-func (s *Service) listAuthors(ctx context.Context, videos []Video) (map[uint]Author, error) {
-	if len(videos) == 0 {
-		return map[uint]Author{}, nil
-	}
-	if s.authorReader == nil {
-		return nil, ErrAuthorReaderUnavailable
-	}
-	ids := make([]uint, 0, len(videos))
-	seen := make(map[uint]struct{}, len(videos))
-	for i := range videos {
-		id := videos[i].AuthorID
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
-	}
-	return s.authorReader.GetPublicAuthors(ctx, ids)
 }
 
 // GetVideoStatus 返回当前用户视频的异步处理状态
@@ -396,58 +274,6 @@ func isPublicVideo(video Video) bool {
 	})
 }
 
-func (s *Service) engagements(ctx context.Context, videos []Video) (map[uint]EngagementCounts, error) {
-	// 计数值以互动关系表聚合为唯一事实源，实体计数值列已删除，未聚合到的视频保持零值
-	counts := make(map[uint]EngagementCounts, len(videos))
-	if s.engagementReader == nil || len(videos) == 0 {
-		return counts, nil
-	}
-	ids := make([]uint, 0, len(videos))
-	for _, item := range videos {
-		ids = append(ids, item.ID)
-	}
-	actual, err := s.engagementReader.GetEngagementCounts(ctx, ids)
-	if err != nil {
-		// 统计查询失败按服务不可用整体失败，禁止用零计数或实体列兜底值伪装成功响应
-		// 双重 %w 同时保留哨兵错误与底层原因，供状态映射与日志追溯
-		return nil, fmt.Errorf("%w: %w", ErrEngagementUnavailable, err)
-	}
-	for _, id := range ids {
-		if value, ok := actual[id]; ok {
-			counts[id] = value
-		}
-	}
-	return counts, nil
-}
-
-func applyEngagement(item *VideoItem, counts EngagementCounts) {
-	item.LikesCount = counts.LikesCount
-	item.CommentsCount = counts.CommentsCount
-}
-
-func videoItem(video Video, author Author) VideoItem {
-	return VideoItem{
-		ID:                video.ID,
-		Title:             video.Title,
-		Description:       video.Description,
-		PlayURL:           video.PlayURL,
-		PlayFileName:      video.PlayFileName,
-		PlayOriginalName:  video.PlayOriginalName,
-		CoverURL:          video.CoverURL,
-		CoverFileName:     video.CoverFileName,
-		CoverOriginalName: video.CoverOriginalName,
-		PublishedAt:       valueOrZero(video.PublishedAt),
-		Author:            author,
-	}
-}
-
-func valueOrZero(value *time.Time) time.Time {
-	if value == nil {
-		return time.Time{}
-	}
-	return *value
-}
-
 // isValidStoredFile 校验请求中的实际存储文件名与媒体 URL 最后一段一致，
 // 且该文件名本身已满足物理文件名清洗规则（即服务端生成的结果）
 func isValidStoredFile(rawURL, fileName string) bool {
@@ -459,91 +285,4 @@ func isValidStoredFile(rawURL, fileName string) bool {
 		return false
 	}
 	return filepath.Base(u.Path) == fileName
-}
-
-func normalizeLimit(limit int) (int, error) {
-	if limit == 0 {
-		return DefaultListLimit, nil
-	}
-	if limit < 0 || limit > MaxListLimit {
-		return 0, ErrInvalidLimit
-	}
-	return limit, nil
-}
-
-// 编码分页游标
-func encodeCursor(cursor *Cursor) (string, error) {
-	if !validCursorFields(cursor) {
-		return "", ErrInvalidCursor
-	}
-
-	payload, err := json.Marshal(cursor)
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(payload), nil
-}
-
-// 解码分页游标
-func decodeCursor(encoded string) (*Cursor, error) {
-	if encoded == "" {
-		return nil, nil
-	}
-
-	payload, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil {
-		return nil, ErrInvalidCursor
-	}
-
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &fields); err != nil {
-		return nil, ErrInvalidCursor
-	}
-	for field := range fields {
-		switch field {
-		case "v", "k", "a", "p", "i":
-		default:
-			return nil, ErrInvalidCursor
-		}
-	}
-
-	var cursor Cursor
-	if err := json.Unmarshal(payload, &cursor); err != nil {
-		return nil, ErrInvalidCursor
-	}
-	if cursor.Kind == CursorKindPublic {
-		if _, ok := fields["a"]; ok {
-			return nil, ErrInvalidCursor
-		}
-	} else if _, ok := fields["a"]; !ok {
-		return nil, ErrInvalidCursor
-	}
-	if !validCursorFields(&cursor) {
-		return nil, ErrInvalidCursor
-	}
-	return &cursor, nil
-}
-
-func validCursorFields(cursor *Cursor) bool {
-	if cursor == nil || cursor.Version != currentCursorVersion || cursor.ID == 0 || cursor.PublishedAt.IsZero() {
-		return false
-	}
-	switch cursor.Kind {
-	case CursorKindPublic:
-		return cursor.AuthorID == 0
-	case CursorKindAuthor, CursorKindMine:
-		return cursor.AuthorID != 0
-	default:
-		return false
-	}
-}
-
-func validateCursorScope(cursor *Cursor, scope cursorScope) error {
-	if cursor == nil {
-		return nil
-	}
-	if cursor.Kind != scope.kind || cursor.AuthorID != scope.authorID {
-		return ErrInvalidCursor
-	}
-	return nil
 }

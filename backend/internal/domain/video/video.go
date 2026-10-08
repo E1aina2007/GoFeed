@@ -95,6 +95,10 @@ type Reader interface {
 	GetPublishedVideoList(ctx context.Context, authorID uint, position *ListPosition, limit int) ([]PublicVideo, error)
 }
 
+type AuthorVideoListReader interface {
+	GetAuthorVideoList(ctx context.Context, authorID uint, position *ListPosition, limit int) ([]PublicVideo, error)
+}
+
 type AuthorReader interface {
 	GetPublicAuthor(ctx context.Context, id uint) (Author, error)
 	GetPublicAuthors(ctx context.Context, ids []uint) (map[uint]Author, error)

@@ -127,3 +127,7 @@ func validateCursorScope(cursor *cursor, scope cursorScope) error {
 	}
 	return nil
 }
+
+func mineCursorScope(authorID uint) cursorScope {
+	return cursorScope{kind: cursorKindMine, authorID: authorID}
+}

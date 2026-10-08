@@ -213,27 +213,6 @@ func (ctl *Controller) DiscardDraft(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"draft": draft})
 }
 
-// GetMyVideoList 处理 GET /api/video/auth/mine?cursor=&limit=
-func (ctl *Controller) GetMyVideoList(c *gin.Context) {
-	userID, ok := interfaceshttpauth.UserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-
-	limit, err := parseLimit(c.Query("limit"))
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-	resp, err := ctl.srv.GetMyVideoList(c.Request.Context(), userID, c.Query("cursor"), limit)
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, resp)
-}
-
 // DeleteVideo 处理 DELETE /api/video/auth/:id
 func (ctl *Controller) DeleteVideo(c *gin.Context) {
 	userID, ok := interfaceshttpauth.UserID(c)
@@ -260,17 +239,6 @@ func parsePathID(raw string) (uint, error) {
 		return 0, ErrInvalidVideoID
 	}
 	return uint(id), nil
-}
-
-func parseLimit(raw string) (int, error) {
-	if raw == "" {
-		return 0, nil // 交给服务层使用默认值
-	}
-	limit, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0, ErrInvalidLimit
-	}
-	return limit, nil
 }
 
 // videoErrorRules 按从最具体到最通用排列，决定视频模块领域错误的公共类别与对外文案

@@ -124,23 +124,6 @@ type Author struct {
 	AvatarURL string `json:"avatar_url"`
 }
 
-// VideoItem 表示公开返回的视频内容
-type VideoItem struct {
-	ID                uint      `json:"id"`
-	Title             string    `json:"title"`
-	Description       string    `json:"description"`
-	PlayURL           string    `json:"play_url"`
-	PlayFileName      string    `json:"play_file_name"`
-	PlayOriginalName  string    `json:"play_original_name"`
-	CoverURL          string    `json:"cover_url"`
-	CoverFileName     string    `json:"cover_file_name"`
-	CoverOriginalName string    `json:"cover_original_name"`
-	PublishedAt       time.Time `json:"published_at"`
-	LikesCount        int64     `json:"likes_count"`
-	CommentsCount     int64     `json:"comments_count"`
-	Author            Author    `json:"author"`
-}
-
 // EngagementCounts 表示从互动关系表读取的当前点赞和评论数量
 type EngagementCounts struct {
 	LikesCount    int64
@@ -165,12 +148,6 @@ type DraftItem struct {
 	CoverOriginalName string    `json:"cover_original_name,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
-}
-
-// ListResponse 表示视频列表响应
-type ListResponse struct {
-	Items      []VideoItem `json:"items"`
-	NextCursor string      `json:"next_cursor,omitempty"`
 }
 
 // VideoProcessingStatus 表示作者视角的异步处理结果

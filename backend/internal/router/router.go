@@ -132,9 +132,11 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 
 	// 视频路由的公开读取和认证写入操作使用不同分组
 	authorReader := infraaccount.NewAuthorReader(infraaccount.NewReader(userRepo))
-	videoService := video.NewService(videoRepo, authorReader, engagementReader)
+	videoService := video.NewService(videoRepo)
 	videoCtl := video.NewController(videoService, mediaStorage)
 	publicVideoHandler := interfaceshttpvideo.New(applicationvideo.New(infravideo.NewReader(videoRepo),
+		infravideo.NewAuthorReader(authorReader), infravideo.NewEngagementReader(engagementReader)))
+	myVideoHandler := interfaceshttpvideo.New(applicationvideo.NewMyVideoList(infravideo.NewAuthorVideoListReader(videoRepo),
 		infravideo.NewAuthorReader(authorReader), infravideo.NewEngagementReader(engagementReader)))
 	feedRepo := infrafeed.New(videoRepo, authorReader, engagementReader)
 	feedService := applicationfeed.New(feedRepo,
@@ -162,7 +164,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		protectedVideos.POST("/drafts/:id/cover", videoCtl.UpdateDraftCover)
 		protectedVideos.POST("/drafts/:id/publish", videoCtl.UpdateDraftPublication)
 		protectedVideos.DELETE("/drafts/:id", videoCtl.DiscardDraft)
-		protectedVideos.GET("/mine", videoCtl.GetMyVideoList)
+		protectedVideos.GET("/mine", myVideoHandler.GetMyVideoList)
 		protectedVideos.GET("/:id/status", videoCtl.GetVideoStatus)
 		protectedVideos.GET("/:id/like", interactionHandler.GetLikeState)
 		protectedVideos.PUT("/:id/like", interactionHandler.CreateLike)

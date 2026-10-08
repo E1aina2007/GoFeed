@@ -15,6 +15,7 @@ type ListResult struct {
 
 type Service struct {
 	repository       domainvideo.Reader
+	authorVideos     domainvideo.AuthorVideoListReader
 	authorReader     domainvideo.AuthorReader
 	engagementReader domainvideo.EngagementReader
 }
