@@ -11,7 +11,7 @@ import (
 	applicationfeed "gofeed/internal/application/feed"
 	domainfeed "gofeed/internal/domain/feed"
 	apierror "gofeed/internal/error"
-	"gofeed/internal/middleware/jwt"
+	interfaceshttpauth "gofeed/internal/interfaces/http/auth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -114,7 +114,7 @@ func (h *Handler) GetFeed(c *gin.Context) {
 			return
 		}
 		var ok bool
-		viewerID, ok = jwt.UserID(c)
+		viewerID, ok = interfaceshttpauth.UserID(c)
 		if !ok || viewerID == 0 {
 			apierror.WriteUnauthorized(c, domainfeed.ErrUnauthenticated.Error())
 			return

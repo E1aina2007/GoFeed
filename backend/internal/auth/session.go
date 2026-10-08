@@ -7,6 +7,8 @@ import (
 	"errors"
 	"time"
 
+	infrajwt "gofeed/internal/infra/jwt"
+
 	"gorm.io/gorm"
 )
 
@@ -118,11 +120,11 @@ type TokenPair struct {
 }
 
 func (s *SessionService) Create(ctx context.Context, userID uint, username string) (*TokenPair, error) {
-	sessionID, err := GenerateRefreshToken()
+	sessionID, err := infrajwt.GenerateRefreshToken()
 	if err != nil {
 		return nil, err
 	}
-	refreshToken, err := GenerateRefreshToken()
+	refreshToken, err := infrajwt.GenerateRefreshToken()
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +139,7 @@ func (s *SessionService) Create(ctx context.Context, userID uint, username strin
 		return nil, err
 	}
 
-	accessToken, err := GenerateToken(userID, username, session.ID)
+	accessToken, err := infrajwt.GenerateToken(userID, username, session.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +157,7 @@ func (s *SessionService) UpdateRefreshToken(ctx context.Context, refreshToken st
 	if err != nil {
 		return nil, "", err
 	}
-	nextRefreshToken, err := GenerateRefreshToken()
+	nextRefreshToken, err := infrajwt.GenerateRefreshToken()
 	if err != nil {
 		return nil, "", err
 	}

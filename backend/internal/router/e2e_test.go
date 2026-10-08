@@ -29,11 +29,11 @@ import (
 	"gorm.io/gorm"
 
 	applicationfeed "gofeed/internal/application/feed"
-	"gofeed/internal/auth"
 	"gofeed/internal/config"
 	"gofeed/internal/db"
 	domainfeed "gofeed/internal/domain/feed"
 	infracachefeed "gofeed/internal/infra/cache/feed"
+	infrajwt "gofeed/internal/infra/jwt"
 	infraaccount "gofeed/internal/infra/persistence/account"
 	infrafeed "gofeed/internal/infra/persistence/feed"
 	infrainteraction "gofeed/internal/infra/persistence/interaction"
@@ -1173,7 +1173,7 @@ func TestFollowingFeedAuthenticationAndCursorIsolation(t *testing.T) {
 	doJSON(t, e.server.Client(), http.MethodGet, e.server.URL+"/api/feed?limit=1", "", nil, 200, &timeline)
 	e.get("&cursor="+url.QueryEscape(timeline.NextCursor), e.viewer.AccessToken, 400)
 	doJSON(t, e.server.Client(), http.MethodGet, e.server.URL+"/api/feed?cursor="+url.QueryEscape(first.NextCursor), "", nil, 400, nil)
-	claims, err := auth.ParseToken(e.viewer.AccessToken)
+	claims, err := infrajwt.ParseToken(e.viewer.AccessToken)
 	if err != nil {
 		t.Fatal(err)
 	}

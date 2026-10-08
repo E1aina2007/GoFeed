@@ -6,7 +6,7 @@ import (
 	applicationaccount "gofeed/internal/application/account"
 	domainaccount "gofeed/internal/domain/account"
 	apierror "gofeed/internal/error"
-	"gofeed/internal/middleware/jwt"
+	interfaceshttpauth "gofeed/internal/interfaces/http/auth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -48,8 +48,8 @@ func (h *SessionHandler) UpdateRefreshToken(c *gin.Context) {
 }
 
 func (h *SessionHandler) UpdateSessionRevocation(c *gin.Context) {
-	userID, ok := jwt.UserID(c)
-	sessionID, hasSession := jwt.SessionID(c)
+	userID, ok := interfaceshttpauth.UserID(c)
+	sessionID, hasSession := interfaceshttpauth.SessionID(c)
 	if !ok || !hasSession {
 		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return

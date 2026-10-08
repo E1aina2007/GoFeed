@@ -7,7 +7,7 @@ import (
 	applicationrelation "gofeed/internal/application/relation"
 	domainrelation "gofeed/internal/domain/relation"
 	apierror "gofeed/internal/error"
-	"gofeed/internal/middleware/jwt"
+	interfaceshttpauth "gofeed/internal/interfaces/http/auth"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -97,7 +97,7 @@ func (h *Handler) setFollow(c *gin.Context, following bool) {
 }
 
 func followUsers(c *gin.Context) (uint, uint, bool) {
-	followerID, ok := jwt.UserID(c)
+	followerID, ok := interfaceshttpauth.UserID(c)
 	if !ok {
 		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return 0, 0, false

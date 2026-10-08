@@ -13,10 +13,10 @@ import (
 	infrainteraction "gofeed/internal/infra/persistence/interaction"
 	infrarelation "gofeed/internal/infra/persistence/relation"
 	interfaceshttpaccount "gofeed/internal/interfaces/http/account"
+	interfaceshttpauth "gofeed/internal/interfaces/http/auth"
 	interfaceshttpfeed "gofeed/internal/interfaces/http/feed"
 	interfaceshttpinteraction "gofeed/internal/interfaces/http/interaction"
 	interfaceshttprelation "gofeed/internal/interfaces/http/relation"
-	"gofeed/internal/middleware/jwt"
 	"gofeed/internal/middleware/ratelimit"
 	"gofeed/internal/observability"
 	"gofeed/internal/video"
@@ -112,7 +112,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	users.GET("/:id/following", relationHandler.GetFollowingList)
 
 	protectedUsers := users.Group("/auth")
-	protectedUsers.Use(jwt.Auth(sessionService))
+	protectedUsers.Use(interfaceshttpauth.Auth(sessionService))
 	{
 		protectedUsers.POST("/logout", sessionHandler.UpdateSessionRevocation)
 		protectedUsers.PATCH("/name", profileHandler.UpdateName)
@@ -139,7 +139,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 			log.Printf("event=feed_card_cache result=%s count=%d duration_ms=%d", observation.Result, observation.Count, observation.Duration.Milliseconds())
 		}),
 	)
-	feedHandler := interfaceshttpfeed.New(feedService, interfaceshttpfeed.WithFollowingAuth(jwt.Auth(sessionService)))
+	feedHandler := interfaceshttpfeed.New(feedService, interfaceshttpfeed.WithFollowingAuth(interfaceshttpauth.Auth(sessionService)))
 	api.GET("/feed", feedHandler.GetFeed)
 	videos := api.Group("/video")
 	videos.GET("", videoCtl.GetVideoList)
@@ -147,7 +147,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	videos.GET("/:id/comments", interactionHandler.GetCommentList)
 
 	protectedVideos := videos.Group("/auth")
-	protectedVideos.Use(jwt.Auth(sessionService))
+	protectedVideos.Use(interfaceshttpauth.Auth(sessionService))
 	{
 		protectedVideos.POST("/drafts", videoCtl.CreateDraft)
 		protectedVideos.GET("/drafts/:id", videoCtl.GetDraft)

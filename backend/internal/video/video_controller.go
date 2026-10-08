@@ -7,7 +7,7 @@ import (
 	"strconv"
 
 	"gofeed/internal/error"
-	"gofeed/internal/middleware/jwt"
+	interfaceshttpauth "gofeed/internal/interfaces/http/auth"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -62,7 +62,7 @@ func (ctl *Controller) GetVideoList(c *gin.Context) {
 
 // CreateDraft 处理 POST /api/video/auth/drafts
 func (ctl *Controller) CreateDraft(c *gin.Context) {
-	userID, ok := jwt.UserID(c)
+	userID, ok := interfaceshttpauth.UserID(c)
 	if !ok {
 		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
@@ -83,7 +83,7 @@ func (ctl *Controller) CreateDraft(c *gin.Context) {
 
 // GetDraft 处理 GET /api/video/auth/drafts/:id
 func (ctl *Controller) GetDraft(c *gin.Context) {
-	userID, ok := jwt.UserID(c)
+	userID, ok := interfaceshttpauth.UserID(c)
 	if !ok {
 		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
@@ -113,7 +113,7 @@ func (ctl *Controller) UpdateDraftCover(c *gin.Context) {
 }
 
 func (ctl *Controller) uploadDraftMedia(c *gin.Context, kind MediaKind, urlKey, fileNameKey, originalNameKey string) {
-	userID, ok := jwt.UserID(c)
+	userID, ok := interfaceshttpauth.UserID(c)
 	if !ok {
 		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
@@ -181,7 +181,7 @@ func (ctl *Controller) uploadDraftMedia(c *gin.Context, kind MediaKind, urlKey, 
 
 // UpdateDraftPublication 处理 POST /api/video/auth/drafts/:id/publish
 func (ctl *Controller) UpdateDraftPublication(c *gin.Context) {
-	userID, ok := jwt.UserID(c)
+	userID, ok := interfaceshttpauth.UserID(c)
 	if !ok {
 		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
@@ -210,7 +210,7 @@ func (ctl *Controller) UpdateDraftPublication(c *gin.Context) {
 
 // GetVideoStatus 处理 GET /api/video/auth/:id/status
 func (ctl *Controller) GetVideoStatus(c *gin.Context) {
-	userID, ok := jwt.UserID(c)
+	userID, ok := interfaceshttpauth.UserID(c)
 	if !ok {
 		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
@@ -231,7 +231,7 @@ func (ctl *Controller) GetVideoStatus(c *gin.Context) {
 
 // DiscardDraft 处理 DELETE /api/video/auth/drafts/:id
 func (ctl *Controller) DiscardDraft(c *gin.Context) {
-	userID, ok := jwt.UserID(c)
+	userID, ok := interfaceshttpauth.UserID(c)
 	if !ok {
 		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
@@ -252,7 +252,7 @@ func (ctl *Controller) DiscardDraft(c *gin.Context) {
 
 // GetMyVideoList 处理 GET /api/video/auth/mine?cursor=&limit=
 func (ctl *Controller) GetMyVideoList(c *gin.Context) {
-	userID, ok := jwt.UserID(c)
+	userID, ok := interfaceshttpauth.UserID(c)
 	if !ok {
 		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
@@ -273,7 +273,7 @@ func (ctl *Controller) GetMyVideoList(c *gin.Context) {
 
 // DeleteVideo 处理 DELETE /api/video/auth/:id
 func (ctl *Controller) DeleteVideo(c *gin.Context) {
-	userID, ok := jwt.UserID(c)
+	userID, ok := interfaceshttpauth.UserID(c)
 	if !ok {
 		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return

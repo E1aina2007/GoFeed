@@ -7,7 +7,7 @@ import (
 	applicationinteraction "gofeed/internal/application/interaction"
 	domaininteraction "gofeed/internal/domain/interaction"
 	apierror "gofeed/internal/error"
-	"gofeed/internal/middleware/jwt"
+	interfaceshttpauth "gofeed/internal/interfaces/http/auth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -130,7 +130,7 @@ func (h *Handler) setLike(c *gin.Context, liked bool) {
 }
 
 func actorAndVideo(c *gin.Context) (uint, uint, bool) {
-	userID, ok := jwt.UserID(c)
+	userID, ok := interfaceshttpauth.UserID(c)
 	if !ok {
 		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return 0, 0, false

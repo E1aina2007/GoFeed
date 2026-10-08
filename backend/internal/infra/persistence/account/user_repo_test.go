@@ -17,9 +17,10 @@ import (
 	applicationaccount "gofeed/internal/application/account"
 	"gofeed/internal/auth"
 	domainaccount "gofeed/internal/domain/account"
+	infrajwt "gofeed/internal/infra/jwt"
 	infraaccount "gofeed/internal/infra/persistence/account"
 	interfaceshttpaccount "gofeed/internal/interfaces/http/account"
-	jwtmw "gofeed/internal/middleware/jwt"
+	jwtmw "gofeed/internal/interfaces/http/auth"
 	"gofeed/internal/testutil"
 )
 
@@ -108,7 +109,7 @@ func createUserWithSession(t *testing.T, ctx context.Context, db *gorm.DB, repo 
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	claims, err := auth.ParseToken(pair.AccessToken)
+	claims, err := infrajwt.ParseToken(pair.AccessToken)
 	if err != nil {
 		t.Fatalf("parse access token: %v", err)
 	}

@@ -1,10 +1,12 @@
-package jwt
+package interfaceshttpauth
 
 import (
+	"context"
 	"net/http"
+	"reflect"
 	"strings"
 
-	"gofeed/internal/auth"
+	infrajwt "gofeed/internal/infra/jwt"
 
 	"github.com/gin-gonic/gin"
 )
@@ -15,7 +17,18 @@ const (
 	ctxSessionID = "gofeed.jwt.session_id"
 )
 
-func Auth(sessionService *auth.SessionService) gin.HandlerFunc {
+type SessionValidator interface {
+	Validate(ctx context.Context, sessionID string, userID uint) error
+}
+
+func Auth(sessionService SessionValidator) gin.HandlerFunc {
+	// 保留原具体服务的 nil 指针拒绝认证语义
+	if sessionService != nil {
+		value := reflect.ValueOf(sessionService)
+		if value.Kind() == reflect.Pointer && value.IsNil() {
+			sessionService = nil
+		}
+	}
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
 		if header == "" {
@@ -29,7 +42,7 @@ func Auth(sessionService *auth.SessionService) gin.HandlerFunc {
 			return
 		}
 
-		claims, err := auth.ParseToken(strings.TrimSpace(parts[1]))
+		claims, err := infrajwt.ParseToken(strings.TrimSpace(parts[1]))
 		if err != nil {
 			abort(c, "invalid or expired token")
 			return
@@ -50,12 +63,12 @@ func Auth(sessionService *auth.SessionService) gin.HandlerFunc {
 	}
 }
 
-func Claims(c *gin.Context) (*auth.Claims, bool) {
+func Claims(c *gin.Context) (*infrajwt.Claims, bool) {
 	v, ok := c.Get(ctxClaims)
 	if !ok {
 		return nil, false
 	}
-	claims, ok := v.(*auth.Claims)
+	claims, ok := v.(*infrajwt.Claims)
 	return claims, ok
 }
 

@@ -8,7 +8,7 @@ import (
 	applicationaccount "gofeed/internal/application/account"
 	domainaccount "gofeed/internal/domain/account"
 	apierror "gofeed/internal/error"
-	"gofeed/internal/middleware/jwt"
+	interfaceshttpauth "gofeed/internal/interfaces/http/auth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -22,7 +22,7 @@ func NewProfile(service *applicationaccount.ProfileService) *ProfileHandler {
 }
 
 func (h *ProfileHandler) UpdateName(c *gin.Context) {
-	userID, ok := jwt.UserID(c)
+	userID, ok := interfaceshttpauth.UserID(c)
 	if !ok {
 		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
@@ -40,7 +40,7 @@ func (h *ProfileHandler) UpdateName(c *gin.Context) {
 }
 
 func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
-	userID, ok := jwt.UserID(c)
+	userID, ok := interfaceshttpauth.UserID(c)
 	if !ok {
 		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return
@@ -58,7 +58,7 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 }
 
 func (h *ProfileHandler) UpdateAvatar(c *gin.Context) {
-	userID, ok := jwt.UserID(c)
+	userID, ok := interfaceshttpauth.UserID(c)
 	if !ok {
 		apierror.WriteUnauthorized(c, "invalid or expired token")
 		return

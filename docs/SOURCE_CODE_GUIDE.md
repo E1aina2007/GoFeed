@@ -1,6 +1,6 @@
 # GoFeed 源码导读
 
-> 阅读基线：2026-10-08，`F:\work\Feed\GoFeed`。Interaction 已完成 HTTP、持久化及统计迁移，Relation 的五个 HTTP、用例与原 v1 游标已迁入四层，R2-B 后端/API 已提交为 `f9481b2`。R2-C 已迁关系 ORM/SQL、计数与 Following 活动观看者依赖并删除旧 social，后端为 `ea36d40`；Following 视频 SQL 仍在 Video。R3-A 三个匿名账户 GET 已迁入独立 Account 四层，后端/API 为 `35a6fe0`；R3-B 注册后端/API 已提交为 `a834d46`。R3-C 登录、刷新与退出提交为 `f20dcdf`；R3-D 改密与注销提交为 `4f4838b`；R3-E 改名、资料与头像提交为 `f5c1260`。R3-F1 作者读取与资料统计已解除旧 user 类型耦合，提交为 `c335902`。R3-F2 唯一 User ORM/仓储已归 Account，旧 user 包已删除，未暂存/提交，等待 review。账户 HTTP 全部归 Account，会话/CAS/JWT 与本地媒体仍复用旧实现。实施边界见开发计划第 6.8–6.14 节，提交摘要见第 6.4 节，验证与缺口见第 5 节；第 6.14 节 R3-G1/G2 及 R4–R6 尚未实施。本文从当前源码推导；Hot/Recommend、完整热度覆盖及指标出口尚未实现。
+> 阅读基线：2026-10-08，`F:\work\Feed\GoFeed`。Interaction 已完成 HTTP、持久化及统计迁移，Relation 的五个 HTTP、用例与原 v1 游标已迁入四层，R2-B 后端/API 已提交为 `f9481b2`。R2-C 已迁关系 ORM/SQL、计数与 Following 活动观看者依赖并删除旧 social，后端为 `ea36d40`；Following 视频 SQL 仍在 Video。R3-A 三个匿名账户 GET 已迁入独立 Account 四层，后端/API 为 `35a6fe0`；R3-B 注册后端/API 已提交为 `a834d46`。R3-C 登录、刷新与退出提交为 `f20dcdf`；R3-D 改密与注销提交为 `4f4838b`；R3-E 改名、资料与头像提交为 `f5c1260`。R3-F1 作者读取与资料统计已解除旧 user 类型耦合，提交为 `c335902`。R3-F2 唯一 User ORM/仓储已归 Account，旧 user 包已删除，提交为 `267463e`。R3-G1 JWT 与 HTTP 认证适配已归 Infra/Interfaces，未暂存/提交，等待 review。账户 HTTP 全部归 Account，会话/CAS 与本地媒体仍复用旧实现。实施边界见开发计划第 6.8–6.14 节，提交摘要见第 6.4 节，验证与缺口见第 5 节；第 6.14 节 R3-G2 及 R4–R6 尚未实施。本文从当前源码推导；Hot/Recommend、完整热度覆盖及指标出口尚未实现。
 >
 > 本文用于理解源码。运行与配置看 [README](../README.md)，接口字段看 [API](../API.md)，未完成设计与历史验收看 [开发计划](./DEVELOPMENT_PLAN.md)。本文中的“源码入口”均可直接点击。
 
@@ -119,7 +119,7 @@ backend/
 
 Feed 采取渐进拆层：通过读取边界和小接口复用已有仓储。互动事实写入、Relay 与热度消费直接装配；六个互动入口、ORM、直接读取及批量统计已归 Interaction。R1-B2 通过外层适配器将领域统计注入 Feed/Video，并组合用户获赞与关注计数；R2-A/B 已迁入五个关系 HTTP、用例及游标，R2-C 将 ORM/SQL 和计数收口到 Relation，并接管 Following 活动观看者检查。Following 的完整视频查询保留在 Video。
 
-账户 HTTP 已全部迁入四层。R3-F1 将作者读取迁入 Account Infrastructure，公开读模型及资料统计使用 Domain Account 小端口；R3-F2 已迁唯一 User ORM/仓储，删除旧 user 包；会话 ORM 与 JWT 尚未收口。后续按[开发计划第 6.14 节](./DEVELOPMENT_PLAN.md#614-r3-后续收口与-r4r6-重构路线)迁 JWT/会话、Video、Worker/Sweeper 及技术包；这些其余模块尚未实施。
+账户 HTTP 已全部迁入四层。R3-F1 将作者读取迁入 Account Infrastructure，公开读模型及资料统计使用 Domain Account 小端口；R3-F2 已迁唯一 User ORM/仓储，删除旧 user 包；R3-G1 将 JWT 实现归 Infra、共享认证/上下文归 Interfaces，会话 ORM/编排仍待收口。后续按[开发计划第 6.14 节](./DEVELOPMENT_PLAN.md#614-r3-后续收口与-r4r6-重构路线)迁会话、Video、Worker/Sweeper 及技术包；这些其余模块尚未实施。
 
 ```mermaid
 flowchart TD
@@ -533,7 +533,7 @@ Redis 缓存失败仍回源 MySQL。计划性回退使用对应代码版本，�
 
 ### 9.1 JWT 与数据库会话共同决定认证
 
-[middleware/jwt/jwt.go](../backend/internal/middleware/jwt/jwt.go) 先解析 Bearer JWT，再用 `session_id + user_id` 校验数据库中的活动会话。JWT 签名有效不等于会话仍有效。
+[Interfaces HTTP Auth](../backend/internal/interfaces/http/auth/jwt.go) 先检查 Authorization 格式，再经 [Infra JWT](../backend/internal/infra/jwt/jwt.go) 解析 Bearer JWT，最后通过消费方 SessionValidator 的 Validate 用 `session_id + user_id` 校验数据库活动会话。保留原认证顺序、401 文案和三个 Gin 上下文键；nil 校验依赖及接口内的 nil 指针继续拒绝认证。JWT 签名有效不等于会话仍有效。
 
 [auth/session.go](../backend/internal/auth/session.go) 只持久化刷新令牌的 SHA-256 哈希；刷新时用预期旧哈希条件更新成新哈希，避免同一个旧刷新令牌被重复轮换。退出登录可撤销当前会话；用户相关流程还会撤销其会话。
 
@@ -551,9 +551,9 @@ Video 与 Feed 共用 [Account AuthorReader](../backend/internal/infra/persisten
 
 创建适配器只将独立 CreateInput 转为 Account Persistence User，复用迁入仓储的唯一键/1062 处理并直接返回现有领域错误；不预查重、不重读、不增加 SQL 或外层事务。大小写语义和软删除用户名占用不变。返回 201 + user 包装及原公开字段，avatar_url/bio 仍 omitempty；不返回密码/软删除字段，不创建会话/令牌。400/409/500 文案及原 Redis Key、5 次/小时、429/Retry-After/fail-open 均保留。确认引用后已删除旧注册 Controller/Service 方法与 CreateRequest；领域 ErrUsernameTaken/ErrInvalidInput、仓储 GetByUsername 及唯一 User ORM 保留；旧测试夹具 Service.GetByID 由 R3-F2 清理，夹具直接用 Repository 读取；改名规则已归 Domain，bcrypt 由 Account Infrastructure 复用。以上为源码兼容证据，R3-B 实施轮完成 vet/build 与差异检查；提交轮代码未变，沿用该结果，没有运行 Go 测试或真实注册回归，剩余专项见[开发计划第 6.10 节](./DEVELOPMENT_PLAN.md#610-r3-b-注册接口已提交)。
 
-登录、刷新和退出走 [Account SessionHandler](../backend/internal/interfaces/http/account/session.go) → [SessionService 用例](../backend/internal/application/account/session.go) → [独立会话/凭据端口](../backend/internal/domain/account/repository.go) → [会话适配](../backend/internal/infra/persistence/account/legacy_sessions.go)与[凭据适配](../backend/internal/infra/persistence/account/legacy_credentials.go)，后者复用原 User 仓储及 [SessionService/Repository](../backend/internal/auth/session.go)。密码比较和访问令牌签发分别由小端口委托 bcrypt 与 [原 JWT 签发](../backend/internal/auth/jwt.go)，内层仅依赖标准库和 Domain，旧会话类型与错误仅在 Infrastructure 转换。
+登录、刷新和退出走 [Account SessionHandler](../backend/internal/interfaces/http/account/session.go) → [SessionService 用例](../backend/internal/application/account/session.go) → [独立会话/凭据端口](../backend/internal/domain/account/repository.go) → [会话适配](../backend/internal/infra/persistence/account/legacy_sessions.go)与[凭据适配](../backend/internal/infra/persistence/account/legacy_credentials.go)，后者复用原 User 仓储及 [SessionService/Repository](../backend/internal/auth/session.go)。密码比较和访问令牌签发分别由小端口委托 bcrypt 与 [Infra JWT 签发](../backend/internal/infra/jwt/jwt.go)，内层仅依赖标准库和 Domain，旧会话类型与错误仅在 Infrastructure 转换。
 
-登录仍先限流、binding，再只 TrimSpace 用户名、读取密码哈希并比较，先保存七天会话后签发十五分钟 JWT；没有复用注册的字节长度规则，密码保持原样。不存在用户或比较失败为 401，其他凭据读取错误为 500 failed to authenticate，会话创建阶段任意错误为 500 failed to create session。刷新原样使用 refresh_token，先查活动会话并以旧刷新哈希做 CAS 轮换，保留 session ID 和 expires_at，再读当前用户、签发 JWT；轮换阶段任意错误均为 401 invalid refresh token，读取用户失败仍尝试撤销后返回同一 401，签发失败为 500 failed to create access token。退出由原 [JWT 中间件](../backend/internal/middleware/jwt/jwt.go) 验证后只撤销当前会话，成功为空 204，身份缺失或任意撤销错误为 401 invalid or expired token。公开 user 保留原字段和 omitempty。
+登录仍先限流、binding，再只 TrimSpace 用户名、读取密码哈希并比较，先保存七天会话后签发十五分钟 JWT；没有复用注册的字节长度规则，密码保持原样。不存在用户或比较失败为 401，其他凭据读取错误为 500 failed to authenticate，会话创建阶段任意错误为 500 failed to create session。刷新原样使用 refresh_token，先查活动会话并以旧刷新哈希做 CAS 轮换，保留 session ID 和 expires_at，再读当前用户、签发 JWT；轮换阶段任意错误均为 401 invalid refresh token，读取用户失败仍尝试撤销后返回同一 401，签发失败为 500 failed to create access token。退出由 [Interfaces JWT 中间件](../backend/internal/interfaces/http/auth/jwt.go) 验证后只撤销当前会话，成功为空 204，身份缺失或任意撤销错误为 401 invalid or expired token。公开 user 保留原字段和 omitempty。
 
 登录落库后的签发失败、刷新 CAS 后的读取/签发失败仍没有外层回滚。旧会话算法/SQL、JWT 中间件、注册与匿名读取未改；仅删除确认无引用的旧入口/DTO/助手，保留改密/注销事务和头像读取。以上为源码兼容证据，vet/build 已通过，未运行 Go 测试或真实 HTTP/MySQL/Redis 会话回归；已提交为 `f20dcdf`，未推送，详见[开发计划第 6.11 节](./DEVELOPMENT_PLAN.md#611-r3-c-登录刷新与退出已提交)。
 
@@ -567,7 +567,9 @@ Video 与 Feed 共用 [Account AuthorReader](../backend/internal/infra/persisten
 
 三个成功响应仍为改名/资料 200 + 原 message、头像 201 + 原 avatar_url，认证、binding、400/404/409/413/500 文案保持原规则。旧 user/controller.go、avatar.go 与三项写 Service/DTO 已删除，User 仓储/ORM 已由 R3-F2 迁入 Account，旧夹具 Service 已清理，领域错误保留；R3-E 当时保留的旧统计接口/结果已由 R3-F1 清理。R3-E 实施轮 36 项源码对照、vet/build 通过，30 个保护源码及全部 5 个测试文件未改；未运行 Go 测试、真实 HTTP/MySQL/文件上传或补偿故障回归。18 个文件已提交为 `f5c1260`，未推送，详见[开发计划第 6.13 节](./DEVELOPMENT_PLAN.md#613-r3-e-改名资料与头像已提交)。
 
-R3-F2 的 [Repository](../backend/internal/infra/persistence/account/repository.go) 保留原全部 12 个方法和 SQL、列投影、软删除、keyset、RowsAffected、1062 与密码 CAS；[唯一 User ORM](../backend/internal/infra/persistence/account/user.go) 保留原名称/标签，GORM 仍映射 users。改密/注销事务只切换同一 tx 的仓储构造器，旧会话撤销与用户硬删除时先清会话的原事务均保持；sweeper 仅换装配，AuthSession/会话算法和清扫用例未迁。原 user 包、无用途 DTO/游标及夹具 Service 已删除，5 文件/36 测试函数保留且仅必要迁移/装配/符号适配，未运行 Go 测试。源码/静态/构建及目标库只读元数据核对通过，不代表真实仓储、事务、HTTP 或清扫回归；模块未暂存/提交，等待 review，见[开发计划 R3-F2](./DEVELOPMENT_PLAN.md#r3-f2用户持久化已实现待-review)。
+R3-F2 的 [Repository](../backend/internal/infra/persistence/account/repository.go) 保留原全部 12 个方法和 SQL、列投影、软删除、keyset、RowsAffected、1062 与密码 CAS；[唯一 User ORM](../backend/internal/infra/persistence/account/user.go) 保留原名称/标签，GORM 仍映射 users。改密/注销事务只切换同一 tx 的仓储构造器，旧会话撤销与用户硬删除时先清会话的原事务均保持；sweeper 仅换装配，AuthSession/会话算法和清扫用例未迁。原 user 包、无用途 DTO/游标及夹具 Service 已删除，5 文件/36 测试函数保留且仅必要迁移/装配/符号适配，未运行 Go 测试。源码/静态/构建及目标库只读元数据核对通过，不代表真实仓储、事务、HTTP 或清扫回归；模块已提交为 `267463e`，未推送，见[开发计划 R3-F2](./DEVELOPMENT_PLAN.md#r3-f2用户持久化已提交)。
+
+R3-G1 的 [JWT 实现](../backend/internal/infra/jwt/jwt.go)全文仅换包名，保留 HS256、claims、十五分钟 TTL、Secret 缓存/随机/回退及解析规则。HTTP 认证/上下文迁入共享 Interfaces Auth，旧 SessionService 与 Account 签发适配只换 JWT 调用；唯一 AuthSession ORM、仓储 SQL、哈希、固定到期、创建/轮换/Validate 和错误转换仍在旧 auth，留 G2。确认全引用后删除旧 JWT/认证文件，所有消费者只改引用，两个保留测试只改导入/解析符号，断言未改。24 项源码检查、40 个内层文件依赖、236 个保护文件、vet/build 与文档/差异检查通过；未运行 Go 测试或真实 JWT/认证/HTTP 回归，未访问目标库或启动服务。模块未暂存/提交，等待 review，见[开发计划 R3-G1](./DEVELOPMENT_PLAN.md#r3-g1jwt-与认证适配已实现待-review)。
 
 ### 9.2 互动先保存关系，再读取聚合
 
@@ -692,7 +694,7 @@ Timeline 和 Following 各自保存视频、游标、首屏/续页加载状态�
 | 草稿部分回收、失去租约与断点继续              | [draft_purge_test.go](../backend/internal/sweeper/draft_purge_test.go)                                                                                              |
 | 前端迟到响应、场景与分页                      | [usePublishedFeed.spec.ts](../frontend/src/features/video/__tests__/usePublishedFeed.spec.ts)、[FeedView.spec.ts](../frontend/src/views/__tests__/FeedView.spec.ts) |
 
-当前保留 5 个 Go 测试文件、36 个函数；Feed service_test.go 的 4 个缓存专项与 Video video_repo_test.go 的 11 个专项由独立提交 `a483843` 删除。原 repo_test.go 的六个互动/关注流程与预算函数也不再保留，不将历史通过当作持续覆盖。后续按用户指令不运行 Go 单元测试或包含它们的全量/race 命令；R3-F2 本轮只有源码、vet/build、差异和目标库只读元数据核对，不能称为真实依赖回归。保留文件可用于源码阅读，历史证据与未覆盖项见开发计划第 5 节；未运行不能算 PASS 或 SKIP。
+当前保留 5 个 Go 测试文件、36 个函数；Feed service_test.go 的 4 个缓存专项与 Video video_repo_test.go 的 11 个专项由独立提交 `a483843` 删除。原 repo_test.go 的六个互动/关注流程与预算函数也不再保留，不将历史通过当作持续覆盖。后续按用户指令不运行 Go 单元测试或包含它们的全量/race 命令；R3-F2 实施轮有目标库只读元数据核对，R3-G1 本轮只有源码、vet/build 与差异检查，不能称为真实依赖回归。保留文件可用于源码阅读，历史证据与未覆盖项见开发计划第 5 节；未运行不能算 PASS 或 SKIP。
 
 ## 12. 向量与推荐：当前边界及未来接入位置
 
