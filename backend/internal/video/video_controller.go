@@ -1,8 +1,6 @@
 package video
 
 import (
-	"errors"
-	"io"
 	"net/http"
 	"strconv"
 
@@ -20,35 +18,6 @@ type Controller struct {
 
 func NewController(srv *Service) *Controller {
 	return &Controller{srv: srv}
-}
-
-// UpdateDraftPublication 处理 POST /api/video/auth/drafts/:id/publish
-func (ctl *Controller) UpdateDraftPublication(c *gin.Context) {
-	userID, ok := interfaceshttpauth.UserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	if c.Request.Body != nil {
-		var firstByte [1]byte
-		n, err := c.Request.Body.Read(firstByte[:])
-		if n > 0 || (err != nil && !errors.Is(err, io.EOF)) {
-			apierror.WriteCode(c, apierror.CodeInvalid, "publish draft does not accept a request body")
-			return
-		}
-	}
-	draftID, err := parsePathID(c.Param("id"))
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-	item, err := ctl.srv.UpdateDraftPublication(c.Request.Context(), draftID, userID)
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-	// 发布是异步语义：202 表示处理已受理，结果经状态查询端点获取
-	c.JSON(http.StatusAccepted, gin.H{"draft": item})
 }
 
 // DiscardDraft 处理 DELETE /api/video/auth/drafts/:id

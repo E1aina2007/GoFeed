@@ -53,24 +53,6 @@ func NewService(repository VideoRepository) *Service {
 	return &Service{repository: repository}
 }
 
-// UpdateDraftPublication 只允许将当前用户完整的 draft 状态视频进入异步处理
-// 发布是异步语义：事务确认后行处于 processing，响应保持草稿形体，
-// 处理结果经状态查询端点获取；媒体完整性已由发布事务校验
-func (s *Service) UpdateDraftPublication(ctx context.Context, draftID, authorID uint) (DraftItem, error) {
-	if draftID == 0 || authorID == 0 {
-		return DraftItem{}, ErrInvalidVideoID
-	}
-	if s.repository == nil {
-		return DraftItem{}, ErrRepositoryUnavailable
-	}
-
-	video, err := s.repository.UpdateDraftPublication(ctx, draftID, authorID)
-	if err != nil {
-		return DraftItem{}, err
-	}
-	return draftItem(*video), nil
-}
-
 // DiscardDraft 将当前作者的草稿排入异步清扫
 // 返回 purging 状态不代表媒体已删除；实际删除由带围栏租约的 sweeper 完成
 func (s *Service) DiscardDraft(ctx context.Context, draftID, authorID uint) (DraftItem, error) {
