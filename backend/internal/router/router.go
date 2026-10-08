@@ -7,7 +7,7 @@ import (
 	applicationfeed "gofeed/internal/application/feed"
 	applicationinteraction "gofeed/internal/application/interaction"
 	applicationrelation "gofeed/internal/application/relation"
-	"gofeed/internal/auth"
+	infrajwt "gofeed/internal/infra/jwt"
 	infraaccount "gofeed/internal/infra/persistence/account"
 	infrafeed "gofeed/internal/infra/persistence/feed"
 	infrainteraction "gofeed/internal/infra/persistence/interaction"
@@ -77,7 +77,9 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	r.Static("/static", uploadDir)
 
 	// 用户路由分为公开操作和需要认证的账户操作
-	sessionService := auth.NewSessionService(auth.NewSessionRepository(db))
+	sessionRepo := infraaccount.NewSessionRepository(db)
+	sessionService := applicationaccount.NewSessionLifecycle(sessionRepo, sessionRepo,
+		infrajwt.RefreshTokenGenerator{}, infrajwt.RefreshTokenHasher{}, infrajwt.AccessTokenIssuer{})
 	userRepo := infraaccount.NewRepository(db)
 	videoRepo := video.NewRepository(db)
 	relationRepo := infrarelation.New(db)
@@ -93,7 +95,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		infraaccount.NewCreator(userRepo), infraaccount.BcryptPasswordHasher{}))
 	sessionHandler := interfaceshttpaccount.NewSessions(applicationaccount.NewSessions(
 		infraaccount.NewCredentialReader(userRepo), infraaccount.NewReader(userRepo), infraaccount.BcryptPasswordVerifier{},
-		infraaccount.NewSessions(sessionService), infraaccount.AccessTokenIssuer{}))
+		sessionService, infrajwt.AccessTokenIssuer{}))
 	securityHandler := interfaceshttpaccount.NewAccountSecurity(applicationaccount.NewAccountSecurity(
 		infraaccount.NewCredentialReader(userRepo), infraaccount.BcryptPasswordVerifier{}, infraaccount.BcryptPasswordHasher{},
 		infraaccount.NewAccountSecurityWriter(db)))

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 
-	"gofeed/internal/auth"
 	domainaccount "gofeed/internal/domain/account"
 
 	"gorm.io/gorm"
@@ -30,7 +29,7 @@ func (w *AccountSecurityWriter) UpdatePasswordAndRevokeSessions(ctx context.Cont
 			}
 			return err
 		}
-		return auth.NewSessionRepository(tx).UpdateUserSessionRevocations(ctx, input.UserID)
+		return NewSessionRepository(tx).UpdateUserSessionRevocations(ctx, input.UserID)
 	})
 	return accountError(err)
 }
@@ -42,7 +41,7 @@ func (w *AccountSecurityWriter) DeleteUserAndRevokeSessions(ctx context.Context,
 		if err := users.DeleteUser(ctx, userID); err != nil {
 			return err
 		}
-		return auth.NewSessionRepository(tx).UpdateUserSessionRevocations(ctx, userID)
+		return NewSessionRepository(tx).UpdateUserSessionRevocations(ctx, userID)
 	})
 	return accountError(err)
 }

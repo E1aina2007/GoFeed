@@ -27,6 +27,17 @@ type SessionLifecycle interface {
 	UpdateSessionRevocation(ctx context.Context, sessionID string, userID uint) error
 }
 
+type SessionReader interface {
+	GetActiveByID(ctx context.Context, id string, userID uint) (Session, error)
+	GetActiveByRefreshTokenHash(ctx context.Context, hash string) (Session, error)
+}
+
+type SessionWriter interface {
+	Create(ctx context.Context, input SessionCreateInput) error
+	UpdateRefreshToken(ctx context.Context, session Session, expectedHash, nextHash string) error
+	UpdateSessionRevocation(ctx context.Context, id string, userID uint) error
+}
+
 type Reader interface {
 	GetByID(ctx context.Context, id uint) (PublicAccount, error)
 	GetUserList(ctx context.Context) ([]PublicAccount, error)

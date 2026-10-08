@@ -15,7 +15,6 @@ import (
 	"gorm.io/gorm"
 
 	applicationaccount "gofeed/internal/application/account"
-	"gofeed/internal/auth"
 	domainaccount "gofeed/internal/domain/account"
 	infrajwt "gofeed/internal/infra/jwt"
 	infraaccount "gofeed/internal/infra/persistence/account"
@@ -91,7 +90,7 @@ func TestDeleteRollsBackWhenSessionRevocationFails(t *testing.T) {
 // 预期效果：可同时断言事务后的用户与会话状态
 type userWithSession struct {
 	user      domainaccount.PublicAccount
-	sessions  *auth.SessionService
+	sessions  *applicationaccount.SessionLifecycleService
 	sessionID string
 }
 
@@ -104,7 +103,9 @@ func createUserWithSession(t *testing.T, ctx context.Context, db *gorm.DB, repo 
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	sessions := auth.NewSessionService(auth.NewSessionRepository(db))
+	sessionRepo := infraaccount.NewSessionRepository(db)
+	sessions := applicationaccount.NewSessionLifecycle(sessionRepo, sessionRepo,
+		infrajwt.RefreshTokenGenerator{}, infrajwt.RefreshTokenHasher{}, infrajwt.AccessTokenIssuer{})
 	pair, err := sessions.Create(ctx, user.ID, user.Username)
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -186,17 +187,19 @@ func userErrorMessage(t *testing.T, recorder *httptest.ResponseRecorder, wantSta
 }
 
 // newUserHTTPEngine 装配用户模块的注册、登录、会话与账号端点
-func newUserHTTPEngine(t *testing.T) (*gin.Engine, *auth.SessionService) {
+func newUserHTTPEngine(t *testing.T) (*gin.Engine, *applicationaccount.SessionLifecycleService) {
 	t.Helper()
 	gdb := testutil.DB(t)
-	sessions := auth.NewSessionService(auth.NewSessionRepository(gdb))
+	sessionRepo := infraaccount.NewSessionRepository(gdb)
+	sessions := applicationaccount.NewSessionLifecycle(sessionRepo, sessionRepo,
+		infrajwt.RefreshTokenGenerator{}, infrajwt.RefreshTokenHasher{}, infrajwt.AccessTokenIssuer{})
 	repo := infraaccount.NewRepository(gdb)
 	accountHandler := interfaceshttpaccount.New(applicationaccount.New(infraaccount.NewReader(repo), nil))
 	registrationHandler := interfaceshttpaccount.NewRegistration(applicationaccount.NewRegistration(
 		infraaccount.NewCreator(repo), infraaccount.BcryptPasswordHasher{}))
 	sessionHandler := interfaceshttpaccount.NewSessions(applicationaccount.NewSessions(
 		infraaccount.NewCredentialReader(repo), infraaccount.NewReader(repo), infraaccount.BcryptPasswordVerifier{},
-		infraaccount.NewSessions(sessions), infraaccount.AccessTokenIssuer{}))
+		sessions, infrajwt.AccessTokenIssuer{}))
 	securityHandler := interfaceshttpaccount.NewAccountSecurity(applicationaccount.NewAccountSecurity(
 		infraaccount.NewCredentialReader(repo), infraaccount.BcryptPasswordVerifier{}, infraaccount.BcryptPasswordHasher{},
 		infraaccount.NewAccountSecurityWriter(gdb)))

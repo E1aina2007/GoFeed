@@ -13,6 +13,13 @@ type Session struct {
 	ExpiresAt time.Time
 }
 
+type SessionCreateInput struct {
+	ID               string
+	UserID           uint
+	RefreshTokenHash string
+	ExpiresAt        time.Time
+}
+
 type TokenPair struct {
 	AccessToken  string
 	RefreshToken string
