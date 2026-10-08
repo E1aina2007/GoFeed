@@ -12,6 +12,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	domainvideo "gofeed/internal/domain/video"
+
 	"gorm.io/gorm"
 )
 
@@ -24,13 +26,6 @@ const (
 type cursorScope struct {
 	kind     CursorKind
 	authorID uint
-}
-
-func publicCursorScope(authorID uint) cursorScope {
-	if authorID == 0 {
-		return cursorScope{kind: CursorKindPublic}
-	}
-	return cursorScope{kind: CursorKindAuthor, authorID: authorID}
 }
 
 func mineCursorScope(authorID uint) cursorScope {
@@ -52,14 +47,8 @@ var (
 	ErrDraftIncomplete         = errors.New("video draft is incomplete")
 )
 
-type VideoReader interface {
-	GetPublishedByID(ctx context.Context, id uint) (*Video, error)
-	GetPublishedVideoList(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error)
-}
-
 // VideoRepository 是服务层依赖的完整仓储能力，包含发布/删除等写操作
 type VideoRepository interface {
-	VideoReader
 	Create(ctx context.Context, video *Video) error
 	GetByID(ctx context.Context, id uint) (*Video, error)
 	GetAuthorVideoList(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error)
@@ -218,51 +207,6 @@ func draftItem(video Video) DraftItem {
 	}
 }
 
-// GetPublished 获取包含作者资料的视频详情
-func (s *Service) GetPublished(ctx context.Context, id uint) (VideoItem, error) {
-	if id == 0 {
-		return VideoItem{}, ErrInvalidVideoID
-	}
-	if s.repository == nil {
-		return VideoItem{}, ErrRepositoryUnavailable
-	}
-
-	video, err := s.repository.GetPublishedByID(ctx, id)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return VideoItem{}, ErrVideoNotFound
-		}
-		return VideoItem{}, err
-	}
-	return s.toVideoItem(ctx, video)
-}
-
-// GetPublishedVideoList 查询包含作者资料的视频列表
-func (s *Service) GetPublishedVideoList(ctx context.Context, authorID uint, encodedCursor string, limit int) (ListResponse, error) {
-	if s.repository == nil {
-		return ListResponse{}, ErrRepositoryUnavailable
-	}
-
-	limit, err := normalizeLimit(limit)
-	if err != nil {
-		return ListResponse{}, err
-	}
-	scope := publicCursorScope(authorID)
-	cursor, err := decodeCursor(encodedCursor)
-	if err != nil {
-		return ListResponse{}, err
-	}
-	if err := validateCursorScope(cursor, scope); err != nil {
-		return ListResponse{}, err
-	}
-
-	videos, err := s.repository.GetPublishedVideoList(ctx, authorID, cursor, limit+1)
-	if err != nil {
-		return ListResponse{}, err
-	}
-	return s.buildListResponse(ctx, videos, limit, scope)
-}
-
 // GetMyVideoList 返回当前用户已发布的视频管理列表
 // draft 和 purging 都没有可供 VideoItem 表达的公开媒体，不应混入该接口
 func (s *Service) GetMyVideoList(ctx context.Context, authorID uint, encodedCursor string, limit int) (ListResponse, error) {
@@ -392,27 +336,6 @@ func (s *Service) listAuthors(ctx context.Context, videos []Video) (map[uint]Aut
 	return s.authorReader.GetPublicAuthors(ctx, ids)
 }
 
-func (s *Service) toVideoItem(ctx context.Context, video *Video) (VideoItem, error) {
-	if video == nil || !isPublicVideo(*video) {
-		return VideoItem{}, ErrVideoNotFound
-	}
-	if s.authorReader == nil {
-		return VideoItem{}, ErrAuthorReaderUnavailable
-	}
-
-	author, err := s.authorReader.GetPublicAuthor(ctx, video.AuthorID)
-	if err != nil {
-		return VideoItem{}, err
-	}
-	engagements, err := s.engagements(ctx, []Video{*video})
-	if err != nil {
-		return VideoItem{}, err
-	}
-	item := videoItem(*video, author)
-	applyEngagement(&item, engagements[video.ID])
-	return item, nil
-}
-
 // GetVideoStatus 返回当前用户视频的异步处理状态
 // 处于 draft 或 purging 的视频、他人视频与不存在的视频统一按不存在处理，
 // 避免以该端点探测他人资源或推断非公开状态
@@ -466,16 +389,11 @@ func IsPublicVideo(video Video) bool {
 
 // isPublicVideo 判断视频实体是否满足公开视频响应的最小数据契约
 func isPublicVideo(video Video) bool {
-	return video.Status == VideoStatusPublished &&
-		!video.DeletedAt.Valid &&
-		video.PublishedAt != nil &&
-		!video.PublishedAt.IsZero() &&
-		video.PlayURL != "" &&
-		video.PlayFileName != "" &&
-		video.PlayOriginalName != "" &&
-		video.CoverURL != "" &&
-		video.CoverFileName != "" &&
-		video.CoverOriginalName != ""
+	return domainvideo.IsPublicVideo(domainvideo.PublicVideo{
+		Status: video.Status, Deleted: video.DeletedAt.Valid, PublishedAt: video.PublishedAt,
+		PlayURL: video.PlayURL, PlayFileName: video.PlayFileName, PlayOriginalName: video.PlayOriginalName,
+		CoverURL: video.CoverURL, CoverFileName: video.CoverFileName, CoverOriginalName: video.CoverOriginalName,
+	})
 }
 
 func (s *Service) engagements(ctx context.Context, videos []Video) (map[uint]EngagementCounts, error) {

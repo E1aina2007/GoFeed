@@ -23,43 +23,6 @@ func NewController(srv *Service, storage MediaStorage) *Controller {
 	return &Controller{srv: srv, storage: storage}
 }
 
-// GetVideo 处理 GET /api/video/:id
-func (ctl *Controller) GetVideo(c *gin.Context) {
-	id, err := parsePathID(c.Param("id"))
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-
-	item, err := ctl.srv.GetPublished(c.Request.Context(), id)
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"video": item})
-}
-
-// GetVideoList 处理 GET /api/video?author_id=&cursor=&limit=
-func (ctl *Controller) GetVideoList(c *gin.Context) {
-	limit, err := parseLimit(c.Query("limit"))
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-	authorID, err := parseAuthorID(c.Query("author_id"))
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-
-	resp, err := ctl.srv.GetPublishedVideoList(c.Request.Context(), authorID, c.Query("cursor"), limit)
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, resp)
-}
-
 // CreateDraft 处理 POST /api/video/auth/drafts
 func (ctl *Controller) CreateDraft(c *gin.Context) {
 	userID, ok := interfaceshttpauth.UserID(c)
@@ -308,17 +271,6 @@ func parseLimit(raw string) (int, error) {
 		return 0, ErrInvalidLimit
 	}
 	return limit, nil
-}
-
-func parseAuthorID(raw string) (uint, error) {
-	if raw == "" {
-		return 0, nil // 0 表示不过滤作者
-	}
-	id, err := strconv.ParseUint(raw, 10, 64)
-	if err != nil {
-		return 0, ErrInvalidAuthorID
-	}
-	return uint(id), nil
 }
 
 // videoErrorRules 按从最具体到最通用排列，决定视频模块领域错误的公共类别与对外文案

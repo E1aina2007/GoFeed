@@ -3,17 +3,19 @@ package video
 import (
 	"time"
 
+	domainvideo "gofeed/internal/domain/video"
+
 	"gorm.io/gorm"
 )
 
 // 视频状态
 const (
-	VideoStatusPublished = "published"
-	VideoStatusDraft     = "draft"
+	VideoStatusPublished = domainvideo.StatusPublished
+	VideoStatusDraft     = domainvideo.StatusDraft
 	// VideoStatusPurging 表示草稿已进入不可逆清扫，清扫器正在删除其媒体
-	VideoStatusPurging    = "purging"
-	VideoStatusProcessing = "processing"
-	VideoStatusRejected   = "rejected"
+	VideoStatusPurging    = domainvideo.StatusPurging
+	VideoStatusProcessing = domainvideo.StatusProcessing
+	VideoStatusRejected   = domainvideo.StatusRejected
 )
 
 // Video 保存视频发布数据

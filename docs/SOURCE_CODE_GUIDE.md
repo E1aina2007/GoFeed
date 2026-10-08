@@ -1,6 +1,6 @@
 # GoFeed 源码导读
 
-> 阅读基线：2026-10-08，`F:\work\Feed\GoFeed`。Interaction 已完成 HTTP、持久化及统计迁移，Relation 的五个 HTTP、用例与原 v1 游标已迁入四层，R2-B 后端/API 已提交为 `f9481b2`。R2-C 已迁关系 ORM/SQL、计数与 Following 活动观看者依赖并删除旧 social，后端为 `ea36d40`；Following 视频 SQL 仍在 Video。R3-A 三个匿名账户 GET 已迁入独立 Account 四层，后端/API 为 `35a6fe0`；R3-B 注册后端/API 已提交为 `a834d46`。R3-C 登录、刷新与退出提交为 `f20dcdf`；R3-D 改密与注销提交为 `4f4838b`；R3-E 改名、资料与头像提交为 `f5c1260`。R3-F1 作者读取与资料统计已解除旧 user 类型耦合，提交为 `c335902`。R3-F2 唯一 User ORM/仓储已归 Account，旧 user 包已删除，提交为 `267463e`。R3-G1 JWT 与 HTTP 认证适配已归 Infra/Interfaces，提交为 `e84f783`。R3-G2 会话用例和唯一 AuthSession ORM/仓储已归 Account，旧 auth 已删除，未暂存/提交，等待 review；账户 HTTP 全部归 Account，本地媒体仍复用旧 Video 实现。实施边界见开发计划第 6.8–6.14 节，提交摘要见第 6.4 节，验证与缺口见第 5 节；第 6.14 节 R4–R6 尚未实施。本文从当前源码推导；Hot/Recommend、完整热度覆盖及指标出口尚未实现。
+> 阅读基线：2026-10-08，`F:\work\Feed\GoFeed`。Interaction 已完成 HTTP、持久化及统计迁移，Relation 的五个 HTTP、用例与原 v1 游标已迁入四层，R2-B 后端/API 已提交为 `f9481b2`。R2-C 已迁关系 ORM/SQL、计数与 Following 活动观看者依赖并删除旧 social，后端为 `ea36d40`；Following 视频 SQL 仍在 Video。R3-A 三个匿名账户 GET 已迁入独立 Account 四层，后端/API 为 `35a6fe0`；R3-B 注册后端/API 已提交为 `a834d46`。R3-C 登录、刷新与退出提交为 `f20dcdf`；R3-D 改密与注销提交为 `4f4838b`；R3-E 改名、资料与头像提交为 `f5c1260`。R3-F1 作者读取与资料统计已解除旧 user 类型耦合，提交为 `c335902`。R3-F2 唯一 User ORM/仓储已归 Account，旧 user 包已删除，提交为 `267463e`。R3-G1 JWT 与 HTTP 认证适配已归 Infra/Interfaces，提交为 `e84f783`。R3-G2 会话用例和唯一 AuthSession ORM/仓储已归 Account，旧 auth 已删除，提交为 `fe6959d`，未推送；R4-A1 已发布详情与公开列表已迁入 Video 四层，未暂存/提交，等待 review；账户 HTTP 全部归 Account，本地媒体仍复用旧 Video 实现。实施边界见开发计划第 6.8–6.14 节，提交摘要见第 6.4 节，验证与缺口见第 5 节；第 6.14 节其余 R4–R6 模块尚未实施。本文从当前源码推导；Hot/Recommend、完整热度覆盖及指标出口尚未实现。
 >
 > 本文用于理解源码。运行与配置看 [README](../README.md)，接口字段看 [API](../API.md)，未完成设计与历史验收看 [开发计划](./DEVELOPMENT_PLAN.md)。本文中的“源码入口”均可直接点击。
 
@@ -91,12 +91,17 @@ backend/
 ├─ db/migrations/               表、索引与状态机字段的版本迁移
 └─ internal/
    ├─ router/                   HTTP 组合根：创建依赖、注册路由
-   ├─ video/                   既有 Video 三层与媒体实现
-   ├─ auth/                    JWT、数据库会话与刷新令牌
+   ├─ video/                   未迁本人列表/状态/写入、唯一 Video/Outbox ORM/SQL 与媒体
+   ├─ domain/video/            状态、公开快照/结果、小读取端口与唯一内存公开规则
+   ├─ application/video/       已发布详情/公开列表编排与原 v1 视频游标
+   ├─ infra/persistence/video/ 原仓储/作者/互动读取与错误的外层转换
+   ├─ interfaces/http/video/  两个匿名公开 GET 的参数/DTO/错误
    ├─ domain/account/          账户/资料、注册/改密/改名/头像规则、凭据/会话及小端口
    ├─ application/account/     账户读写/原 v1 游标、会话与头像文件补偿编排
-   ├─ infra/persistence/account/ 唯一 User ORM/仓储、公开账户/作者/统计与会话/JWT/媒体适配、原子写入及 bcrypt
+   ├─ infra/persistence/account/ 唯一 User/AuthSession ORM 与原 SQL、公开账户/作者/统计/媒体适配、原子写入及 bcrypt
    ├─ interfaces/http/account/ 全部账户 HTTP 的参数/DTO/错误及 multipart 解析
+   ├─ infra/jwt/               JWT 签发/解析、密钥与刷新随机/哈希
+   ├─ interfaces/http/auth/    共享 Authorization、会话校验及 Gin 上下文
    ├─ domain/feed/             Feed 读模型、场景、读取端口、热度规则
    ├─ application/feed/        分页编排、缓存、卡片预热与热度事实映射
    ├─ infra/persistence/feed/  适配既有 MySQL 仓储
@@ -119,7 +124,7 @@ backend/
 
 Feed 采取渐进拆层：通过读取边界和小接口复用已有仓储。互动事实写入、Relay 与热度消费直接装配；六个互动入口、ORM、直接读取及批量统计已归 Interaction。R1-B2 通过外层适配器将领域统计注入 Feed/Video，并组合用户获赞与关注计数；R2-A/B 已迁入五个关系 HTTP、用例及游标，R2-C 将 ORM/SQL 和计数收口到 Relation，并接管 Following 活动观看者检查。Following 的完整视频查询保留在 Video。
 
-账户 HTTP 已全部迁入四层。R3-F1 将作者读取迁入 Account Infrastructure，公开读模型及资料统计使用 Domain Account 小端口；R3-F2 已迁唯一 User ORM/仓储，删除旧 user 包；R3-G1 将 JWT 实现归 Infra、共享认证/上下文归 Interfaces；R3-G2 已迁会话 ORM/编排并删除旧 auth。后续按[开发计划第 6.14 节](./DEVELOPMENT_PLAN.md#614-r3-后续收口与-r4r6-重构路线)迁 Video、Worker/Sweeper 及技术包；这些其余模块尚未实施。
+账户 HTTP 已全部迁入四层。R3-F1 将作者读取迁入 Account Infrastructure，公开读模型及资料统计使用 Domain Account 小端口；R3-F2 已迁唯一 User ORM/仓储，删除旧 user 包；R3-G1 将 JWT 实现归 Infra、共享认证/上下文归 Interfaces；R3-G2 已迁会话 ORM/编排并删除旧 auth。R4-A1 将公开列表/已发布详情迁入 Video 四层，原 SQL 与未迁消费者继续保留。后续按[开发计划第 6.14 节](./DEVELOPMENT_PLAN.md#614-r3-后续收口与-r4r6-重构路线)分别迁本人列表/状态、其他 Video、Worker/Sweeper 及技术包；其余模块尚未实施。
 
 ```mermaid
 flowchart TD
@@ -163,7 +168,7 @@ flowchart TD
 - `status = published`，`published_at` 非空。
 - 视频与封面的 URL、存储文件名、原始文件名均非空。
 
-[IsPublicVideo](../backend/internal/video/video_service.go) 还提供内存结果检查。Feed 页读取、批量卡片、轻量公开状态以及公开统计相关查询复用这些规则。
+[Domain IsPublicVideo](../backend/internal/domain/video/video.go) 是唯一内存公开规则，额外排除零时间；旧 [Video IsPublicVideo](../backend/internal/video/video_service.go) 只桥接状态/删除/时间/媒体字段。公开 Video 用例、Feed 页读取、批量卡片和轻量公开状态复用同一规则，公开统计的 SQL 仍复用原作用域。
 
 **`published_at` 在接受发布请求、进入 `processing` 时就写入。** 视频只有在 worker 校验后进入 `published` 才可见，所以时间非空并不能单独证明发布完成。公开排序使用发布请求时刻，不是 worker 完成时刻。
 
@@ -171,7 +176,7 @@ flowchart TD
 
 ### 3.3 读索引时把排序与过滤一起看
 
-以下是迁移声明的索引，不是本次查询真实数据库元数据后的结论：
+以下索引以迁移声明说明用途。R4-A1 已只读核对目标 feedsystem 的 videos 21 列/8 索引与原迁移一致，版本 10、dirty=false；表中其余关系/Outbox 索引并非本轮逐一核对结论：
 
 | 索引                                                                               | 与读取行为的关系                             |
 | ---------------------------------------------------------------------------------- | -------------------------------------------- |
@@ -185,6 +190,16 @@ flowchart TD
 源码入口：[000001](../backend/db/migrations/000001_init.up.sql) · [000005](../backend/db/migrations/000005_social_interactions.up.sql) · [000009](../backend/db/migrations/000009_outbox_publishing_lease.up.sql)。
 
 存在索引不表示优化器必定使用，也不表示 SQL 不需要扫描或排序。Following 同时过滤关系、作者和公开状态，关注规模及数据分布会影响计划；应对照真实 `EXPLAIN ANALYZE`，不能仅凭 keyset 或 SQL 条数给出容量结论。
+
+### 3.4 已发布视频详情与作者页列表
+
+[Video HTTP](../backend/internal/interfaces/http/video/handler.go) → [Application 读取](../backend/internal/application/video/service.go) → [Domain 小端口](../backend/internal/domain/video/video.go) → [Infrastructure](../backend/internal/infra/persistence/video/reader.go) → 原 [Video Repository](../backend/internal/video/video_repo.go)。`GET /api/video` 始终分页，author_id 空/0 是全局，非零按作者过滤；作者页继续调用这个 URL。`GET /api/video/:id` 仍匿名返回 video 包装，未找到/非公开为 404。本人列表和处理状态仍走旧 Controller/Service，写入、媒体、ORM 和所有 SQL 未迁。
+
+列表用原 limit 默认 20/最大 50 与 limit+1；先完整公开过滤并截断，再读互动，最后一次批量读最终页去重作者。详情先完整公开检查，再作者、再互动。统计 nil 仍零值，空页不读作者/互动；数据库错误传播，统计故障不以零值伪装成功。[作者/互动转换](../backend/internal/infra/persistence/video/enrichment.go)复用 Account 和 Interaction 原实现，没有预读或额外重读；按源码，非空列表四条/空页一条 SQL，作者非零的详情四条，这些预算本轮未运行验证。
+
+[Application 视频游标](../backend/internal/application/video/cursor.go)保留原 RawURL Base64 v1 的 v/k/a/p/i 顺序、public/author 范围与时间/ID 校验，不与 Feed 游标通用；旧 mine 游标仍保留至本人列表独立迁移。HTTP 仍先 limit 文本后 author_id，使用原 Gin Query 语义；[DTO](../backend/internal/interfaces/http/video/dto.go)逐字段保留原 JSON/omitempty，items 空数组、next_cursor 省略及 author.avatar_url 始终输出均保持。[外层错误转换](../backend/internal/infra/persistence/video/errors.go)保留原优先级和错误链，统计错误包裹未找到仍 404，普通统计故障 503，未知错误 500。
+
+R4-A1 已实现待 review，45 项源码对照、内层依赖及 vet/build 通过；5 个测试文件/36 函数未改且未运行。目标库仅 SELECT 元数据/聚合核对，实施前后相同，无数据库写入；没有真实公开视频、作者、统计、游标或 HTTP 回归。范围和未覆盖项见[开发计划 R4-A1](./DEVELOPMENT_PLAN.md#r4-a1已发布详情与公开列表已实现待-review)。
 
 ## 4. Timeline：一次 Feed 请求怎样完成
 
@@ -543,7 +558,7 @@ Following 另外检查观看者有效。匿名 Timeline 不会因携带 token �
 
 列表没有 limit/cursor 时继续复用 Account Repository 全量读取；任一参数存在即分页，Gin GetQuery 保留空值存在性，`?cursor=` 使用默认 20，`?limit=`/0/超出 1–50 先报 limit 错误。Application 保留 [v1 编解码](../backend/internal/application/account/cursor.go) 的 RawURLEncoding、v/k/i、version=1、kind=users、非零 ID 及原字段检查，再将独立位置直接交给 Account 仓储。原 SQL 的 id ASC/id > ID 不变，多读一条，以实际返回末条 ID 续页；[DTO](../backend/internal/interfaces/http/account/dto.go) 保持 user/users/account、资料 omitempty、四项零值统计、空数组和末页省略游标。
 
-资料按账户→完整公开视频数→获赞→粉丝→关注读取并立即传播失败。视频计数继续调用 video.Repository 的 PublicVideoQuery，Interaction 资料适配器实现 Domain Account 统计端口；正常装配共五条 SQL，统计部分三条，未注入统计仍返回零值。旧读取 Controller/Service、pagination.go 与无用途读取类型已删除；头像改由 Account 小 Reader 读取，原夹具 Service.GetByID 已删除，保留夹具直接调用 Account Repository.GetByID，其他共享响应保留，R3-C 已删除无用途 publicUser/旧登录响应，会话 DTO 归 Account。User ORM 已迁 Account、字段/标签不变，AuthSession 仍留 auth；仓储 GetByIDs SQL 未变。现有保留流程涉及详情/注销 404 和资料头像，本轮未运行；账户旧 v1 为迁移前后源码兼容证据，固定旧账户 v1 续页、资料预算和逐步失败尚无持续断言，不能用关系列表 v1 代替，详见[开发计划第 6.9 节](./DEVELOPMENT_PLAN.md#69-r3-a-三个匿名账户读取已提交)。
+资料按账户→完整公开视频数→获赞→粉丝→关注读取并立即传播失败。视频计数继续调用 video.Repository 的 PublicVideoQuery，Interaction 资料适配器实现 Domain Account 统计端口；正常装配共五条 SQL，统计部分三条，未注入统计仍返回零值。旧读取 Controller/Service、pagination.go 与无用途读取类型已删除；头像改由 Account 小 Reader 读取，原夹具 Service.GetByID 已删除，保留夹具直接调用 Account Repository.GetByID，其他共享响应保留，R3-C 已删除无用途 publicUser/旧登录响应，会话 DTO 归 Account。User ORM 已迁 Account、字段/标签不变，唯一 AuthSession ORM/仓储已归 Account；仓储 GetByIDs SQL 未变。现有保留流程涉及详情/注销 404 和资料头像，本轮未运行；账户旧 v1 为迁移前后源码兼容证据，固定旧账户 v1 续页、资料预算和逐步失败尚无持续断言，不能用关系列表 v1 代替，详见[开发计划第 6.9 节](./DEVELOPMENT_PLAN.md#69-r3-a-三个匿名账户读取已提交)。
 
 Video 与 Feed 共用 [Account AuthorReader](../backend/internal/infra/persistence/account/legacy_author_reader.go)，旧 Video 输出转换仅在 Infrastructure。它通过独立 PublicAccountReader 读取 PublicAccount；单个不存在/注销账户返回原 ID 和“已注销用户”，其他错误传播。批量将 0 放入占位结果且不查询，非零 ID 按首次出现顺序去重，空批次不查库，非空批次只调用一次原 Account Repository.GetByIDs，保留 id/username/avatar_url 与软删除过滤。Reader 过滤原 nil 行，作者适配补缺失/注销占位，数据库故障返回失败；不逐作者查询或增加预读/重读。R3-F1 删除旧 video/user_author_reader.go 与 user 统计接口/结果，当时保留 User 仓储/ORM/夹具及仍用错误；R3-F2 已迁 User 仓储/ORM 并清理旧包。R3-F1 的 5 个测试文件未改，vet/build 与源码检查通过；没有真实作者读取、资料统计或 HTTP 回归，见[开发计划 R3-F1](./DEVELOPMENT_PLAN.md#r3-f1账户跨模块读适配已提交)。
 
@@ -571,7 +586,7 @@ R3-F2 的 [Repository](../backend/internal/infra/persistence/account/repository.
 
 R3-G1 的 [JWT 实现](../backend/internal/infra/jwt/jwt.go)全文仅换包名，保留 HS256、claims、十五分钟 TTL、Secret 缓存/随机/回退及解析规则。HTTP 认证/上下文迁入共享 Interfaces Auth，旧 SessionService 与 Account 签发适配只换 JWT 调用；当时唯一 AuthSession ORM、仓储 SQL、哈希、固定到期、创建/轮换/Validate 和错误转换留 G2；现已由 G2 收口。确认全引用后删除旧 JWT/认证文件，所有消费者只改引用，两个保留测试只改导入/解析符号，断言未改。24 项源码检查、40 个内层文件依赖、236 个保护文件、vet/build 与文档/差异检查通过；未运行 Go 测试或真实 JWT/认证/HTTP 回归，未访问目标库或启动服务。模块已提交为 `e84f783`，未推送，见[开发计划 R3-G1](./DEVELOPMENT_PLAN.md#r3-g1jwt-与认证适配已提交)。
 
-R3-G2 将会话创建/轮换/校验迁入 Account Application，唯一 AuthSession ORM 和原六个仓储方法迁入 Account Persistence。两次随机生成、SHA-256 hex、七天固定到期、入库后签发、刷新先查→生成→CAS→读账户→签发、失败残留/尽力撤销及原 401/500 文案均保留；改密/注销只切换同一 tx 的会话仓储，用户回收事务未改。随机/哈希/签发分别通过小能力端口接 Infra JWT，旧 auth 与冗余会话/issuer 转换已删除。一个保留测试只换类型/装配，断言不变；32 项源码、41 个内层依赖、242 个保护文件及 vet/build 检查通过，目标库版本 10、dirty=false，元数据和聚合实施前后相同，没有数据库写入。未运行 Go 测试或真实会话/认证/HTTP/事务回归；源码与构建不能替代运行验收。模块未暂存/提交，等待 review，见[开发计划 R3-G2](./DEVELOPMENT_PLAN.md#r3-g2会话用例与持久化已实现待-review)。
+R3-G2 将会话创建/轮换/校验迁入 Account Application，唯一 AuthSession ORM 和原六个仓储方法迁入 Account Persistence。两次随机生成、SHA-256 hex、七天固定到期、入库后签发、刷新先查→生成→CAS→读账户→签发、失败残留/尽力撤销及原 401/500 文案均保留；改密/注销只切换同一 tx 的会话仓储，用户回收事务未改。随机/哈希/签发分别通过小能力端口接 Infra JWT，旧 auth 与冗余会话/issuer 转换已删除。一个保留测试只换类型/装配，断言不变；32 项源码、41 个内层依赖、242 个保护文件及 vet/build 检查通过，目标库版本 10、dirty=false，元数据和聚合实施前后相同，没有数据库写入。未运行 Go 测试或真实会话/认证/HTTP/事务回归；源码与构建不能替代运行验收。提交轮源码未改，核对 15 个精确路径/暂存差异后提交为 `fe6959d`，未推送；见[开发计划 R3-G2](./DEVELOPMENT_PLAN.md#r3-g2会话用例与持久化已提交)。
 
 ### 9.2 互动先保存关系，再读取聚合
 

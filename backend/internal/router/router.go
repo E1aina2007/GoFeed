@@ -7,16 +7,19 @@ import (
 	applicationfeed "gofeed/internal/application/feed"
 	applicationinteraction "gofeed/internal/application/interaction"
 	applicationrelation "gofeed/internal/application/relation"
+	applicationvideo "gofeed/internal/application/video"
 	infrajwt "gofeed/internal/infra/jwt"
 	infraaccount "gofeed/internal/infra/persistence/account"
 	infrafeed "gofeed/internal/infra/persistence/feed"
 	infrainteraction "gofeed/internal/infra/persistence/interaction"
 	infrarelation "gofeed/internal/infra/persistence/relation"
+	infravideo "gofeed/internal/infra/persistence/video"
 	interfaceshttpaccount "gofeed/internal/interfaces/http/account"
 	interfaceshttpauth "gofeed/internal/interfaces/http/auth"
 	interfaceshttpfeed "gofeed/internal/interfaces/http/feed"
 	interfaceshttpinteraction "gofeed/internal/interfaces/http/interaction"
 	interfaceshttprelation "gofeed/internal/interfaces/http/relation"
+	interfaceshttpvideo "gofeed/internal/interfaces/http/video"
 	"gofeed/internal/middleware/ratelimit"
 	"gofeed/internal/observability"
 	"gofeed/internal/video"
@@ -131,6 +134,8 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	authorReader := infraaccount.NewAuthorReader(infraaccount.NewReader(userRepo))
 	videoService := video.NewService(videoRepo, authorReader, engagementReader)
 	videoCtl := video.NewController(videoService, mediaStorage)
+	publicVideoHandler := interfaceshttpvideo.New(applicationvideo.New(infravideo.NewReader(videoRepo),
+		infravideo.NewAuthorReader(authorReader), infravideo.NewEngagementReader(engagementReader)))
 	feedRepo := infrafeed.New(videoRepo, authorReader, engagementReader)
 	feedService := applicationfeed.New(feedRepo,
 		applicationfeed.WithFollowingReader(infrafeed.NewFollowingReader(videoRepo, relationRepo)),
@@ -144,8 +149,8 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	feedHandler := interfaceshttpfeed.New(feedService, interfaceshttpfeed.WithFollowingAuth(interfaceshttpauth.Auth(sessionService)))
 	api.GET("/feed", feedHandler.GetFeed)
 	videos := api.Group("/video")
-	videos.GET("", videoCtl.GetVideoList)
-	videos.GET("/:id", videoCtl.GetVideo)
+	videos.GET("", publicVideoHandler.GetVideoList)
+	videos.GET("/:id", publicVideoHandler.GetVideo)
 	videos.GET("/:id/comments", interactionHandler.GetCommentList)
 
 	protectedVideos := videos.Group("/auth")
