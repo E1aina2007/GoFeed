@@ -34,12 +34,12 @@ import (
 	"gofeed/internal/db"
 	domainfeed "gofeed/internal/domain/feed"
 	infracachefeed "gofeed/internal/infra/cache/feed"
+	infraaccount "gofeed/internal/infra/persistence/account"
 	infrafeed "gofeed/internal/infra/persistence/feed"
 	infrainteraction "gofeed/internal/infra/persistence/interaction"
 	infrarelation "gofeed/internal/infra/persistence/relation"
 	"gofeed/internal/middleware/cache"
 	"gofeed/internal/testutil"
-	"gofeed/internal/user"
 	videoModel "gofeed/internal/video"
 )
 
@@ -945,7 +945,7 @@ func newFollowingHTTPEnv(t *testing.T) *followingHTTPEnv {
 	t.Cleanup(server.Close)
 	register(t, server.Client(), server.URL, "following-viewer", "following-password-123")
 	viewer := login(t, server.Client(), server.URL, "following-viewer", "following-password-123")
-	authors := []user.User{{ID: 20, Username: "following-author-a"}, {ID: 30, Username: "following-author-b"}, {ID: 40, Username: "following-other-author"}}
+	authors := []infraaccount.User{{ID: 20, Username: "following-author-a"}, {ID: 30, Username: "following-author-b"}, {ID: 40, Username: "following-other-author"}}
 	if err := gdb.Create(&authors).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -1053,7 +1053,7 @@ func TestFollowingFeedMySQLVisibilityAndEmptyPage(t *testing.T) {
 	e.follow(20)
 	e.follow(30)
 	e.video(102, 30)
-	if err := e.gdb.Delete(&user.User{}, 30).Error; err != nil {
+	if err := e.gdb.Delete(&infraaccount.User{}, 30).Error; err != nil {
 		t.Fatal(err)
 	}
 	for i, column := range []string{"play_url", "play_file_name", "play_original_name", "cover_url", "cover_file_name", "cover_original_name"} {
@@ -1120,7 +1120,7 @@ func TestFollowingFeedMySQLDynamicRelations(t *testing.T) {
 	if page := e.get(query, e.viewer.AccessToken, 200); !reflect.DeepEqual(followingIDs(page), []uint{101}) {
 		t.Fatalf("重新关注续页=%+v", page)
 	}
-	if err := e.gdb.Delete(&user.User{}, 30).Error; err != nil {
+	if err := e.gdb.Delete(&infraaccount.User{}, 30).Error; err != nil {
 		t.Fatal(err)
 	}
 	if page := e.get("", e.viewer.AccessToken, 200); !reflect.DeepEqual(followingIDs(page), []uint{101}) {

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	infraaccount "gofeed/internal/infra/persistence/account"
 	"gofeed/internal/testutil"
-	"gofeed/internal/user"
 	"gofeed/internal/video"
 )
 
@@ -233,10 +233,10 @@ func TestMediaReferenceRepositoryListReferencedMediaURLsIncludesSoftDeletedRecor
 	ctx := context.Background()
 	activeAvatar := "/static/avatars/1/20260928/active_0123456789abcdef0123456789abcdef.png"
 	deletedAvatar := "/static/avatars/2/20260928/deleted_0123456789abcdef0123456789abcdef.png"
-	if err := db.Create(&user.User{Username: "active", Password: "hash", AvatarURL: activeAvatar}).Error; err != nil {
+	if err := db.Create(&infraaccount.User{Username: "active", Password: "hash", AvatarURL: activeAvatar}).Error; err != nil {
 		t.Fatalf("创建活跃用户失败: %v", err)
 	}
-	deletedUser := &user.User{Username: "deleted", Password: "hash", AvatarURL: deletedAvatar}
+	deletedUser := &infraaccount.User{Username: "deleted", Password: "hash", AvatarURL: deletedAvatar}
 	if err := db.Create(deletedUser).Error; err != nil {
 		t.Fatalf("创建软删用户失败: %v", err)
 	}

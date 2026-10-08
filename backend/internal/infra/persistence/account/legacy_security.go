@@ -6,7 +6,6 @@ import (
 
 	"gofeed/internal/auth"
 	domainaccount "gofeed/internal/domain/account"
-	"gofeed/internal/user"
 
 	"gorm.io/gorm"
 )
@@ -24,7 +23,7 @@ func NewAccountSecurityWriter(db *gorm.DB) *AccountSecurityWriter {
 // UpdatePasswordAndRevokeSessions 保留密码 CAS 与撤销全部会话的同一事务
 func (w *AccountSecurityWriter) UpdatePasswordAndRevokeSessions(ctx context.Context, input domainaccount.PasswordChange) error {
 	err := w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		users := user.NewRepository(tx)
+		users := NewRepository(tx)
 		if err := users.UpdatePassword(ctx, input.UserID, input.ExpectedHash, input.PasswordHash); err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return domainaccount.ErrWrongPassword
@@ -39,7 +38,7 @@ func (w *AccountSecurityWriter) UpdatePasswordAndRevokeSessions(ctx context.Cont
 // DeleteUserAndRevokeSessions 保留用户软删除与撤销全部会话的同一事务
 func (w *AccountSecurityWriter) DeleteUserAndRevokeSessions(ctx context.Context, userID uint) error {
 	err := w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		users := user.NewRepository(tx)
+		users := NewRepository(tx)
 		if err := users.DeleteUser(ctx, userID); err != nil {
 			return err
 		}

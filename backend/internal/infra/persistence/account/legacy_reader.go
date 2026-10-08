@@ -5,13 +5,12 @@ import (
 	"errors"
 
 	domainaccount "gofeed/internal/domain/account"
-	"gofeed/internal/user"
 
 	"gorm.io/gorm"
 )
 
 type Reader struct {
-	users *user.Repository
+	users *Repository
 }
 
 type PublishedVideoCounter struct {
@@ -29,7 +28,7 @@ var (
 	_ domainaccount.ProfileMetricsReader  = (*ProfileMetricsReader)(nil)
 )
 
-func NewReader(users *user.Repository) *Reader {
+func NewReader(users *Repository) *Reader {
 	return &Reader{users: users}
 }
 
@@ -82,11 +81,7 @@ func (r *Reader) GetUserList(ctx context.Context) ([]domainaccount.PublicAccount
 }
 
 func (r *Reader) GetUserListPage(ctx context.Context, position *domainaccount.ListPosition, limit int) ([]domainaccount.PublicAccount, error) {
-	var cursor *user.UserCursor
-	if position != nil {
-		cursor = &user.UserCursor{ID: position.ID}
-	}
-	accounts, err := r.users.GetUserListPage(ctx, cursor, limit)
+	accounts, err := r.users.GetUserListPage(ctx, position, limit)
 	if err != nil {
 		return nil, accountError(err)
 	}
@@ -106,11 +101,11 @@ func (r *ProfileMetricsReader) GetProfileMetrics(ctx context.Context, accountID 
 	return metrics, nil
 }
 
-func publicAccount(account *user.User) domainaccount.PublicAccount {
+func publicAccount(account *User) domainaccount.PublicAccount {
 	return domainaccount.PublicAccount{ID: account.ID, Username: account.Username, AvatarURL: account.AvatarURL, Bio: account.Bio}
 }
 
-func publicAccounts(accounts []*user.User) []domainaccount.PublicAccount {
+func publicAccounts(accounts []*User) []domainaccount.PublicAccount {
 	result := make([]domainaccount.PublicAccount, 0, len(accounts))
 	for _, account := range accounts {
 		result = append(result, publicAccount(account))

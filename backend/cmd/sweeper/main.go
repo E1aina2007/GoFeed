@@ -11,8 +11,8 @@ import (
 
 	"gofeed/internal/config"
 	"gofeed/internal/db"
+	infraaccount "gofeed/internal/infra/persistence/account"
 	"gofeed/internal/sweeper"
-	"gofeed/internal/user"
 	"gofeed/internal/video"
 
 	"github.com/joho/godotenv"
@@ -101,7 +101,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	userPurgeJob := sweeper.NewUserPurgeJob(user.NewRepository(dbConn), userRetention)
+	userPurgeJob := sweeper.NewUserPurgeJob(infraaccount.NewRepository(dbConn), userRetention)
 	videoRepository := video.NewRepository(dbConn)
 	mediaStorage := video.NewLocalStorage("./.run/uploads")
 	videoPurgeJob := sweeper.NewVideoPurgeJob(videoRepository, mediaStorage, videoRetention)

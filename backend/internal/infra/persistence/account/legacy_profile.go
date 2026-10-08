@@ -2,28 +2,22 @@ package infraaccount
 
 import (
 	"context"
-	"errors"
 
 	domainaccount "gofeed/internal/domain/account"
-	"gofeed/internal/user"
 )
 
 type ProfileWriter struct {
-	users *user.Repository
+	users *Repository
 }
 
 var _ domainaccount.ProfileWriter = (*ProfileWriter)(nil)
 
-func NewProfileWriter(users *user.Repository) *ProfileWriter {
+func NewProfileWriter(users *Repository) *ProfileWriter {
 	return &ProfileWriter{users: users}
 }
 
 func (w *ProfileWriter) UpdateName(ctx context.Context, userID uint, username string) error {
-	err := w.users.UpdateName(ctx, userID, username)
-	if errors.Is(err, user.ErrUsernameTaken) {
-		return domainaccount.ErrUsernameTaken
-	}
-	return accountError(err)
+	return accountError(w.users.UpdateName(ctx, userID, username))
 }
 
 func (w *ProfileWriter) UpdateProfile(ctx context.Context, userID uint, changes domainaccount.ProfileChanges) error {

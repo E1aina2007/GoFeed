@@ -1,4 +1,4 @@
-package user_test
+package infraaccount_test
 
 import (
 	"bytes"
@@ -21,7 +21,6 @@ import (
 	interfaceshttpaccount "gofeed/internal/interfaces/http/account"
 	jwtmw "gofeed/internal/middleware/jwt"
 	"gofeed/internal/testutil"
-	legacyuser "gofeed/internal/user"
 )
 
 // 测试目标：配置用户仓储集成测试进程
@@ -39,9 +38,9 @@ const failSessionUpdateTrigger = "test_fail_auth_session_update"
 func TestUpdatePasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	service := legacyuser.NewService(legacyuser.NewRepository(db))
-	account := createUserWithSession(t, ctx, db, service, "atomic_password_user", "old-password-123")
-	security := applicationaccount.NewAccountSecurity(infraaccount.NewCredentialReader(service.Repo),
+	repo := infraaccount.NewRepository(db)
+	account := createUserWithSession(t, ctx, db, repo, "atomic_password_user", "old-password-123")
+	security := applicationaccount.NewAccountSecurity(infraaccount.NewCredentialReader(repo),
 		infraaccount.BcryptPasswordVerifier{}, infraaccount.BcryptPasswordHasher{}, infraaccount.NewAccountSecurityWriter(db))
 
 	forceSessionUpdateFailure(t, db)
@@ -49,7 +48,7 @@ func TestUpdatePasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
 		t.Fatal("expected forced session revocation failure")
 	}
 
-	stored, err := service.GetByID(ctx, account.user.ID)
+	stored, err := repo.GetByID(ctx, account.user.ID)
 	if err != nil {
 		t.Fatalf("GetByID after rollback: %v", err)
 	}
@@ -69,9 +68,9 @@ func TestUpdatePasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
 func TestDeleteRollsBackWhenSessionRevocationFails(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	service := legacyuser.NewService(legacyuser.NewRepository(db))
-	account := createUserWithSession(t, ctx, db, service, "atomic_delete_user", "delete-password-123")
-	security := applicationaccount.NewAccountSecurity(infraaccount.NewCredentialReader(service.Repo),
+	repo := infraaccount.NewRepository(db)
+	account := createUserWithSession(t, ctx, db, repo, "atomic_delete_user", "delete-password-123")
+	security := applicationaccount.NewAccountSecurity(infraaccount.NewCredentialReader(repo),
 		infraaccount.BcryptPasswordVerifier{}, infraaccount.BcryptPasswordHasher{}, infraaccount.NewAccountSecurityWriter(db))
 
 	forceSessionUpdateFailure(t, db)
@@ -79,7 +78,7 @@ func TestDeleteRollsBackWhenSessionRevocationFails(t *testing.T) {
 		t.Fatal("expected forced session revocation failure")
 	}
 
-	if _, err := service.GetByID(ctx, account.user.ID); err != nil {
+	if _, err := repo.GetByID(ctx, account.user.ID); err != nil {
 		t.Fatalf("user should remain active after rollback: %v", err)
 	}
 	if err := account.sessions.Validate(ctx, account.sessionID, account.user.ID); err != nil {
@@ -97,9 +96,9 @@ type userWithSession struct {
 
 // 测试目标：创建带有效会话的测试用户
 // 预期效果：返回可用于事务回滚断言的完整上下文
-func createUserWithSession(t *testing.T, ctx context.Context, db *gorm.DB, service *legacyuser.Service, username, password string) userWithSession {
+func createUserWithSession(t *testing.T, ctx context.Context, db *gorm.DB, repo *infraaccount.Repository, username, password string) userWithSession {
 	t.Helper()
-	registration := applicationaccount.NewRegistration(infraaccount.NewCreator(service.Repo), infraaccount.BcryptPasswordHasher{})
+	registration := applicationaccount.NewRegistration(infraaccount.NewCreator(repo), infraaccount.BcryptPasswordHasher{})
 	user, err := registration.CreateUser(ctx, domainaccount.RegistrationInput{Username: username, Password: password})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -190,7 +189,7 @@ func newUserHTTPEngine(t *testing.T) (*gin.Engine, *auth.SessionService) {
 	t.Helper()
 	gdb := testutil.DB(t)
 	sessions := auth.NewSessionService(auth.NewSessionRepository(gdb))
-	repo := legacyuser.NewRepository(gdb)
+	repo := infraaccount.NewRepository(gdb)
 	accountHandler := interfaceshttpaccount.New(applicationaccount.New(infraaccount.NewReader(repo), nil))
 	registrationHandler := interfaceshttpaccount.NewRegistration(applicationaccount.NewRegistration(
 		infraaccount.NewCreator(repo), infraaccount.BcryptPasswordHasher{}))
@@ -259,7 +258,7 @@ func TestUserSessionHTTPContract(t *testing.T) {
 	}
 
 	duplicate := userJSONRequest(t, engine, http.MethodPost, "/api/user/register", "", credentials)
-	if message := userErrorMessage(t, duplicate, http.StatusConflict); message != legacyuser.ErrUsernameTaken.Error() {
+	if message := userErrorMessage(t, duplicate, http.StatusConflict); message != domainaccount.ErrUsernameTaken.Error() {
 		t.Fatalf("重名注册文案错误 got=%q", message)
 	}
 

@@ -6,19 +6,18 @@ import (
 
 	applicationaccount "gofeed/internal/application/account"
 	domainaccount "gofeed/internal/domain/account"
-	"gofeed/internal/user"
 
 	"gorm.io/gorm"
 )
 
 type CredentialReader struct {
-	users *user.Repository
+	users *Repository
 }
 
 var _ domainaccount.CredentialReader = (*CredentialReader)(nil)
 var _ applicationaccount.PasswordCredentialReader = (*CredentialReader)(nil)
 
-func NewCredentialReader(users *user.Repository) *CredentialReader {
+func NewCredentialReader(users *Repository) *CredentialReader {
 	return &CredentialReader{users: users}
 }
 

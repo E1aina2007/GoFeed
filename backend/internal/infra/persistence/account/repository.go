@@ -1,9 +1,11 @@
-package user
+package infraaccount
 
 import (
 	"context"
 	"errors"
 	"time"
+
+	domainaccount "gofeed/internal/domain/account"
 
 	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
@@ -20,7 +22,7 @@ func NewRepository(db *gorm.DB) *Repository {
 func (r *Repository) Create(ctx context.Context, user *User) error {
 	if err := r.db.WithContext(ctx).Create(user).Error; err != nil {
 		if isDuplicateKey(err) {
-			return ErrUsernameTaken
+			return domainaccount.ErrUsernameTaken
 		}
 		return err
 	}
@@ -33,7 +35,7 @@ func (r *Repository) UpdateName(ctx context.Context, id uint, newName string) er
 		Update("username", newName)
 	if result.Error != nil {
 		if isDuplicateKey(result.Error) {
-			return ErrUsernameTaken
+			return domainaccount.ErrUsernameTaken
 		}
 		return result.Error
 	}
@@ -128,7 +130,7 @@ func (r *Repository) GetUserList(ctx context.Context) ([]*User, error) {
 
 // GetUserListPage 使用主键 keyset 查询活跃用户
 // GORM 的默认软删除作用域会自动排除已注销账号
-func (r *Repository) GetUserListPage(ctx context.Context, cursor *UserCursor, limit int) ([]*User, error) {
+func (r *Repository) GetUserListPage(ctx context.Context, cursor *domainaccount.ListPosition, limit int) ([]*User, error) {
 	if limit <= 0 {
 		return []*User{}, nil
 	}

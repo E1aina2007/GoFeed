@@ -19,7 +19,6 @@ import (
 	"gofeed/internal/middleware/jwt"
 	"gofeed/internal/middleware/ratelimit"
 	"gofeed/internal/observability"
-	"gofeed/internal/user"
 	"gofeed/internal/video"
 
 	"github.com/gin-gonic/gin"
@@ -79,7 +78,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 
 	// 用户路由分为公开操作和需要认证的账户操作
 	sessionService := auth.NewSessionService(auth.NewSessionRepository(db))
-	userRepo := user.NewRepository(db)
+	userRepo := infraaccount.NewRepository(db)
 	videoRepo := video.NewRepository(db)
 	relationRepo := infrarelation.New(db)
 	relationHandler := interfaceshttprelation.New(applicationrelation.New(relationRepo, relationRepo))
