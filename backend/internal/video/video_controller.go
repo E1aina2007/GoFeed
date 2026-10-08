@@ -15,84 +15,11 @@ import (
 
 // Controller 负责视频模块的 HTTP 接入；写操作依赖 JWT 中的用户 ID
 type Controller struct {
-	srv     *Service
-	storage MediaStorage
+	srv *Service
 }
 
-func NewController(srv *Service, storage MediaStorage) *Controller {
-	return &Controller{srv: srv, storage: storage}
-}
-
-// UpdateDraftCover 处理 POST /api/video/auth/drafts/:id/cover
-func (ctl *Controller) UpdateDraftCover(c *gin.Context) {
-	ctl.uploadDraftMedia(c, MediaCover, "cover_url", "cover_file_name", "cover_original_name")
-}
-
-func (ctl *Controller) uploadDraftMedia(c *gin.Context, kind MediaKind, urlKey, fileNameKey, originalNameKey string) {
-	userID, ok := interfaceshttpauth.UserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	draftID, err := parsePathID(c.Param("id"))
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxMediaRequestSize(kind))
-	file, header, err := c.Request.FormFile("file")
-	if err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			apierror.WriteCode(c, apierror.CodeTooLarge, ErrMediaTooLarge.Error())
-			return
-		}
-		apierror.WriteCode(c, apierror.CodeInvalid, "invalid upload payload")
-		return
-	}
-	defer file.Close()
-
-	if header.Size <= 0 || header.Size > maxMediaSize(kind) {
-		apierror.WriteCode(c, apierror.CodeTooLarge, ErrMediaTooLarge.Error())
-		return
-	}
-
-	head := make([]byte, 512)
-	n, err := io.ReadFull(file, head)
-	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		apierror.WriteCode(c, apierror.CodeInternal, "failed to read upload")
-		return
-	}
-	if !validateMedia(kind, header.Filename, head[:n]) {
-		apierror.WriteCode(c, apierror.CodeInvalid, ErrInvalidMedia.Error())
-		return
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		apierror.WriteCode(c, apierror.CodeInternal, "failed to read upload")
-		return
-	}
-
-	saved, err := ctl.storage.Save(c.Request.Context(), userID, kind, header.Filename, file)
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-	originalName := OriginalName(header.Filename)
-	err = ctl.srv.UpdateDraftMedia(c.Request.Context(), draftID, userID, kind, saved, originalName)
-	if err != nil {
-		if remover, ok := ctl.storage.(MediaRemover); ok {
-			_ = remover.Remove(c.Request.Context(), saved.PublicURL)
-		}
-		handleVideoError(c, err)
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{
-		"draft_id":      draftID,
-		urlKey:          saved.PublicURL,
-		fileNameKey:     saved.FileName,
-		originalNameKey: originalName,
-	})
+func NewController(srv *Service) *Controller {
+	return &Controller{srv: srv}
 }
 
 // UpdateDraftPublication 处理 POST /api/video/auth/drafts/:id/publish

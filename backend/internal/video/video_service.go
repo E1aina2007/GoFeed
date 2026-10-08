@@ -53,20 +53,6 @@ func NewService(repository VideoRepository) *Service {
 	return &Service{repository: repository}
 }
 
-// UpdateDraftMedia 将已经落盘的文件绑定到草稿，客户端不能提交或覆盖任何媒体元数据
-func (s *Service) UpdateDraftMedia(ctx context.Context, draftID, ownerID uint, kind MediaKind, saved SavedFile, originalName string) error {
-	if !domainvideo.IsValidDraftMedia(draftID, ownerID, domainvideo.MediaKind(kind), saved.PublicURL, saved.FileName) {
-		return ErrInvalidMedia
-	}
-	if s.repository == nil {
-		return ErrRepositoryUnavailable
-	}
-	if originalName == "" {
-		originalName = saved.FileName
-	}
-	return s.repository.UpdateDraftMedia(ctx, draftID, ownerID, kind, saved, originalName)
-}
-
 // UpdateDraftPublication 只允许将当前用户完整的 draft 状态视频进入异步处理
 // 发布是异步语义：事务确认后行处于 processing，响应保持草稿形体，
 // 处理结果经状态查询端点获取；媒体完整性已由发布事务校验

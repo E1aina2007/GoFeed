@@ -3,7 +3,6 @@ package video
 import (
 	"context"
 	"errors"
-	"io"
 	"time"
 
 	domainvideo "gofeed/internal/domain/video"
@@ -36,12 +35,6 @@ type SavedFile struct {
 	FileName  string // 磁盘上实际存储的文件名（清洗后）
 }
 
-// MediaStorage 抽象媒体文件保存能力；handler 不直接拼接文件路径
-// 将来替换为 S3/OSS 时，只需更换实现，不改变上传接口
-type MediaStorage interface {
-	Save(ctx context.Context, ownerID uint, kind MediaKind, filename string, src io.Reader) (SavedFile, error)
-}
-
 // MediaRemover 抽象媒体对象删除能力，供发布视频与草稿清扫任务使用
 // 实现必须把不存在的对象视为成功，支持“物理删除成功但检查点写入失败”后的重试
 type MediaRemover interface {
@@ -52,23 +45,6 @@ type MediaRemover interface {
 // 只返回当前 Save 规则生成的对象 URL，不扫描或处理未知文件
 type MediaCandidateLister interface {
 	ListMediaCandidates(ctx context.Context, cutoff time.Time, limit int) ([]string, error)
-}
-
-// OriginalName 复用领域展示名规则
-func OriginalName(filename string) string {
-	return domainvideo.OriginalName(filename)
-}
-
-func maxMediaSize(kind MediaKind) int64 {
-	return domainvideo.MaxMediaSize(domainvideo.MediaKind(kind))
-}
-
-func maxMediaRequestSize(kind MediaKind) int64 {
-	return domainvideo.MaxMediaRequestSize(domainvideo.MediaKind(kind))
-}
-
-func validateMedia(kind MediaKind, filename string, head []byte) bool {
-	return domainvideo.ValidateMedia(domainvideo.MediaKind(kind), filename, head)
 }
 
 func mediaURLPath(raw string) (string, error) {

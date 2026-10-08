@@ -13,15 +13,23 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type DraftVideoUploadHandler struct {
-	service *applicationvideo.DraftVideoUploadService
+type DraftMediaUploadHandler struct {
+	service *applicationvideo.DraftMediaUploadService
 }
 
-func NewDraftVideoUpload(service *applicationvideo.DraftVideoUploadService) *DraftVideoUploadHandler {
-	return &DraftVideoUploadHandler{service: service}
+func NewDraftMediaUpload(service *applicationvideo.DraftMediaUploadService) *DraftMediaUploadHandler {
+	return &DraftMediaUploadHandler{service: service}
 }
 
-func (h *DraftVideoUploadHandler) UpdateDraftVideo(c *gin.Context) {
+func (h *DraftMediaUploadHandler) UpdateDraftVideo(c *gin.Context) {
+	h.uploadDraftMedia(c, domainvideo.MediaVideo, "play_url", "play_file_name", "play_original_name")
+}
+
+func (h *DraftMediaUploadHandler) UpdateDraftCover(c *gin.Context) {
+	h.uploadDraftMedia(c, domainvideo.MediaCover, "cover_url", "cover_file_name", "cover_original_name")
+}
+
+func (h *DraftMediaUploadHandler) uploadDraftMedia(c *gin.Context, kind domainvideo.MediaKind, urlKey, fileNameKey, originalNameKey string) {
 	userID, ok := interfaceshttpauth.UserID(c)
 	if !ok {
 		apierror.WriteUnauthorized(c, "invalid or expired token")
@@ -33,7 +41,7 @@ func (h *DraftVideoUploadHandler) UpdateDraftVideo(c *gin.Context) {
 		return
 	}
 
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, domainvideo.MaxMediaRequestSize(domainvideo.MediaVideo))
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, domainvideo.MaxMediaRequestSize(kind))
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
@@ -46,7 +54,7 @@ func (h *DraftVideoUploadHandler) UpdateDraftVideo(c *gin.Context) {
 	}
 	defer file.Close()
 
-	if header.Size <= 0 || header.Size > domainvideo.MaxMediaSize(domainvideo.MediaVideo) {
+	if header.Size <= 0 || header.Size > domainvideo.MaxMediaSize(kind) {
 		apierror.WriteCode(c, apierror.CodeTooLarge, domainvideo.ErrMediaTooLarge.Error())
 		return
 	}
@@ -57,7 +65,7 @@ func (h *DraftVideoUploadHandler) UpdateDraftVideo(c *gin.Context) {
 		apierror.WriteCode(c, apierror.CodeInternal, "failed to read upload")
 		return
 	}
-	if !domainvideo.ValidateMedia(domainvideo.MediaVideo, header.Filename, head[:n]) {
+	if !domainvideo.ValidateMedia(kind, header.Filename, head[:n]) {
 		apierror.WriteCode(c, apierror.CodeInvalid, domainvideo.ErrInvalidMedia.Error())
 		return
 	}
@@ -66,15 +74,15 @@ func (h *DraftVideoUploadHandler) UpdateDraftVideo(c *gin.Context) {
 		return
 	}
 
-	uploaded, err := h.service.UploadDraftVideo(c.Request.Context(), draftID, userID, header.Filename, file)
+	uploaded, err := h.service.UploadDraftMedia(c.Request.Context(), draftID, userID, kind, header.Filename, file)
 	if err != nil {
 		handleVideoError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{
-		"draft_id":           draftID,
-		"play_url":           uploaded.SavedFile.PublicURL,
-		"play_file_name":     uploaded.SavedFile.FileName,
-		"play_original_name": uploaded.OriginalName,
+		"draft_id":      draftID,
+		urlKey:          uploaded.SavedFile.PublicURL,
+		fileNameKey:     uploaded.SavedFile.FileName,
+		originalNameKey: uploaded.OriginalName,
 	})
 }

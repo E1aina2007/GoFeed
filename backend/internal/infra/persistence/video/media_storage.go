@@ -3,7 +3,6 @@ package infravideo
 import (
 	"context"
 	"errors"
-	"io"
 	"time"
 
 	domainvideo "gofeed/internal/domain/video"
@@ -11,38 +10,12 @@ import (
 	legacyvideo "gofeed/internal/video"
 )
 
-type mediaStorage struct {
-	storage domainvideo.MediaStorage
-}
-
-type removableMediaStorage struct {
-	*mediaStorage
-	legacyvideo.MediaRemover
-}
-
 type mediaRemover struct {
 	remover domainvideo.MediaRemover
 }
 
 type mediaCandidateLister struct {
 	candidates domainvideo.MediaCandidateLister
-}
-
-// NewMediaStorage 只在原存储提供删除能力时保留上传失败后的可选清理
-func NewMediaStorage(storage domainvideo.MediaStorage) legacyvideo.MediaStorage {
-	if storage == nil {
-		return nil
-	}
-	adapter := &mediaStorage{storage: storage}
-	if remover, ok := storage.(domainvideo.MediaRemover); ok {
-		return &removableMediaStorage{mediaStorage: adapter, MediaRemover: NewMediaRemover(remover)}
-	}
-	return adapter
-}
-
-func (s *mediaStorage) Save(ctx context.Context, ownerID uint, kind legacyvideo.MediaKind, filename string, src io.Reader) (legacyvideo.SavedFile, error) {
-	saved, err := s.storage.Save(ctx, ownerID, domainvideo.MediaKind(kind), filename, src)
-	return legacyvideo.SavedFile{PublicURL: saved.PublicURL, FileName: saved.FileName}, mediaError(err)
 }
 
 func NewMediaRemover(remover domainvideo.MediaRemover) legacyvideo.MediaRemover {

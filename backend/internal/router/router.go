@@ -134,7 +134,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	// 视频路由的公开读取和认证写入操作使用不同分组
 	authorReader := infraaccount.NewAuthorReader(infraaccount.NewReader(userRepo))
 	videoService := video.NewService(videoRepo)
-	videoCtl := video.NewController(videoService, infravideo.NewMediaStorage(mediaStorage))
+	videoCtl := video.NewController(videoService)
 	publicVideoHandler := interfaceshttpvideo.New(applicationvideo.New(infravideo.NewReader(videoRepo),
 		infravideo.NewAuthorReader(authorReader), infravideo.NewEngagementReader(engagementReader)))
 	myVideoHandler := interfaceshttpvideo.New(applicationvideo.NewMyVideoList(infravideo.NewAuthorVideoListReader(videoRepo),
@@ -143,7 +143,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		infravideo.NewProcessingStatusReader(videoRepo)))
 	draftHandler := interfaceshttpvideo.NewDrafts(applicationvideo.NewDrafts(
 		infravideo.NewDraftCreator(videoRepo), infravideo.NewDraftReader(videoRepo)))
-	draftVideoUploadHandler := interfaceshttpvideo.NewDraftVideoUpload(applicationvideo.NewDraftVideoUpload(
+	draftMediaUploadHandler := interfaceshttpvideo.NewDraftMediaUpload(applicationvideo.NewDraftMediaUpload(
 		mediaStorage, infravideo.NewDraftMediaBinder(videoRepo)))
 	feedRepo := infrafeed.New(videoRepo, authorReader, engagementReader)
 	feedService := applicationfeed.New(feedRepo,
@@ -167,8 +167,8 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 	{
 		protectedVideos.POST("/drafts", draftHandler.CreateDraft)
 		protectedVideos.GET("/drafts/:id", draftHandler.GetDraft)
-		protectedVideos.POST("/drafts/:id/play", draftVideoUploadHandler.UpdateDraftVideo)
-		protectedVideos.POST("/drafts/:id/cover", videoCtl.UpdateDraftCover)
+		protectedVideos.POST("/drafts/:id/play", draftMediaUploadHandler.UpdateDraftVideo)
+		protectedVideos.POST("/drafts/:id/cover", draftMediaUploadHandler.UpdateDraftCover)
 		protectedVideos.POST("/drafts/:id/publish", videoCtl.UpdateDraftPublication)
 		protectedVideos.DELETE("/drafts/:id", videoCtl.DiscardDraft)
 		protectedVideos.GET("/mine", myVideoHandler.GetMyVideoList)
