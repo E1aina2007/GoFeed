@@ -5,8 +5,6 @@ import (
 	"errors"
 
 	domainvideo "gofeed/internal/domain/video"
-
-	"gorm.io/gorm"
 )
 
 const MaxListLimit = 50
@@ -25,15 +23,6 @@ var (
 	ErrDraftIncomplete       = errors.New("video draft is incomplete")
 )
 
-// VideoRepository 是服务层依赖的完整仓储能力，包含发布/删除等写操作
-type VideoRepository interface {
-	GetByID(ctx context.Context, id uint) (*Video, error)
-	DeletePublishedVideo(ctx context.Context, id, authorID uint) error
-	UpdateDraftMedia(ctx context.Context, draftID, authorID uint, kind MediaKind, saved SavedFile, originalName string) error
-	UpdateDraftPublication(ctx context.Context, draftID, authorID uint) (*Video, error)
-	UpdateDraftDiscard(ctx context.Context, draftID, authorID uint) (*Video, error)
-}
-
 type AuthorReader interface {
 	GetPublicAuthor(ctx context.Context, id uint) (Author, error)
 	// GetPublicAuthors 供列表路径一次批量读取，避免逐作者查询
@@ -43,45 +32,6 @@ type AuthorReader interface {
 // EngagementReader 是公开视频响应所需的互动统计能力
 type EngagementReader interface {
 	GetEngagementCounts(ctx context.Context, videoIDs []uint) (map[uint]EngagementCounts, error)
-}
-
-type Service struct {
-	repository VideoRepository
-}
-
-func NewService(repository VideoRepository) *Service {
-	return &Service{repository: repository}
-}
-
-// DeleteVideo 仅作者本人可软删除自己的已发布视频
-func (s *Service) DeleteVideo(ctx context.Context, id, authorID uint) error {
-	if id == 0 {
-		return ErrInvalidVideoID
-	}
-	if s.repository == nil {
-		return ErrRepositoryUnavailable
-	}
-
-	video, err := s.repository.GetByID(ctx, id)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrVideoNotFound
-		}
-		return err
-	}
-	if video.AuthorID != authorID {
-		return ErrNotAuthor
-	}
-	if video.Status != VideoStatusPublished {
-		return ErrVideoNotFound
-	}
-	if err := s.repository.DeletePublishedVideo(ctx, id, authorID); err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrVideoNotFound
-		}
-		return err
-	}
-	return nil
 }
 
 // filterPublicVideos 丢弃不满足公开响应契约的实体

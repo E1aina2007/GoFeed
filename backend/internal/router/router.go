@@ -133,8 +133,6 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 
 	// 视频路由的公开读取和认证写入操作使用不同分组
 	authorReader := infraaccount.NewAuthorReader(infraaccount.NewReader(userRepo))
-	videoService := video.NewService(videoRepo)
-	videoCtl := video.NewController(videoService)
 	publicVideoHandler := interfaceshttpvideo.New(applicationvideo.New(infravideo.NewReader(videoRepo),
 		infravideo.NewAuthorReader(authorReader), infravideo.NewEngagementReader(engagementReader)))
 	myVideoHandler := interfaceshttpvideo.New(applicationvideo.NewMyVideoList(infravideo.NewAuthorVideoListReader(videoRepo),
@@ -149,6 +147,8 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		infravideo.NewDraftPublisher(videoRepo)))
 	draftDiscardHandler := interfaceshttpvideo.NewDraftDiscard(applicationvideo.NewDraftDiscard(
 		infravideo.NewDraftDiscarder(videoRepo)))
+	publishedDeletionHandler := interfaceshttpvideo.NewPublishedDeletion(applicationvideo.NewPublishedDeletion(
+		infravideo.NewPublishedVideoDeleter(videoRepo)))
 	feedRepo := infrafeed.New(videoRepo, authorReader, engagementReader)
 	feedService := applicationfeed.New(feedRepo,
 		applicationfeed.WithFollowingReader(infrafeed.NewFollowingReader(videoRepo, relationRepo)),
@@ -182,7 +182,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		protectedVideos.DELETE("/:id/like", interactionHandler.RemoveLike)
 		protectedVideos.POST("/:id/comments", interactionHandler.CreateComment)
 		protectedVideos.DELETE("/:id/comments/:commentID", interactionHandler.DeleteComment)
-		protectedVideos.DELETE("/:id", videoCtl.DeleteVideo)
+		protectedVideos.DELETE("/:id", publishedDeletionHandler.DeleteVideo)
 	}
 
 	return r

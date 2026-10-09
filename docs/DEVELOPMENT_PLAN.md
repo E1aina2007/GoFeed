@@ -1,6 +1,6 @@
 # GoFeed 开发计划
 
-> 更新日期：2026-10-08。本文维护未完成任务、必要设计和验收缺口；已实现能力见 [README](../README.md)，接口见 [API](../API.md)，源码链路见 [源码导读](./SOURCE_CODE_GUIDE.md)，工作规则见 [AGENTS](../AGENTS.md)。
+> 更新日期：2026-10-09。本文维护未完成任务、必要设计和验收缺口；已实现能力见 [README](../README.md)，接口见 [API](../API.md)，源码链路见 [源码导读](./SOURCE_CODE_GUIDE.md)，工作规则见 [AGENTS](../AGENTS.md)。
 
 ## 阅读导航
 
@@ -11,7 +11,7 @@
 - [5. 待补验证与交付门槛](#5-待补验证与交付门槛)：历史证据、剩余专项和检查要求
 - [6. 全后端四层架构演进](#6-全后端四层架构演进)：分层规则、迁移路线和当前模块
 
-R2-B 已提交为 `f9481b2`，[R2-C 关系持久化与旧 social 收口](#68-r2-c-关系持久化与旧-social-收口已提交) 后端为 `ea36d40`；[R3-A 三个匿名账户读取](#69-r3-a-三个匿名账户读取已提交) 后端/API 为 `35a6fe0`，[R3-B 注册接口](#610-r3-b-注册接口已提交) 后端/API 为 `a834d46`，均未推送。[R3-C 登录、刷新与退出](#611-r3-c-登录刷新与退出已提交) 已提交为 `f20dcdf`，[R3-D 改密与注销](#612-r3-d-改密与注销已提交) 为 `4f4838b`，[R3-E 改名、资料与头像](#613-r3-e-改名资料与头像已提交) 为 `f5c1260`，均未推送。账户 HTTP 已全部迁入 Account；[R3-F1](#r3-f1账户跨模块读适配已提交) 已提交为 `c335902`，未推送；[R3-F2](#r3-f2用户持久化已提交) 已提交为 `267463e`，未推送；[R3-G1](#r3-g1jwt-与认证适配已提交) 已提交为 `e84f783`，未推送；[R3-G2](#r3-g2会话用例与持久化已提交) 已提交为 `fe6959d`，未推送；[R4-A1 已发布详情与公开列表](#r4-a1已发布详情与公开列表已提交) 已提交为 `d94bff7`，未推送；[R4-A2 本人视频列表](#r4-a2本人视频列表已提交) 已提交为 `b4e145b`，未推送；[R4-A3 视频处理状态读取](#r4-a3视频处理状态读取已提交) 已提交为 `1b0acfc`，未推送；[R4-B1 草稿创建与读取](#r4-b1草稿创建与读取已提交) 已提交为 `2f315e8`，未推送；[R4-B2 共享媒体规则与本地存储](#r4-b2共享媒体规则与本地存储归层已提交) 已提交为 `e56d7bf`，未推送；[R4-B3 草稿视频上传](#r4-b3草稿视频上传已提交) 已提交为 `6bc4926`，未推送；[R4-B4 草稿封面上传](#r4-b4草稿封面上传已提交) 已提交为 `fefc4c4`，未推送；[R4-C1 草稿发布](#r4-c1草稿发布已提交) 已提交为 `9f0a393`，未推送；[R4-C2 草稿丢弃](#r4-c2草稿丢弃已实现待-review) 已实现、待 review，未暂存/提交；[第 6.14 节](#614-r3-后续收口与-r4r6-重构路线)其余 Video/后台及后续模块尚未实施。后续不运行 Go 单元测试，默认仅静态检查、构建与差异检查。Feed 功能路线下一步为 [F4-B2 事实重建与 MySQL 快照](#38-f4-b2事实重建与-mysql-快照的下一步边界未实现)，两条路线分别 review。
+R2-B 已提交为 `f9481b2`，[R2-C 关系持久化与旧 social 收口](#68-r2-c-关系持久化与旧-social-收口已提交) 后端为 `ea36d40`；[R3-A 三个匿名账户读取](#69-r3-a-三个匿名账户读取已提交) 后端/API 为 `35a6fe0`，[R3-B 注册接口](#610-r3-b-注册接口已提交) 后端/API 为 `a834d46`，均未推送。[R3-C 登录、刷新与退出](#611-r3-c-登录刷新与退出已提交) 已提交为 `f20dcdf`，[R3-D 改密与注销](#612-r3-d-改密与注销已提交) 为 `4f4838b`，[R3-E 改名、资料与头像](#613-r3-e-改名资料与头像已提交) 为 `f5c1260`，均未推送。账户 HTTP 已全部迁入 Account；[R3-F1](#r3-f1账户跨模块读适配已提交) 已提交为 `c335902`，未推送；[R3-F2](#r3-f2用户持久化已提交) 已提交为 `267463e`，未推送；[R3-G1](#r3-g1jwt-与认证适配已提交) 已提交为 `e84f783`，未推送；[R3-G2](#r3-g2会话用例与持久化已提交) 已提交为 `fe6959d`，未推送；[R4-A1 已发布详情与公开列表](#r4-a1已发布详情与公开列表已提交) 已提交为 `d94bff7`，未推送；[R4-A2 本人视频列表](#r4-a2本人视频列表已提交) 已提交为 `b4e145b`，未推送；[R4-A3 视频处理状态读取](#r4-a3视频处理状态读取已提交) 已提交为 `1b0acfc`，未推送；[R4-B1 草稿创建与读取](#r4-b1草稿创建与读取已提交) 已提交为 `2f315e8`，未推送；[R4-B2 共享媒体规则与本地存储](#r4-b2共享媒体规则与本地存储归层已提交) 已提交为 `e56d7bf`，未推送；[R4-B3 草稿视频上传](#r4-b3草稿视频上传已提交) 已提交为 `6bc4926`，未推送；[R4-B4 草稿封面上传](#r4-b4草稿封面上传已提交) 已提交为 `fefc4c4`，未推送；[R4-C1 草稿发布](#r4-c1草稿发布已提交) 已提交为 `9f0a393`，未推送；[R4-C2 草稿丢弃](#r4-c2草稿丢弃已提交) 已提交为 `1048bc5`，未推送；[R4-C3 已发布视频删除](#r4-c3已发布视频删除已实现待-review) 已实现、待 review，未暂存/提交；[第 6.14 节](#614-r3-后续收口与-r4r6-重构路线)其余 Video/后台及后续模块尚未实施。后续不运行 Go 单元测试，默认仅静态检查、构建与差异检查。Feed 功能路线下一步为 [F4-B2 事实重建与 MySQL 快照](#38-f4-b2事实重建与-mysql-快照的下一步边界未实现)，两条路线分别 review。
 
 ## 1. 当前基线与优先顺序
 
@@ -22,7 +22,7 @@ MySQL 是唯一业务事实源；Redis 是可重建缓存/索引及限流存储�
 | 架构 R1 | Interaction 六个 HTTP、ORM/直接读取、事务、批量统计与获赞读取已迁移；资料统计已接 Account 领域类型 | 外层 video 转换随 R4 收口 |
 | 架构 R2 | R2-A/B/C 已提交，关系 ORM/SQL、资料计数及 Following 活动观看者已收口，social 已删除 | 保留专项验收缺口 |
 | 架构 R3 | R3-A/B/C/D/E/F1/F2/G1/G2 已提交；会话用例/ORM/仓储已归 Account，旧 user/auth 已删除 | 真实兼容/故障专项继续保留 |
-| 架构 R4 | R4-A1/A2/A3/B1/B2/B3/B4/C1 已提交，B4 为 `fefc4c4`、C1 为 `9f0a393`；C2 草稿丢弃已实现，原完整仓储继续保留 | C2 未暂存/提交，等待 review；R4-C3 尚未开始，取消 sweeper/同步删除仍是独立未实施计划 |
+| 架构 R4 | R4-A1/A2/A3/B1/B2/B3/B4/C1/C2 已提交，C2 为 `1048bc5`；C3 已发布删除已实现、待 review；原完整仓储继续保留 | 本轮完成后等待 review；R4-D 与取消 sweeper/同步删除均未实施 |
 | Feed F0/F1 | 匿名 Timeline、批量卡片、页/卡片缓存及首页接入已实现 | 补容量、收益与一致性专项 |
 | Feed F2 | 视频事件类型路由、发布事件及卡片预热已实现 | 保留未覆盖的双规格重连等可靠性专项 |
 | Feed F3 | MySQL Following 与页面已实现 | 指标出口待接通；容量工具暂缓，混合推拉须收益证据 |
@@ -189,6 +189,7 @@ SET/清理成功后 ACK；重试发布确认前不 ACK 原消息。生产 Runtim
 | 2026-10-08 Sweeper 计划/R4-C1 实施轮 | 原清扫归层暂缓，取消 sweeper/请求内立即删除的四类职责与失败/存量边界已入计划、未实施；C1 backend vet/build、57 项源码、54 个内层文件/10 包、274 个既有工作文件及文档/差异核对 | B4 改动保留且未提交；五个保留测试文件无适配、未运行，真实发布/HTTP/事务/Outbox 故障/预算未验收；目标库拒绝连接，元数据未核对，无 SELECT/写库/服务启动；B4/C1 均未暂存/提交，等待 review |
 | 2026-10-08 分模块提交轮 | B4 9 个后端路径分离暂存为 fefc4c4（Git 8 文件），C1 7 路径为 9f0a393；重核 B4 60/C1 57 项源码及三份共享文档/精确暂存范围，沿用已通过的 vet/build | 未推送、未运行 Go 测试；文档与取消 sweeper 计划单独提交为 `69d5305`，未改变清扫/删除策略；随后仅进入 R4-C2 |
 | 2026-10-08 R4-C2 实施轮 | backend vet/build 均退出 0；68 项源码对照、56 个内层文件/10 包依赖及 277 个保护文件核对通过，原丢弃事务/202/DTO/错误次序与文档/差异检查通过 | 五个保留测试文件原样，无夹具适配，未运行；目标库拒绝连接，元数据未核对，无 SELECT/写库/服务启动，真实丢弃/认证/HTTP/并发/事务故障/预算/清扫未覆盖；未暂存/提交，等待 review |
+| 2026-10-09 R4-C2 提交/R4-C3 分析轮 | C2 Go 源码未改，沿用实施轮 vet/build；重核 68 项源码、56 个内层文件/10 包、277 个保护文件、493 个文档链接/锚点与 11 个精确暂存路径，提交为 `1048bc5`；随后从删除 HTTP/用例/条件软删除 SQL、前端与保留流程冻结 C3 边界 | 未推送，C2 提交后工作树干净；C3 仅分析/同步三份文档，未实施，分析文档未暂存/提交；未运行 Go 测试、访问数据库、启动服务或执行真实删除/清扫 |
 
 原查询预算保留：评论/粉丝/关注列表 2，点赞状态含 session 5，评论创建 8，Following 非空 6/空页 3；卡片冷读 5→命中 4。R2-B 与 R2-C 实施轮曾直接断言默认/显式 0/limit=50 在粉丝、关注两个方向各两条 SQL；对应 repo_test.go 已从当前工作区删除，这些断言不再持续运行。Following 六条/三条及卡片预算仍有保留流程；次数证据不代表扫描量或性能。当前实际测试入口见 [源码导读第 11.4 节](./SOURCE_CODE_GUIDE.md#114-用测试理解契约不把测试文件当通过证据)。
 
@@ -247,7 +248,7 @@ go build ./...
 | Relation | 五个 HTTP/用例、v1 游标、独立读取/计数端口及唯一 Follow ORM/SQL；R2-C 已提交 | 专项验收缺口继续见第 5.2 节 |
 | Account | R3-A/B/C/D/E/F1/F2/G1/G2 已提交；会话用例和唯一 AuthSession ORM/仓储已归 Account，旧 user/auth 已删除 | 旧 Video 输出转换/头像媒体实现留 R4，真实专项验收继续见第 5.2 节 |
 | Auth | JWT/随机/刷新哈希及令牌签发实现归 infra/jwt；HTTP 认证/上下文消费 Account 会话校验小端口，旧 auth 已删除，G2 已提交 | 账户清扫用例留 R5，真实专项见第 5.2 节 |
-| Video | R4-A1/A2/A3/B1/B2/B3 已提交；B4 封面上传/C1 草稿发布已提交，C2 草稿丢弃已实现、待 review；独立小读写端口、Domain 公开/草稿规则、HTTP DTO 与唯一原 v1 编解码 | 已发布删除与 ORM/仓储另分模块，Feed 等旧消费者留 R4-D；取消 sweeper/立即删除是后续独立行为变更 |
+| Video | R4-A1/A2/A3/B1/B2/B3 已提交；B4 封面上传/C1 草稿发布已提交，C2 草稿丢弃已提交；独立小读写端口、Domain 公开/草稿规则、HTTP DTO 与唯一原 v1 编解码 | C3 已发布删除已实现、待 review；ORM/仓储与 Feed 等旧消费者留 R4-D；取消 sweeper/立即删除是后续独立行为变更 |
 | Worker/Sweeper | 入口集中编排、小能力接口；当前 Sweeper 仍负责四类回收 | Worker 用例/ACK/重试继续归层；Sweeper 迁移暂缓，取消与请求内立即删除已纳入独立计划 |
 
 ### 6.2 目标结构与依赖规则
@@ -274,7 +275,7 @@ cmd/ 负责进程装配与生命周期；db/migrations/ 保留显式迁移
 | R1 Interaction | 已完成本阶段 HTTP、持久化与统计迁移，外层账户/视频适配随其归属模块收口 |
 | R2 Relation | R2-A/B/C 已提交；ORM/SQL、计数与 Following 活动观看者适配已收口，social 已删除 |
 | R3 Account | R3-A/B/C/D/E/F1/F2/G1/G2 已提交，会话及持久化已迁入 Account；保留 CAS、哈希、事务与补偿 |
-| R4 Video | R4-A1/A2/A3/B1/B2/B3/B4/C1 已提交，C2 草稿丢弃已实现、待 review；已发布删除与 Outbox 仓储后续分别迁移；保留公开规则、旧游标、202、CAS/锁及文件补偿 |
+| R4 Video | R4-A1/A2/A3/B1/B2/B3/B4/C1 已提交，C2 草稿丢弃已提交；C3 已发布删除已实现、待 review；ORM/仓储与 Outbox 后续分模块迁移；保留公开规则、旧游标、202、CAS/锁及文件补偿 |
 | R5 Worker/回收策略 | Worker 用例/消息/ACK/连接按层归位；Sweeper 原迁移暂缓，取消进程与请求内立即删除按独立行为变更计划推进，未实施前保留原清扫语义 |
 | R6 收口 | 整理技术实现/HTTP 组合根、Feed 适配与文档，删除旧包和无用途过渡层 |
 
@@ -567,7 +568,7 @@ F2/G2 仅改变代码归属，ORM 名称保持 User/AuthSession、每张表只�
 | --- | --- | --- |
 | R4-A Video 读取 | R4-A1 已发布详情/公开列表、R4-A2 本人列表已提交；R4-A3 处理状态已提交，分别 review。Domain 建状态/公开读模型，Application 建读取与原视频游标，HTTP 分离 DTO，Infra 先委托原仓储 | 原 `/api/video` 全局/作者两种分页范围、原游标版本/范围、完整公开规则、作者占位、批量作者/互动查询与错误顺序；不与 Feed 游标混用 |
 | R4-B 草稿与媒体 | R4-B1 创建/读取草稿已提交；R4-B2 共享媒体规则/LocalStorage 已归 Domain/Infra、已提交，R4-B3 视频上传已提交为 `6bc4926`，未推送，R4-B4 封面上传已提交为 `fefc4c4`，未推送；小保存/删除/绑定端口保持独立 | 原 multipart 限制、文件头/扩展名、所属用户/草稿绑定、存储相对路径、original_name、保存→绑定→清理与失败补偿；不增加持久补偿、分片上传或共享存储新功能。Account 头像改接同一迁入的存储实现 |
-| R4-C 发布与删除 | R4-C1 草稿发布已提交为 `9f0a393`，未推送；R4-C2 丢弃草稿已实现、待 review，R4-C3 已发布删除尚未开始。应用使用明确原子写端口，仓储复核权限/状态；取消 sweeper/同步删除另按下述计划实施 | draft→processing 与 video.process Outbox 同事务、202、processing/purging 不可逆性、锁/CAS、重复调用与软删除；不直接发 MQ 替代 Outbox |
+| R4-C 发布与删除 | R4-C1 草稿发布已提交为 `9f0a393`，未推送；R4-C2 丢弃草稿已提交为 `1048bc5`，未推送；R4-C3 已发布删除已实现、待 review，未暂存/提交。发布/丢弃使用原子写端口，已发布删除保留先读后条件软删除；取消 sweeper/同步删除另按下述计划实施 | draft→processing 与 video.process Outbox 同事务、202、processing/purging 不可逆性、锁/CAS、重复调用与软删除；不直接发 MQ 替代 Outbox |
 | R4-D Video 持久化及消费方 | 唯一 Video/OutboxEvent ORM、CRUD/公开/Following 查询、Outbox/租约仓储按方法族分模块迁入 Infra；Feed/Interaction/作者适配接领域小端口 | PublicVideoQuery/IsPublicVideo 的 SQL 与内存规则保持唯一对应；Following 活动观看者/关系/作者、缓存命中 MySQL 复核、投影/扫描与 SQL 预算不变；迁库方法族后原实现删除，不长期双份维护 |
 | R5-A 视频 Relay/处理 | Relay 调度与消息转换归 Interfaces；领取/路由/处理用例归 Application，claim/confirm 状态持久化归 Infra。视频处理与卡片预热各自 review | published CAS 与 video.published Outbox 同事务、attempt/租约围栏、至少一次、Return/mandatory/confirm、确认重试发布后 ACK、有限退避/DLQ/重连；不将 dispatched 当消费完成 |
 | R5-B 已分层异步能力 | 互动 Relay、卡片预热、热度消费者逐一收口外层投递/ACK，Application 已有用例继续复用 | interaction_outbox 事务、去重/正负贡献/绝对到期及 coverage=unverified 不变；不附带 F4-B2 重建或开放 Hot |
@@ -712,7 +713,7 @@ B2 必须冻结以下源码契约：视频 200 MiB、封面/头像 10 MiB 与原
 | [B3 当时 Application 视频上传](../backend/internal/application/video/draft_media_upload.go) | 只提供 UploadDraftVideo；先 Save→展示名→Domain 校验→绑定端口可用→原名兜底→绑定；失败仅可选 Remove 尽力删除并忽略删除错误；标准库/Domain，无提前依赖检查 |
 | [Infrastructure 绑定适配](../backend/internal/infra/persistence/video/draft_media_binder.go) | 新旧 kind/SavedFile 只在外层转换，单次原 Repository.UpdateDraftMedia，复用原 readError 优先级/文案/cause；nil 接口返回 nil，接口内 nil 指针保留原语义 |
 | [B3 当时 HTTP 视频上传](../backend/internal/interfaces/http/video/draft_media_upload.go)与[共享错误助手](../backend/internal/interfaces/http/video/handler.go) | 原认证/路径/MaxBytesReader/FormFile/大小/512 字节读取/扩展名文件头/Seek/201 顶层字段；HTTP 不保存、绑定或补偿，共享错误只加新媒体 sentinel 匹配 |
-| [router](../backend/internal/router/router.go)、[旧封面入口](../backend/internal/video/video_controller.go)与[旧绑定用例](../backend/internal/video/video_service.go) | 只增加视频上传装配并切换原 play 路由；cover 继续旧 Handler/用例/存储适配，旧用例的条件只改 Domain 标量调用 |
+| [router](../backend/internal/router/router.go)、旧封面入口（后由 B4 删除）与[旧绑定用例](../backend/internal/video/video_service.go) | 只增加视频上传装配并切换原 play 路由；cover 继续旧 Handler/用例/存储适配，旧用例的条件只改 Domain 标量调用 |
 
 请求顺序逐段对照：认证→路径 ID→200 MiB + 1 MiB MaxBytesReader→FormFile→0/越界大小→前 512 字节 ReadFull（仍仅接受 EOF/ErrUnexpectedEOF）→原扩展名/文件头→Seek(0)→Save→展示名→原 ID/kind/URL/文件名条件→绑定端口可用→原名为空则存储名兜底→原绑定事务→201。Domain 条件仍允许原 videos/covers 两种 kind，Application 只提供视频上传；头像规则不迁。没有检查草稿是否存在/可写的前置查询，端口不可用仍保存后才返回原 repository unavailable 并尝试原可选清理。
 
@@ -781,9 +782,9 @@ Save 失败不绑定/删除；绑定失败仅在 storage 动态实现 MediaRemov
 
 未运行/未覆盖：任何 Go 测试、全量/race/JSON 命令，真实发布/HTTP/认证/重复或并发发布、Outbox 失败回滚/提交不确定/MQ 故障、查询预算、Worker/Sweeper 或删除/清扫回归。目标 localhost:3306/feedsystem 拒绝 TCP 连接（10061），schema_migrations/列/索引等元数据未核对；未执行 SELECT/数据库写入或启动服务。源码/构建不能称为真实发布、事务、Worker 或 HTTP 回归。实施轮完成后停止等待 review；本轮按用户指令，B4 的 9 个精确路径与 C1 的 7 个精确路径分别暂存/检查并提交为 `fefc4c4`、`9f0a393`，共享三份文档统一同步、单独提交为 `69d5305`，均未推送；随后仅进入下述 R4-C2，sweeper 取消仍未实施。
 
-#### R4-C2：草稿丢弃（已实现，待 review）
+#### R4-C2：草稿丢弃（已提交）
 
-先按用户指令将既有 B4、C1 与三份共享文档分别提交为 `fefc4c4`、`9f0a393`、`69d5305`，均未推送，提交后工作树干净；随后仅迁 `DELETE /api/video/auth/drafts/:id` 的 HTTP/用例及必要装配。取消 sweeper/请求内立即删除仍未实施，不迁已发布删除、仓储/SQL/ORM、Worker/Sweeper 或其他模块。
+以下记录 C2 实施轮边界与缺口；后端和三份必要文档共 11 文件已提交为 `1048bc5`，未推送。此前先按用户指令将既有 B4、C1 与三份共享文档分别提交为 `fefc4c4`、`9f0a393`、`69d5305`，均未推送，提交后工作树干净；随后仅迁 `DELETE /api/video/auth/drafts/:id` 的 HTTP/用例及必要装配。取消 sweeper/请求内立即删除仍未实施，不迁已发布删除、仓储/SQL/ORM、Worker/Sweeper 或其他模块。
 
 | 归属 | 当前实现 |
 | --- | --- |
@@ -803,7 +804,32 @@ Save 失败不绑定/删除；绑定失败仅在 storage 动态实现 MediaRemov
 
 静态/构建：仅格式化本模块 8 个 Go 文件，backend 的 go vet ./...、go build ./... 均退出 0；68 项源码兼容对照、56 个内层 Go 文件/10 包依赖及 277 个保护跟踪文件字节核对通过。完整引用、唯一草稿 DTO/组装与媒体规则/存储、原事务/SQL/错误/消费者、文档链接/锚点/围栏及 git diff --check 核对。仅同步现有三份文档，无临时脚本/日志文件。
 
-未运行/未覆盖：任何 Go 测试、全量/race/JSON 命令，真实草稿丢弃/HTTP/认证/请求体兼容、重复或并发丢弃、事务失败/提交不确定/取消、查询预算、文件清理或 Worker/Sweeper 回归。目标 localhost:3306/feedsystem 拒绝 TCP 连接（10061），schema_migrations/列/索引/数据元数据未核对；未执行 SELECT/数据库写入或启动服务。源码/构建不能称为真实丢弃、事务、清扫或 HTTP 回归；本模块未暂存/提交，停止等待 review，不开始 R4-C3 或取消 sweeper。
+未运行/未覆盖：任何 Go 测试、全量/race/JSON 命令，真实草稿丢弃/HTTP/认证/请求体兼容、重复或并发丢弃、事务失败/提交不确定/取消、查询预算、文件清理或 Worker/Sweeper 回归。目标 localhost:3306/feedsystem 拒绝 TCP 连接（10061），schema_migrations/列/索引/数据元数据未核对；未执行 SELECT/数据库写入或启动服务。源码/构建不能称为真实丢弃、事务、清扫或 HTTP 回归；实施轮未暂存/提交并停止等待 review；2026-10-09 用户要求提交并分析下一步，提交轮 Go 源码未改，沿用实施轮 vet/build，重核 68 项源码、56 个内层文件/10 包、277 个保护文件及文档链接、11 个精确暂存路径和 git diff --cached --check 后提交为 `1048bc5`，未推送，提交后工作树干净。随后仅分析下述 R4-C3，没有实施或取消 sweeper；本轮未运行 Go 测试、访问数据库或启动服务。
+
+#### R4-C3：已发布视频删除（已实现，待 review）
+
+仅将 `DELETE /api/video/auth/:id` 的 HTTP、Application 用例与必要装配迁入四层，保留当前条件软删除、原保留期与空体 204。取消 sweeper/请求内立即删除仍按下一节独立行为变更计划推进，本轮未实施；既有 C2 提交状态与 C3 分析文档改动在原工作树基础上保留并同步。
+
+| 归属 | 当前实现 |
+| --- | --- |
+| [Domain 删除快照与端口](../backend/internal/domain/video/published_deletion.go) | 独立 DeletionSnapshot 仅含 AuthorID/Status；PublishedVideoDeleter 仅提供读快照与条件软删除，复用现有状态和错误，只依赖标准库 |
+| [Application 已发布删除](../backend/internal/application/video/published_deletion.go) | 原 id→单一依赖→读快照→作者→published→条件删除；一个组合小端口保持原可用性语义，不增加第二个提前检查 |
+| [Infrastructure 删除适配](../backend/internal/infra/persistence/video/published_deletion.go) | 分别只委托一次原 Repository.GetByID/DeletePublishedVideo，两个阶段均先将 GORM 未找到直接转换为 Domain 未找到，再复用共享 readError；无新 SQL/事务/锁/投影查询 |
+| [HTTP 删除入口](../backend/internal/interfaces/http/video/published_deletion.go)与[router](../backend/internal/router/router.go) | 原认证→路径→用例→空体 204；复用原 parsePathID/handleVideoError，只切换原 DELETE 与必要装配，不读取、绑定或拒绝请求体 |
+
+完整顺序保持认证→ParseUint(raw,10,64)/非零检查/uint 转换→Application id==0→依赖可用→GetByID→作者→published→DeletePublishedVideo→204 No Content。Application 不新增 authorID==0 检查，保留 nil 接口语义，不归一接口内 nil 指针或成功返回 nil 快照。GetByID 仍读取任意未软删除状态，不改用 GetPublishedByID/IsPublicVideo/完整公开过滤。先作者再状态，因此其他作者的非 published 行仍 403，本人的非 published 行仍 404；仅按 StatusPublished 判断，不增加媒体完整、发布时间、活动账户或文件存在校验。
+
+[原 Repository](../backend/internal/video/video_repo.go) 全文未改：GetByID 保留原 First 与软删除作用域；DeletePublishedVideo 保留 id/authorID 为 0 时的 GORM 未找到，以及 Where(id,author_id,status=published)→Delete(&Video{})、result.Error 和 RowsAffected==0 处理。仍先读后条件写，不合并操作或前移权限判断，无预读/写后重读、锁行或外层事务。并发导致删除条件不再满足仍 404；重复删除由 GetByID 过滤后 404，不改为幂等 204。请求内不删媒体、不硬删记录或关联数据，原保留期与 [VideoPurgeJob](../backend/internal/sweeper/video_purge.go) 保持。
+
+读取、删除两个阶段均保留原 errors.Is(gorm.ErrRecordNotFound) 提前转换，先于共享错误分类，直接返回安全的 video not found 并丢弃该分支 cause。其他错误沿用原分类优先级、错误链、状态码和文案，未知故障仍 video operation failed；无新重分类、重试或补偿。正常装配源码预算仍 session、GetByID、条件软删除各一次，共三次 CRUD；作者/状态拒绝或重复删除仍会话加读取两次，事务控制不计。这是源码预算，未做运行验证。
+
+核对全部生产与保留测试引用后，删除旧 video_controller.go 中已被替代的删除 HTTP、Controller/构造器与私有路径/错误助手；从 video_service.go 仅删除旧 DeleteVideo、Service/构造器、无用途 VideoRepository 依赖接口和 GORM 导入。video_service.go 文件继续保留原错误、作者/互动接口及 filterPublicVideos/IsPublicVideo/唯一 Domain 公开规则桥接；完整具体 Repository、全部原 SQL、唯一 Video/Outbox ORM、旧作者/互动/媒体值与无关助手保留，留给 R4-D。无长期别名、重复规则或实现。B4 上传/C1 发布/C2 丢弃、Account 头像/补偿、注册/会话、Interaction/Relation/Feed、Worker/Sweeper/租约/检查点/ACK/调度/关闭、前端/API、配置/迁移/部署均未改。
+
+必要保留夹具适配：无。全部 5 个测试文件、36 个测试函数与 5 个 TestMain 原样，无新增/恢复测试或断言修改；[原完整流程](../backend/internal/router/e2e_test.go) 的删除后详情 404 与分页间删除契约仅作源码阅读，未运行。
+
+静态/构建：仅格式化本模块 6 个 Go 文件，backend 的 go vet ./...、go build ./... 均退出 0。103 项源码/依赖检查通过，58 个内层 Go 文件/10 包只依赖标准库与允许的 Domain；282 个保护跟踪文件与实施前字节摘要相同。HTTP/路径/用例完整函数体、router 全文按允许变换对照，公开桥接与错误/作者/互动接口保持；完整引用、唯一端口/快照/ORM/原仓储、读取与条件写、错误优先级/cause/nil 语义及所有消费者均核对。现有三份文档同步，链接/锚点/围栏与 git diff --check 核对通过；没有临时脚本或日志。
+
+未运行/未覆盖：任何 Go 测试、全量/race/JSON 测试命令，真实 HTTP/认证/请求体兼容、删除/重复删除/并发状态变化、事务/数据库故障、运行查询预算、媒体删除/关联清理、路径安全或 Worker/Sweeper 回归。目标 localhost:3306/feedsystem 本轮 TCP 拒绝连接（10061），schema_migrations/实际列/索引/数据状态未核对，未执行 SELECT/数据库写入或启动服务；不沿用历史元数据结果宣布本轮通过。源码、构建及连接检查不代表真实 HTTP、删除、事务、路径安全或 Sweeper 验收，第 5 节缺口保留。本模块未暂存/提交/推送，完成后停止等待 review，不进入 R4-D、取消 sweeper 或其他模块。
 
 #### 取消 Sweeper 与请求内立即删除（已纳入计划，未实施）
 
@@ -826,4 +852,4 @@ Save 失败不绑定/删除；绑定失败仅在 storage 动态实现 MediaRemov
 
 R4-D 的各仓储方法族在对应读写/后台用例切换后逐个归位，具体前后次序以依赖闭包重新冻结；允许未迁消费者经外层小适配复用唯一新实现，不复制 SQL。R5 迁完各用例后，cmd/worker.startWorkers 仍统一启动、取消、等待并关闭资源，不能为目录整齐拆散生命周期。
 
-最终目录以第 6.2 节为准，业务规则/用例/ORM/输入适配保持唯一。R4-B4 已提交为 `fefc4c4`，R4-C1 已提交为 `9f0a393`，均未推送；共享文档与 sweeper 取消计划提交为 `69d5305`。R4-C2 草稿丢弃已实现、未暂存/提交，停止等待 review。取消 sweeper 与请求内立即删除仍为独立未实施计划，原 R5-C 清扫归层暂缓；当前删除/回收语义保持，R4-C3 等其他模块尚未实施。禁跑 Go 测试继续有效，源码/构建不代表真实兼容；目标库拒绝连接，元数据未核对，无写库/服务启动。
+最终目录以第 6.2 节为准，业务规则/用例/ORM/输入适配保持唯一。R4-B4 已提交为 `fefc4c4`，R4-C1 已提交为 `9f0a393`，均未推送；共享文档与 sweeper 取消计划提交为 `69d5305`。R4-C2 草稿丢弃已提交为 `1048bc5`，未推送；R4-C3 已实现、待 review，未暂存/提交。取消 sweeper 与请求内立即删除仍为独立未实施计划，原 R5-C 清扫归层暂缓；当前删除/回收语义保持，R4-D 等其他模块尚未实施。禁跑 Go 测试继续有效，源码/构建不代表真实兼容；目标库拒绝连接，元数据未核对，无写库/服务启动。
