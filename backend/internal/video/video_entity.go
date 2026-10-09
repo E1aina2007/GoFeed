@@ -117,13 +117,6 @@ type Cursor struct {
 	ID          uint       `json:"i"`
 }
 
-// Author 表示视频作者公开资料
-type Author struct {
-	ID        uint   `json:"id"`
-	Username  string `json:"username"`
-	AvatarURL string `json:"avatar_url"`
-}
-
 // EngagementCounts 表示从互动关系表读取的当前点赞和评论数量
 type EngagementCounts struct {
 	LikesCount    int64

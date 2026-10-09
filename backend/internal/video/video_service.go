@@ -23,12 +23,6 @@ var (
 	ErrDraftIncomplete       = errors.New("video draft is incomplete")
 )
 
-type AuthorReader interface {
-	GetPublicAuthor(ctx context.Context, id uint) (Author, error)
-	// GetPublicAuthors 供列表路径一次批量读取，避免逐作者查询
-	GetPublicAuthors(ctx context.Context, ids []uint) (map[uint]Author, error)
-}
-
 // EngagementReader 是公开视频响应所需的互动统计能力
 type EngagementReader interface {
 	GetEngagementCounts(ctx context.Context, videoIDs []uint) (map[uint]EngagementCounts, error)

@@ -8,10 +8,10 @@ import (
 )
 
 type authorReader struct {
-	authors legacyvideo.AuthorReader
+	authors domainvideo.AuthorReader
 }
 
-func NewAuthorReader(authors legacyvideo.AuthorReader) domainvideo.AuthorReader {
+func NewAuthorReader(authors domainvideo.AuthorReader) domainvideo.AuthorReader {
 	if authors == nil {
 		return nil
 	}
@@ -23,7 +23,7 @@ func (r *authorReader) GetPublicAuthor(ctx context.Context, id uint) (domainvide
 	if err != nil {
 		return domainvideo.Author{}, readError(err)
 	}
-	return publicAuthor(author), nil
+	return author, nil
 }
 
 func (r *authorReader) GetPublicAuthors(ctx context.Context, ids []uint) (map[uint]domainvideo.Author, error) {
@@ -33,13 +33,9 @@ func (r *authorReader) GetPublicAuthors(ctx context.Context, ids []uint) (map[ui
 	}
 	authors := make(map[uint]domainvideo.Author, len(rows))
 	for id, author := range rows {
-		authors[id] = publicAuthor(author)
+		authors[id] = author
 	}
 	return authors, nil
-}
-
-func publicAuthor(author legacyvideo.Author) domainvideo.Author {
-	return domainvideo.Author{ID: author.ID, Username: author.Username, AvatarURL: author.AvatarURL}
 }
 
 type engagementReader struct {

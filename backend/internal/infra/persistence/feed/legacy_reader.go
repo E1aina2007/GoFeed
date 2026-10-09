@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	domainfeed "gofeed/internal/domain/feed"
+	domainvideo "gofeed/internal/domain/video"
 	"gofeed/internal/video"
 )
 
@@ -14,7 +15,7 @@ type PublishedVideoReader interface {
 }
 
 type AuthorReader interface {
-	GetPublicAuthors(ctx context.Context, authorIDs []uint) (map[uint]video.Author, error)
+	GetPublicAuthors(ctx context.Context, authorIDs []uint) (map[uint]domainvideo.Author, error)
 }
 
 type EngagementReader interface {
