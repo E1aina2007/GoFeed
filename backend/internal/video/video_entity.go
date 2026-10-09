@@ -129,17 +129,3 @@ type EngagementCounts struct {
 	LikesCount    int64
 	CommentsCount int64
 }
-
-// DraftItem 表示当前用户可继续上传或发布的草稿
-type DraftItem struct {
-	ID                uint      `json:"id"`
-	Title             string    `json:"title"`
-	Description       string    `json:"description"`
-	Status            string    `json:"status"`
-	HasVideo          bool      `json:"has_video"`
-	HasCover          bool      `json:"has_cover"`
-	PlayOriginalName  string    `json:"play_original_name,omitempty"`
-	CoverOriginalName string    `json:"cover_original_name,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
-}

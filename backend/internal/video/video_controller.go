@@ -20,27 +20,6 @@ func NewController(srv *Service) *Controller {
 	return &Controller{srv: srv}
 }
 
-// DiscardDraft 处理 DELETE /api/video/auth/drafts/:id
-func (ctl *Controller) DiscardDraft(c *gin.Context) {
-	userID, ok := interfaceshttpauth.UserID(c)
-	if !ok {
-		apierror.WriteUnauthorized(c, "invalid or expired token")
-		return
-	}
-	draftID, err := parsePathID(c.Param("id"))
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-
-	draft, err := ctl.srv.DiscardDraft(c.Request.Context(), draftID, userID)
-	if err != nil {
-		handleVideoError(c, err)
-		return
-	}
-	c.JSON(http.StatusAccepted, gin.H{"draft": draft})
-}
-
 // DeleteVideo 处理 DELETE /api/video/auth/:id
 func (ctl *Controller) DeleteVideo(c *gin.Context) {
 	userID, ok := interfaceshttpauth.UserID(c)

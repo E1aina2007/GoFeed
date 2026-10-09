@@ -53,41 +53,6 @@ func NewService(repository VideoRepository) *Service {
 	return &Service{repository: repository}
 }
 
-// DiscardDraft 将当前作者的草稿排入异步清扫
-// 返回 purging 状态不代表媒体已删除；实际删除由带围栏租约的 sweeper 完成
-func (s *Service) DiscardDraft(ctx context.Context, draftID, authorID uint) (DraftItem, error) {
-	if draftID == 0 || authorID == 0 {
-		return DraftItem{}, ErrInvalidVideoID
-	}
-	if s.repository == nil {
-		return DraftItem{}, ErrRepositoryUnavailable
-	}
-
-	draft, err := s.repository.UpdateDraftDiscard(ctx, draftID, authorID)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return DraftItem{}, ErrVideoNotFound
-		}
-		return DraftItem{}, err
-	}
-	return draftItem(*draft), nil
-}
-
-func draftItem(video Video) DraftItem {
-	return DraftItem{
-		ID:                video.ID,
-		Title:             video.Title,
-		Description:       video.Description,
-		Status:            video.Status,
-		HasVideo:          domainvideo.HasDraftMedia(video.PlayURL, video.PlayFileName, video.PlayOriginalName),
-		HasCover:          domainvideo.HasDraftMedia(video.CoverURL, video.CoverFileName, video.CoverOriginalName),
-		PlayOriginalName:  video.PlayOriginalName,
-		CoverOriginalName: video.CoverOriginalName,
-		CreatedAt:         video.CreatedAt,
-		UpdatedAt:         video.UpdatedAt,
-	}
-}
-
 // DeleteVideo 仅作者本人可软删除自己的已发布视频
 func (s *Service) DeleteVideo(ctx context.Context, id, authorID uint) error {
 	if id == 0 {

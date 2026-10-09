@@ -147,6 +147,8 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		mediaStorage, infravideo.NewDraftMediaBinder(videoRepo)))
 	draftPublicationHandler := interfaceshttpvideo.NewDraftPublication(applicationvideo.NewDraftPublication(
 		infravideo.NewDraftPublisher(videoRepo)))
+	draftDiscardHandler := interfaceshttpvideo.NewDraftDiscard(applicationvideo.NewDraftDiscard(
+		infravideo.NewDraftDiscarder(videoRepo)))
 	feedRepo := infrafeed.New(videoRepo, authorReader, engagementReader)
 	feedService := applicationfeed.New(feedRepo,
 		applicationfeed.WithFollowingReader(infrafeed.NewFollowingReader(videoRepo, relationRepo)),
@@ -172,7 +174,7 @@ func New(db *gorm.DB, dev bool, opts Options) *gin.Engine {
 		protectedVideos.POST("/drafts/:id/play", draftMediaUploadHandler.UpdateDraftVideo)
 		protectedVideos.POST("/drafts/:id/cover", draftMediaUploadHandler.UpdateDraftCover)
 		protectedVideos.POST("/drafts/:id/publish", draftPublicationHandler.UpdateDraftPublication)
-		protectedVideos.DELETE("/drafts/:id", videoCtl.DiscardDraft)
+		protectedVideos.DELETE("/drafts/:id", draftDiscardHandler.DiscardDraft)
 		protectedVideos.GET("/mine", myVideoHandler.GetMyVideoList)
 		protectedVideos.GET("/:id/status", processingStatusHandler.GetVideoStatus)
 		protectedVideos.GET("/:id/like", interactionHandler.GetLikeState)
