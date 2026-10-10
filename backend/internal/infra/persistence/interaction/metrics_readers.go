@@ -6,7 +6,7 @@ import (
 	domainaccount "gofeed/internal/domain/account"
 	domaininteraction "gofeed/internal/domain/interaction"
 	domainrelation "gofeed/internal/domain/relation"
-	"gofeed/internal/video"
+	domainvideo "gofeed/internal/domain/video"
 )
 
 type EngagementReader struct {
@@ -19,7 +19,7 @@ type ProfileMetricsReader struct {
 }
 
 var (
-	_ video.EngagementReader             = (*EngagementReader)(nil)
+	_ domainvideo.EngagementReader       = (*EngagementReader)(nil)
 	_ domainaccount.ProfileMetricsReader = (*ProfileMetricsReader)(nil)
 )
 
@@ -31,9 +31,9 @@ func NewProfileMetricsReader(likes domaininteraction.TotalLikesReader, follows d
 	return &ProfileMetricsReader{likes: likes, follows: follows}
 }
 
-// GetEngagementCounts 将领域统计转换为旧 Video 与 Feed 消费方的结果
-func (r *EngagementReader) GetEngagementCounts(ctx context.Context, videoIDs []uint) (map[uint]video.EngagementCounts, error) {
-	counts := make(map[uint]video.EngagementCounts, len(videoIDs))
+// GetEngagementCounts 将互动领域统计转换为 Video 与 Feed 使用的领域值
+func (r *EngagementReader) GetEngagementCounts(ctx context.Context, videoIDs []uint) (map[uint]domainvideo.EngagementCounts, error) {
+	counts := make(map[uint]domainvideo.EngagementCounts, len(videoIDs))
 	if len(videoIDs) == 0 {
 		return counts, nil
 	}
@@ -42,7 +42,7 @@ func (r *EngagementReader) GetEngagementCounts(ctx context.Context, videoIDs []u
 		return nil, err
 	}
 	for id, row := range rows {
-		counts[id] = video.EngagementCounts{LikesCount: row.LikesCount, CommentsCount: row.CommentsCount}
+		counts[id] = domainvideo.EngagementCounts{LikesCount: row.LikesCount, CommentsCount: row.CommentsCount}
 	}
 	return counts, nil
 }

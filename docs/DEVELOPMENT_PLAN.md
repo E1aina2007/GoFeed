@@ -11,7 +11,7 @@
 - [5. 待补验证与交付门槛](#5-待补验证与交付门槛)：历史证据、剩余专项和检查要求
 - [6. 全后端四层架构演进](#6-全后端四层架构演进)：分层规则、迁移路线和当前模块
 
-R2-B 已提交为 `f9481b2`，[R2-C 关系持久化与旧 social 收口](#68-r2-c-关系持久化与旧-social-收口已提交) 后端为 `ea36d40`；[R3-A 三个匿名账户读取](#69-r3-a-三个匿名账户读取已提交) 后端/API 为 `35a6fe0`，[R3-B 注册接口](#610-r3-b-注册接口已提交) 后端/API 为 `a834d46`，均未推送。[R3-C 登录、刷新与退出](#611-r3-c-登录刷新与退出已提交) 已提交为 `f20dcdf`，[R3-D 改密与注销](#612-r3-d-改密与注销已提交) 为 `4f4838b`，[R3-E 改名、资料与头像](#613-r3-e-改名资料与头像已提交) 为 `f5c1260`，均未推送。账户 HTTP 已全部迁入 Account；[R3-F1](#r3-f1账户跨模块读适配已提交) 已提交为 `c335902`，未推送；[R3-F2](#r3-f2用户持久化已提交) 已提交为 `267463e`，未推送；[R3-G1](#r3-g1jwt-与认证适配已提交) 已提交为 `e84f783`，未推送；[R3-G2](#r3-g2会话用例与持久化已提交) 已提交为 `fe6959d`，未推送；[R4-A1 已发布详情与公开列表](#r4-a1已发布详情与公开列表已提交) 已提交为 `d94bff7`，未推送；[R4-A2 本人视频列表](#r4-a2本人视频列表已提交) 已提交为 `b4e145b`，未推送；[R4-A3 视频处理状态读取](#r4-a3视频处理状态读取已提交) 已提交为 `1b0acfc`，未推送；[R4-B1 草稿创建与读取](#r4-b1草稿创建与读取已提交) 已提交为 `2f315e8`，未推送；[R4-B2 共享媒体规则与本地存储](#r4-b2共享媒体规则与本地存储归层已提交) 已提交为 `e56d7bf`，未推送；[R4-B3 草稿视频上传](#r4-b3草稿视频上传已提交) 已提交为 `6bc4926`，未推送；[R4-B4 草稿封面上传](#r4-b4草稿封面上传已提交) 已提交为 `fefc4c4`，未推送；[R4-C1 草稿发布](#r4-c1草稿发布已提交) 已提交为 `9f0a393`，未推送；[R4-C2 草稿丢弃](#r4-c2草稿丢弃已提交) 已提交为 `1048bc5`，未推送；[R4-C3 已发布视频删除](#r4-c3已发布视频删除已提交) 已提交为 `ff11f7f`，未推送；[R4-D1 作者读取消费边界](#r4-d1作者读取消费边界已实现待-review) 已实现、待 review，未暂存/提交；[第 6.14 节](#614-r3-后续收口与-r4r6-重构路线)其余 Video/后台及后续模块尚未实施。后续不运行 Go 单元测试，默认仅静态检查、构建与差异检查。Feed 功能路线下一步为 [F4-B2 事实重建与 MySQL 快照](#38-f4-b2事实重建与-mysql-快照的下一步边界未实现)，两条路线分别 review。
+R2-B 已提交为 `f9481b2`，[R2-C 关系持久化与旧 social 收口](#68-r2-c-关系持久化与旧-social-收口已提交) 后端为 `ea36d40`；[R3-A 三个匿名账户读取](#69-r3-a-三个匿名账户读取已提交) 后端/API 为 `35a6fe0`，[R3-B 注册接口](#610-r3-b-注册接口已提交) 后端/API 为 `a834d46`，均未推送。[R3-C 登录、刷新与退出](#611-r3-c-登录刷新与退出已提交) 已提交为 `f20dcdf`，[R3-D 改密与注销](#612-r3-d-改密与注销已提交) 为 `4f4838b`，[R3-E 改名、资料与头像](#613-r3-e-改名资料与头像已提交) 为 `f5c1260`，均未推送。账户 HTTP 已全部迁入 Account；[R3-F1](#r3-f1账户跨模块读适配已提交) 已提交为 `c335902`，未推送；[R3-F2](#r3-f2用户持久化已提交) 已提交为 `267463e`，未推送；[R3-G1](#r3-g1jwt-与认证适配已提交) 已提交为 `e84f783`，未推送；[R3-G2](#r3-g2会话用例与持久化已提交) 已提交为 `fe6959d`，未推送；[R4-A1 已发布详情与公开列表](#r4-a1已发布详情与公开列表已提交) 已提交为 `d94bff7`，未推送；[R4-A2 本人视频列表](#r4-a2本人视频列表已提交) 已提交为 `b4e145b`，未推送；[R4-A3 视频处理状态读取](#r4-a3视频处理状态读取已提交) 已提交为 `1b0acfc`，未推送；[R4-B1 草稿创建与读取](#r4-b1草稿创建与读取已提交) 已提交为 `2f315e8`，未推送；[R4-B2 共享媒体规则与本地存储](#r4-b2共享媒体规则与本地存储归层已提交) 已提交为 `e56d7bf`，未推送；[R4-B3 草稿视频上传](#r4-b3草稿视频上传已提交) 已提交为 `6bc4926`，未推送；[R4-B4 草稿封面上传](#r4-b4草稿封面上传已提交) 已提交为 `fefc4c4`，未推送；[R4-C1 草稿发布](#r4-c1草稿发布已提交) 已提交为 `9f0a393`，未推送；[R4-C2 草稿丢弃](#r4-c2草稿丢弃已提交) 已提交为 `1048bc5`，未推送；[R4-C3 已发布视频删除](#r4-c3已发布视频删除已提交) 已提交为 `ff11f7f`，未推送；[R4-D1 作者读取消费边界](#r4-d1作者读取消费边界已提交) 已提交为 `6455b91`，未推送；[R4-D2 互动统计消费边界](#r4-d2互动统计消费边界已提交) 已提交，未推送（提交标识见 Git 历史）；[第 6.14 节](#614-r3-后续收口与-r4r6-重构路线)其余 Video/后台及后续模块尚未实施。后续不运行 Go 单元测试，默认仅静态检查、构建与差异检查。Feed 功能路线下一步为 [F4-B2 事实重建与 MySQL 快照](#38-f4-b2事实重建与-mysql-快照的下一步边界未实现)，两条路线分别 review。
 
 ## 1. 当前基线与优先顺序
 
@@ -22,7 +22,7 @@ MySQL 是唯一业务事实源；Redis 是可重建缓存/索引及限流存储�
 | 架构 R1 | Interaction 六个 HTTP、ORM/直接读取、事务、批量统计与获赞读取已迁移；资料统计已接 Account 领域类型 | 外层 video 转换随 R4 收口 |
 | 架构 R2 | R2-A/B/C 已提交，关系 ORM/SQL、资料计数及 Following 活动观看者已收口，social 已删除 | 保留专项验收缺口 |
 | 架构 R3 | R3-A/B/C/D/E/F1/F2/G1/G2 已提交；会话用例/ORM/仓储已归 Account，旧 user/auth 已删除 | 真实兼容/故障专项继续保留 |
-| 架构 R4 | R4-A/B/C 已提交，C3 为 `ff11f7f`；D1 作者读取消费边界已实现、待 review；原完整仓储继续保留 | 当前 D1 完成后等待 review；后续互动统计/ORM/仓储与取消 sweeper/同步删除未实施 |
+| 架构 R4 | R4-A/B/C 与 D1 已提交，D1 为 `6455b91`；D2 互动统计消费边界已提交；原完整仓储继续保留 | 当前 D2 完成后等待 review；ORM/仓储方法族与取消 sweeper/同步删除未实施 |
 | Feed F0/F1 | 匿名 Timeline、批量卡片、页/卡片缓存及首页接入已实现 | 补容量、收益与一致性专项 |
 | Feed F2 | 视频事件类型路由、发布事件及卡片预热已实现 | 保留未覆盖的双规格重连等可靠性专项 |
 | Feed F3 | MySQL Following 与页面已实现 | 指标出口待接通；容量工具暂缓，混合推拉须收益证据 |
@@ -248,7 +248,7 @@ go build ./...
 | Relation | 五个 HTTP/用例、v1 游标、独立读取/计数端口及唯一 Follow ORM/SQL；R2-C 已提交 | 专项验收缺口继续见第 5.2 节 |
 | Account | R3-A/B/C/D/E/F1/F2/G1/G2 已提交；会话用例和唯一 AuthSession ORM/仓储已归 Account，旧 user/auth 已删除 | 旧 Video 输出转换/头像媒体实现留 R4，真实专项验收继续见第 5.2 节 |
 | Auth | JWT/随机/刷新哈希及令牌签发实现归 infra/jwt；HTTP 认证/上下文消费 Account 会话校验小端口，旧 auth 已删除，G2 已提交 | 账户清扫用例留 R5，真实专项见第 5.2 节 |
-| Video | R4-A1/A2/A3/B1/B2/B3 已提交；B4 封面上传/C1 草稿发布已提交，C2 草稿丢弃已提交；独立小读写端口、Domain 公开/草稿规则、HTTP DTO 与唯一原 v1 编解码 | C3 已发布删除已提交；D1 作者消费边界已实现、待 review；ORM/仓储与其余旧消费者留后续 R4-D；取消 sweeper/立即删除是后续独立行为变更 |
+| Video | R4-A1/A2/A3/B1/B2/B3 已提交；B4 封面上传/C1 草稿发布已提交，C2 草稿丢弃已提交；独立小读写端口、Domain 公开/草稿规则、HTTP DTO 与唯一原 v1 编解码 | C3 已发布删除已提交；D1 作者消费边界已提交，D2 互动统计消费边界已提交；ORM/仓储与其余旧消费者留后续 R4-D；取消 sweeper/立即删除是后续独立行为变更 |
 | Worker/Sweeper | 入口集中编排、小能力接口；当前 Sweeper 仍负责四类回收 | Worker 用例/ACK/重试继续归层；Sweeper 迁移暂缓，取消与请求内立即删除已纳入独立计划 |
 
 ### 6.2 目标结构与依赖规则
@@ -275,7 +275,7 @@ cmd/ 负责进程装配与生命周期；db/migrations/ 保留显式迁移
 | R1 Interaction | 已完成本阶段 HTTP、持久化与统计迁移，外层账户/视频适配随其归属模块收口 |
 | R2 Relation | R2-A/B/C 已提交；ORM/SQL、计数与 Following 活动观看者适配已收口，social 已删除 |
 | R3 Account | R3-A/B/C/D/E/F1/F2/G1/G2 已提交，会话及持久化已迁入 Account；保留 CAS、哈希、事务与补偿 |
-| R4 Video | R4-A1/A2/A3/B1/B2/B3/B4/C1 已提交，C2 草稿丢弃已提交；C3 已发布删除已提交；D1 作者消费边界已实现、待 review；ORM/仓储与 Outbox 后续分模块迁移；保留公开规则、旧游标、202、CAS/锁及文件补偿 |
+| R4 Video | R4-A1/A2/A3/B1/B2/B3/B4/C1 已提交，C2 草稿丢弃已提交；C3 已发布删除已提交；D1 作者消费边界已提交，D2 互动统计消费边界已提交；ORM/仓储与 Outbox 后续分模块迁移；保留公开规则、旧游标、202、CAS/锁及文件补偿 |
 | R5 Worker/回收策略 | Worker 用例/消息/ACK/连接按层归位；Sweeper 原迁移暂缓，取消进程与请求内立即删除按独立行为变更计划推进，未实施前保留原清扫语义 |
 | R6 收口 | 整理技术实现/HTTP 组合根、Feed 适配与文档，删除旧包和无用途过渡层 |
 
@@ -343,7 +343,7 @@ R2-C、R3-A/B/C/D/E 均按用户指令提交，没有推送；范围与验证边
 | --- | --- |
 | [Follow ORM](../backend/internal/infra/persistence/relation/follow.go)、[Repository](../backend/internal/infra/persistence/relation/repository.go)、[列表读取](../backend/internal/infra/persistence/relation/list_reader.go) | 唯一 ORM 与活动账户、创建/物理删除/状态、两个计数、两个列表的原 SQL 迁到 Relation；TableName/唯一键/索引及 DDL 未改。直接实现 Domain Repository/ListReader/CountReader，删除 LegacyRepository、旧列表/位置转换与 social 包 |
 | [Domain 端口](../backend/internal/domain/relation/repository.go) | 增加只含两个计数方法的 CountReader，资料适配器依赖独立能力；Domain/Application 仍无旧业务类型或 Gin/GORM/驱动依赖 |
-| [资料统计适配器](../backend/internal/infra/persistence/interaction/legacy_reader.go)、[router](../backend/internal/router/router.go) | 注入 Relation 仓储；保持获赞→粉丝→关注、accountID=0 不查库、有效账户统计部分三条 SQL、失败立即返回及原字段。Account 用例未迁 |
+| [资料统计适配器](../backend/internal/infra/persistence/interaction/metrics_readers.go)、[router](../backend/internal/router/router.go) | 注入 Relation 仓储；保持获赞→粉丝→关注、accountID=0 不查库、有效账户统计部分三条 SQL、失败立即返回及原字段。Account 用例未迁 |
 | [FollowingReader](../backend/internal/infra/persistence/feed/following_reader.go) | 窄接口调用 Relation RequireActiveUser，将不存在映射 Feed 401、其他依赖失败映射安全 503；保持 JWT/session、私有头与独立游标。移除旧 social 和 GORM 判断依赖 |
 | [保留 HTTP 流程](../backend/internal/router/e2e_test.go) | 只切换 Follow 夹具的导入与 ORM 类型；提交前原 social/repo_test.go 和迁移后的 repo_test.go 均已不存在，保留该删除状态。当时为 7 文件/51 个函数，没有新增测试或扩展断言；未经用户明确指令不新增单元测试，也不恢复已删除测试 |
 
@@ -493,8 +493,8 @@ R3-E 提交后的生产源码盘点：Domain 20 文件、Application 20 文件�
 
 | 耦合位置 | 当前源码事实 | 收口归属 |
 | --- | --- | --- |
-| 作者读取 | [Account 作者适配](../backend/internal/infra/persistence/account/author_reader.go) 通过独立 PublicAccountReader 读取公开模型，供 Video/Feed 使用；批量仍委托原 GetByIDs | R3-F1 已提交；R4-D1 已消除旧 Video 作者输出类型，待 review |
-| 资料统计 | [Interaction 外层适配](../backend/internal/infra/persistence/interaction/legacy_reader.go) 直接返回 Domain Account ProfileMetrics；[Account 读取适配](../backend/internal/infra/persistence/account/legacy_reader.go) 保留错误转换 | R3-F1 已解除旧统计类型依赖，SQL 与统计顺序未变 |
+| 作者读取 | [Account 作者适配](../backend/internal/infra/persistence/account/author_reader.go) 通过独立 PublicAccountReader 读取公开模型，供 Video/Feed 使用；批量仍委托原 GetByIDs | R3-F1 已提交；R4-D1 已提交，旧 Video 作者输出类型已消除 |
+| 资料统计 | [Interaction 外层适配](../backend/internal/infra/persistence/interaction/metrics_readers.go) 直接返回 Domain Account ProfileMetrics；[Account 读取适配](../backend/internal/infra/persistence/account/legacy_reader.go) 保留错误转换 | R3-F1 已解除旧统计类型依赖，SQL 与统计顺序未变 |
 | 用户持久化 | [唯一 User ORM](../backend/internal/infra/persistence/account/user.go)、[仓储](../backend/internal/infra/persistence/account/repository.go)已归 Account Persistence，账户适配、router、sweeper 和夹具装配已切换 | R3-F2 已提交；用户清扫用例/调度留 R5；会话 ORM 已随 G2 归 Account |
 | 会话/JWT | [会话编排](../backend/internal/application/account/session_lifecycle.go)、[唯一 ORM](../backend/internal/infra/persistence/account/auth_session.go)与[会话仓储](../backend/internal/infra/persistence/account/session_repository.go)已归 Account；[JWT](../backend/internal/infra/jwt/jwt.go)/随机/哈希归 Infra，[HTTP 认证](../backend/internal/interfaces/http/auth/jwt.go)归 Interfaces | R3-G1/G2 已提交；旧 auth 与冗余转换已删除 |
 | 视频及后台 | Video 混合规则/ORM/DTO/SQL/文件实现；Worker 混合用例/投递，Sweeper 混合用例/调度/引用 SQL | R4、R5 分别按读、写、异步处理和清扫拆分 |
@@ -569,7 +569,7 @@ F2/G2 仅改变代码归属，ORM 名称保持 User/AuthSession、每张表只�
 | R4-A Video 读取 | R4-A1 已发布详情/公开列表、R4-A2 本人列表已提交；R4-A3 处理状态已提交，分别 review。Domain 建状态/公开读模型，Application 建读取与原视频游标，HTTP 分离 DTO，Infra 先委托原仓储 | 原 `/api/video` 全局/作者两种分页范围、原游标版本/范围、完整公开规则、作者占位、批量作者/互动查询与错误顺序；不与 Feed 游标混用 |
 | R4-B 草稿与媒体 | R4-B1 创建/读取草稿已提交；R4-B2 共享媒体规则/LocalStorage 已归 Domain/Infra、已提交，R4-B3 视频上传已提交为 `6bc4926`，未推送，R4-B4 封面上传已提交为 `fefc4c4`，未推送；小保存/删除/绑定端口保持独立 | 原 multipart 限制、文件头/扩展名、所属用户/草稿绑定、存储相对路径、original_name、保存→绑定→清理与失败补偿；不增加持久补偿、分片上传或共享存储新功能。Account 头像改接同一迁入的存储实现 |
 | R4-C 发布与删除 | R4-C1 草稿发布已提交为 `9f0a393`，未推送；R4-C2 丢弃草稿已提交为 `1048bc5`，未推送；R4-C3 已发布删除已提交为 `ff11f7f`，未推送。发布/丢弃使用原子写端口，已发布删除保留先读后条件软删除；取消 sweeper/同步删除另按下述计划实施 | draft→processing 与 video.process Outbox 同事务、202、processing/purging 不可逆性、锁/CAS、重复调用与软删除；不直接发 MQ 替代 Outbox |
-| R4-D Video 持久化及消费方 | D1 作者读取消费边界已实现、待 review；后续独立收口互动统计，再将唯一 Video/OutboxEvent ORM、CRUD/公开/Following 查询、Outbox/租约仓储按方法族和实际依赖闭包迁入 Infra | PublicVideoQuery/IsPublicVideo 的 SQL 与内存规则保持唯一对应；Following 活动观看者/关系/作者、缓存命中 MySQL 复核、投影/扫描与 SQL 预算不变；迁库方法族后原实现删除，不长期双份维护 |
+| R4-D Video 持久化及消费方 | D1 作者读取消费边界已提交；D2 互动统计消费边界已提交；后续将唯一 Video/OutboxEvent ORM、CRUD/公开/Following 查询、Outbox/租约仓储按方法族和实际依赖闭包迁入 Infra | PublicVideoQuery/IsPublicVideo 的 SQL 与内存规则保持唯一对应；Following 活动观看者/关系/作者、缓存命中 MySQL 复核、投影/扫描与 SQL 预算不变；迁库方法族后原实现删除，不长期双份维护 |
 | R5-A 视频 Relay/处理 | Relay 调度与消息转换归 Interfaces；领取/路由/处理用例归 Application，claim/confirm 状态持久化归 Infra。视频处理与卡片预热各自 review | published CAS 与 video.published Outbox 同事务、attempt/租约围栏、至少一次、Return/mandatory/confirm、确认重试发布后 ACK、有限退避/DLQ/重连；不将 dispatched 当消费完成 |
 | R5-B 已分层异步能力 | 互动 Relay、卡片预热、热度消费者逐一收口外层投递/ACK，Application 已有用例继续复用 | interaction_outbox 事务、去重/正负贡献/绝对到期及 coverage=unverified 不变；不附带 F4-B2 重建或开放 Hot |
 | R5-C Sweeper 路线调整 | 2026-10-08 用户要求将取消 sweeper 与请求内立即删除纳入计划；原四层清扫迁移暂缓，当前实现与运行语义保持 | 后续按下述独立行为变更计划覆盖四类回收职责、部分失败/重试、并发和现存数据，不能仅删除进程入口 |
@@ -831,7 +831,7 @@ Save 失败不绑定/删除；绑定失败仅在 storage 动态实现 MediaRemov
 
 未运行/未覆盖：任何 Go 测试、全量/race/JSON 测试命令，真实 HTTP/认证/请求体兼容、删除/重复删除/并发状态变化、事务/数据库故障、运行查询预算、媒体删除/关联清理、路径安全或 Worker/Sweeper 回归。目标 localhost:3306/feedsystem 本轮 TCP 拒绝连接（10061），schema_migrations/实际列/索引/数据状态未核对，未执行 SELECT/数据库写入或启动服务；不沿用历史元数据结果宣布本轮通过。源码、构建及连接检查不代表真实 HTTP、删除、事务、路径安全或 Sweeper 验收，第 5 节缺口保留。实施轮未暂存/提交并停止等待 review；2026-10-09 按用户“提交并继续”指令，提交轮源码未变，复核 282 个保护文件摘要、格式与 10 个精确暂存路径、git diff --cached --check 后提交为 `ff11f7f`，未推送，提交后工作树干净；沿用 C3 实施轮 vet/build，随后进入下述 R4-D1。取消 sweeper/请求内立即删除仍未实施。
 
-#### R4-D1：作者读取消费边界（已实现，待 review）
+#### R4-D1：作者读取消费边界（已提交）
 
 2026-10-09 按用户“提交并继续”指令先提交 R4-C3 为 `ff11f7f`（10 文件，未推送，提交后工作树干净），再从 R4-D 消费方范围中选取作者读取这个独立闭包。仅消除 Account→旧 Video 作者值、Video/Feed→旧作者端口的耦合；本模块不迁 ORM/仓储/SQL/Following 查询、互动统计或后台方法族，不取消 sweeper 或实施请求内立即删除。
 
@@ -852,7 +852,34 @@ Video 包装继续先委托再按原 readError 分类，保持优先级/文案/c
 
 未运行/未覆盖：任何 Go 测试/全量/race/JSON 测试命令，真实作者读取/查询预算/注销占位/数据库故障、HTTP/Feed/缓存/事务/媒体/路径安全/Worker/Sweeper 回归。目标 localhost:3306/feedsystem 本轮再次 TCP 拒绝连接（10061），schema_migrations/实际列/索引/数据状态未核对，无 SELECT/数据库写入或服务启动；不沿用历史元数据宣布通过。静态、构建和连接检查不代表业务运行验收，第 5 节缺口继续保留。
 
-本模块与必要三份文档未暂存/提交/推送，完成后停止等待 review。后续可独立收口互动统计消费边界，再按 ORM/仓储方法族的实际依赖闭包冻结迁移；这些后续子模块与 R5/R6 均未开始。
+以上记录 D1 实施轮的范围与缺口；实施轮完成后未暂存/提交并停止等待 review。2026-10-09 按用户“提交并继续”指令，提交轮源码未改，复核 283 个保护文件摘要、格式、9 个精确路径（含改名）、git diff --cached --name-only/--check 后提交为 `6455b91`（Git 计 8 文件），未推送，提交后工作树干净；沿用 D1 实施轮 vet/build，随后只进入下述 R4-D2。ORM/仓储方法族与 R5/R6 未开始。
+
+#### R4-D2：互动统计消费边界（已提交）
+
+2026-10-09 按用户“提交并继续”指令先提交 R4-D1 为 `6455b91`，再仅收口 Interaction→Video/Feed 的统计值与消费端口。既有 Domain Video/Interaction 计数类型分别保留；不迁 ORM/仓储方法族、公开/Following SQL、互动写入/Outbox/租约或后台用例，不取消 sweeper 或实施请求内立即删除。
+
+| 归属 | 当前实现与必要改动 |
+| --- | --- |
+| [Interaction 统计适配](../backend/internal/infra/persistence/interaction/metrics_readers.go) | 原 legacy_reader.go 改名；直接实现 Domain Video.EngagementReader，返回 Domain Video.EngagementCounts；原空批次提前返回、一次委托、逐项字段转换与错误传播保持；同文件 ProfileMetricsReader 全文未改 |
+| [Video 统计包装](../backend/internal/infra/persistence/video/enrichment.go) | 接收 Domain EngagementReader；保留构造器 nil 接口语义、一次委托/readError、独立 map 分配/逐项复制；移除冗余两个字段转换及旧包导入，作者适配未改 |
+| [Feed 统计端口](../backend/internal/infra/persistence/feed/legacy_reader.go) | 外层窄接口只改返回类型为 Domain Video.EngagementCounts，BatchGetStats 与其余编排全文不变；原空批次→依赖→一次委托→双重错误包装→FeedStat 转换保持 |
+| [旧计数值](../backend/internal/video/video_entity.go)与[旧端口](../backend/internal/video/video_service.go) | 全生产/保留测试引用核对后，仅删除旧 EngagementCounts/EngagementReader 和无用途 context 导入；完整具体 Repository、唯一 Video/Outbox ORM、错误/状态/游标/媒体与公开桥接保持 |
+
+原统计事实源与 [statistics.go](../backend/internal/infra/persistence/interaction/statistics.go) 全文/SQL 未改：空 ID 批次返回非 nil 空 map、不访问库；非空批次仍先可用性检查、为输入 ID 补零，再按原顺序执行点赞、评论两条 IN (...) GROUP BY video_id 查询。评论保持默认软删除作用域；原查询失败立即返回，不以零计数假装成功。适配不新增 ID 校验、去重、过滤、重试、预读/重读或额外查询。
+
+Interaction 适配仍先分配 map，再空批次返回；非空只委托一次原领域统计端口，原始错误直接传播，按原两字段将每项写入新 map。Video 包装继续先委托、失败复用原 readError 分类/优先级/文案/cause，成功仍另分配非 nil map 并逐项复制；不直传底层 map，不归一接口内 nil 指针或额外成功结果。现有计数值均只含 LikesCount/CommentsCount 两个 int64 字段。Video Application 的 ErrEngagementUnavailable 双重包装与 HTTP 503、Feed 的 ErrUnavailable 双重包装、空 map 和明确 DTO/JSON/omitempty 均未改。
+
+同文件资料统计仍按 accountID==0→获赞→粉丝→关注，失败立即返回，不增加可用性检查；Domain Account.ProfileMetrics、Account 外层 accountError、原三条统计查询与公开作用域保持。router 构造器装配、Video/Feed/Account Application 和 HTTP、所有 URL/认证/静态资源、D1 作者、C3 条件删除、上传/发布/丢弃、互动/关系写入及 Worker/Sweeper 保持。
+
+正常非空批次的源码统计预算仍一次端口调用、原两条聚合 SQL，空批次零查询；Video/Feed 原总预算保持。事务控制不计，这些是源码对照，不是运行预算验证。
+
+仅格式化本模块 5 个 Go 文件，backend 的 go vet ./...、go build ./... 均退出 0。93 项源码/依赖检查通过，58 个内层文件/10 包仅依赖标准库与允许的 Domain；283 个保护跟踪文件与本模块实施前字节摘要一致。5 个改动源码全文按允许的类型/导入/删除变换与 gofmt 对照，原统计/资料算法、错误/nil/map、Feed 其余全文、唯一 ORM/SQL/公开桥接和消费者保持；全部生产/保留测试引用、无旧计数类型/端口/别名或重复算法、文档链接/锚点/围栏和 git diff --check 核对通过。
+
+必要保留夹具适配：无。5 个测试文件、36 个测试函数与 5 个 TestMain 原样，无新增/恢复测试或断言修改，未运行。
+
+未运行/未覆盖：任何 Go 测试/全量/race/JSON 测试命令，真实统计/零计数/评论软删除/资料统计/查询预算/数据库故障、HTTP/Feed/缓存/事务/媒体/路径安全/Worker/Sweeper 回归。目标 localhost:3306/feedsystem 实施轮 TCP 拒绝连接（10061），schema_migrations/列/索引/数据状态未核对，无 SELECT/数据库写入或服务启动；不沿用历史元数据宣布通过。静态、构建和连接检查不代表真实业务验收，第 5 节缺口继续保留。
+
+实施轮完成后停止等待 review；2026-10-10 按用户“提交并分析下一步，并给出prompt”指令，提交轮 Go 源码未改，重新通过 backend 的 go vet ./...、go build ./...、93 项源码/依赖检查，283 个保护文件摘要与实施轮一致；复核 9 个精确路径（含改名）、格式、文档链接/锚点和暂存差异后提交 D2（提交标识见 Git 历史），未推送。本轮未运行 Go 测试、访问数据库或启动服务，仅分析下一步并在回复给出 prompt，未实施 ORM/仓储方法族或 R5/R6。后续持久化迁移仍先重新核对唯一 ORM、错误/值与旧 Repository/新适配的依赖闭包，按方法族独立冻结范围，不能为消除循环依赖一次迁完整 Repository、复制 SQL 或引入长期别名。
 
 #### 取消 Sweeper 与请求内立即删除（已纳入计划，未实施）
 
@@ -875,4 +902,4 @@ Video 包装继续先委托再按原 readError 分类，保持优先级/文案/c
 
 R4-D 的各仓储方法族在对应读写/后台用例切换后逐个归位，具体前后次序以依赖闭包重新冻结；允许未迁消费者经外层小适配复用唯一新实现，不复制 SQL。R5 迁完各用例后，cmd/worker.startWorkers 仍统一启动、取消、等待并关闭资源，不能为目录整齐拆散生命周期。
 
-最终目录以第 6.2 节为准，业务规则/用例/ORM/输入适配保持唯一。R4-B4 已提交为 `fefc4c4`，R4-C1 已提交为 `9f0a393`，均未推送；共享文档与 sweeper 取消计划提交为 `69d5305`。R4-C2 草稿丢弃已提交为 `1048bc5`，未推送；R4-C3 已提交为 `ff11f7f`，未推送；R4-D1 作者读取消费边界已实现、待 review，未暂存/提交。取消 sweeper 与请求内立即删除仍为独立未实施计划，原 R5-C 清扫归层暂缓；当前删除/回收语义保持，D1 之后的互动统计/ORM/仓储等 R4-D 子模块尚未实施。禁跑 Go 测试继续有效，源码/构建不代表真实兼容；目标库拒绝连接，元数据未核对，无写库/服务启动。
+最终目录以第 6.2 节为准，业务规则/用例/ORM/输入适配保持唯一。R4-B4 已提交为 `fefc4c4`，R4-C1 已提交为 `9f0a393`，均未推送；共享文档与 sweeper 取消计划提交为 `69d5305`。R4-C2 草稿丢弃已提交为 `1048bc5`，未推送；R4-C3 已提交为 `ff11f7f`，未推送；R4-D1 作者读取消费边界已提交为 `6455b91`，未推送；R4-D2 互动统计消费边界已提交，未推送（提交标识见 Git 历史）。取消 sweeper 与请求内立即删除仍为独立未实施计划，原 R5-C 清扫归层暂缓；当前删除/回收语义保持，D2 之后的 ORM/仓储等 R4-D 子模块尚未实施。禁跑 Go 测试继续有效，源码/构建不代表真实兼容；目标库拒绝连接，元数据未核对，无写库/服务启动。

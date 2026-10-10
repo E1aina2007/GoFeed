@@ -4,7 +4,6 @@ import (
 	"context"
 
 	domainvideo "gofeed/internal/domain/video"
-	legacyvideo "gofeed/internal/video"
 )
 
 type authorReader struct {
@@ -39,10 +38,10 @@ func (r *authorReader) GetPublicAuthors(ctx context.Context, ids []uint) (map[ui
 }
 
 type engagementReader struct {
-	engagements legacyvideo.EngagementReader
+	engagements domainvideo.EngagementReader
 }
 
-func NewEngagementReader(engagements legacyvideo.EngagementReader) domainvideo.EngagementReader {
+func NewEngagementReader(engagements domainvideo.EngagementReader) domainvideo.EngagementReader {
 	if engagements == nil {
 		return nil
 	}
@@ -56,7 +55,7 @@ func (r *engagementReader) GetEngagementCounts(ctx context.Context, ids []uint) 
 	}
 	counts := make(map[uint]domainvideo.EngagementCounts, len(rows))
 	for id, row := range rows {
-		counts[id] = domainvideo.EngagementCounts{LikesCount: row.LikesCount, CommentsCount: row.CommentsCount}
+		counts[id] = row
 	}
 	return counts, nil
 }

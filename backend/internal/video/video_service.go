@@ -1,7 +1,6 @@
 package video
 
 import (
-	"context"
 	"errors"
 
 	domainvideo "gofeed/internal/domain/video"
@@ -22,11 +21,6 @@ var (
 	ErrDraftNotWritable      = errors.New("video draft is not writable")
 	ErrDraftIncomplete       = errors.New("video draft is incomplete")
 )
-
-// EngagementReader 是公开视频响应所需的互动统计能力
-type EngagementReader interface {
-	GetEngagementCounts(ctx context.Context, videoIDs []uint) (map[uint]EngagementCounts, error)
-}
 
 // filterPublicVideos 丢弃不满足公开响应契约的实体
 // 公开列表宁可少返回一项，也不能把缺媒体或缺发布时间的记录暴露给客户端

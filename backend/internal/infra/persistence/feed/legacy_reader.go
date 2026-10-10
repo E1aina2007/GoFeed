@@ -19,7 +19,7 @@ type AuthorReader interface {
 }
 
 type EngagementReader interface {
-	GetEngagementCounts(ctx context.Context, videoIDs []uint) (map[uint]video.EngagementCounts, error)
+	GetEngagementCounts(ctx context.Context, videoIDs []uint) (map[uint]domainvideo.EngagementCounts, error)
 }
 
 // Repository 适配既有仓储和批量读能力，保留 SQL 与公开过滤的唯一实现

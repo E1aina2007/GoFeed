@@ -116,9 +116,3 @@ type Cursor struct {
 	PublishedAt time.Time  `json:"p"`
 	ID          uint       `json:"i"`
 }
-
-// EngagementCounts 表示从互动关系表读取的当前点赞和评论数量
-type EngagementCounts struct {
-	LikesCount    int64
-	CommentsCount int64
-}
