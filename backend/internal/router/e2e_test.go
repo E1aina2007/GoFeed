@@ -38,6 +38,7 @@ import (
 	infrafeed "gofeed/internal/infra/persistence/feed"
 	infrainteraction "gofeed/internal/infra/persistence/interaction"
 	infrarelation "gofeed/internal/infra/persistence/relation"
+	infravideo "gofeed/internal/infra/persistence/video"
 	"gofeed/internal/middleware/cache"
 	"gofeed/internal/testutil"
 	videoModel "gofeed/internal/video"
@@ -313,9 +314,9 @@ func publishDraft(t *testing.T, gdb *gorm.DB, client *http.Client, base, token s
 // 预期效果：依赖发布后公开可见的既有用例保持原有验收语义
 func completeProcessing(t *testing.T, gdb *gorm.DB, videoID uint) {
 	t.Helper()
-	result := gdb.Model(&videoModel.Video{}).
-		Where("id = ? AND status = ?", videoID, videoModel.VideoStatusProcessing).
-		Update("status", videoModel.VideoStatusPublished)
+	result := gdb.Model(&infravideo.Video{}).
+		Where("id = ? AND status = ?", videoID, infravideo.VideoStatusProcessing).
+		Update("status", infravideo.VideoStatusPublished)
 	if result.Error != nil || result.RowsAffected != 1 {
 		t.Fatalf("模拟处理完成失败 rows=%d err=%v", result.RowsAffected, result.Error)
 	}
@@ -378,7 +379,7 @@ func TestVideoEndToEndFlow(t *testing.T) {
 	// 发布为异步受理，响应是 processing 草稿形体；媒体相对路径已在上传响应中校验
 	item := publishDraft(t, gdb, client, base, sess.AccessToken, draft.ID, http.StatusAccepted)
 	completeProcessing(t, gdb, item.ID)
-	if item.ID == 0 || item.Status != videoModel.VideoStatusProcessing {
+	if item.ID == 0 || item.Status != infravideo.VideoStatusProcessing {
 		t.Fatalf("发布响应应为处理中草稿 got=%+v", item)
 	}
 
@@ -496,14 +497,14 @@ func TestPublishRollsBackWhenOutboxFails(t *testing.T) {
 	doJSON(t, client, http.MethodPost, fmt.Sprintf("%s/api/video/auth/drafts/%d/publish", base, draft.ID), sess.AccessToken, nil, http.StatusInternalServerError, &errBody)
 	faults.disarm()
 
-	var row videoModel.Video
+	var row infravideo.Video
 	if err := gdb.First(&row, draft.ID).Error; err != nil {
 		t.Fatalf("读取回滚行失败: %v", err)
 	}
-	if row.Status != videoModel.VideoStatusDraft || row.PublishedAt != nil {
+	if row.Status != infravideo.VideoStatusDraft || row.PublishedAt != nil {
 		t.Fatalf("outbox 失败应回滚为 draft got=%+v", row)
 	}
-	var events []videoModel.OutboxEvent
+	var events []infravideo.OutboxEvent
 	if err := gdb.Where("video_id = ?", draft.ID).Find(&events).Error; err != nil {
 		t.Fatalf("读取 outbox 事件失败: %v", err)
 	}
@@ -954,10 +955,10 @@ func newFollowingHTTPEnv(t *testing.T) *followingHTTPEnv {
 
 // 测试目标：为关注集合写入历史公开视频
 // 预期效果：媒体展示字段完整，发布时间早于当前关注时间且视频 ID 独立于作者 ID
-func (e *followingHTTPEnv) video(id, author uint) videoModel.Video {
+func (e *followingHTTPEnv) video(id, author uint) infravideo.Video {
 	e.t.Helper()
 	when := feedBaseTime
-	row := videoModel.Video{ID: id, AuthorID: author, Title: fmt.Sprintf("关注视频%d", id), Description: "历史视频", Status: videoModel.VideoStatusPublished, PublishedAt: &when,
+	row := infravideo.Video{ID: id, AuthorID: author, Title: fmt.Sprintf("关注视频%d", id), Description: "历史视频", Status: infravideo.VideoStatusPublished, PublishedAt: &when,
 		PlayURL: "/static/videos/a.mp4", PlayFileName: "a.mp4", PlayOriginalName: "原始 视频.mp4", CoverURL: "/static/covers/a.png", CoverFileName: "a.png", CoverOriginalName: "原始 封面.png"}
 	if err := e.gdb.Create(&row).Error; err != nil {
 		e.t.Fatal(err)
@@ -997,7 +998,7 @@ func TestFollowingFeedMySQLPagingAndQueryBudget(t *testing.T) {
 	e.video(103, 20)
 	e.video(999, 40)
 	private := e.video(98, 20)
-	if err := e.gdb.Model(&private).UpdateColumn("status", videoModel.VideoStatusProcessing).Error; err != nil {
+	if err := e.gdb.Model(&private).UpdateColumn("status", infravideo.VideoStatusProcessing).Error; err != nil {
 		t.Fatal(err)
 	}
 	e.capture.reset()
@@ -1062,7 +1063,7 @@ func TestFollowingFeedMySQLVisibilityAndEmptyPage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for i, state := range []string{videoModel.VideoStatusDraft, videoModel.VideoStatusProcessing, videoModel.VideoStatusRejected, videoModel.VideoStatusPurging} {
+	for i, state := range []string{infravideo.VideoStatusDraft, infravideo.VideoStatusProcessing, infravideo.VideoStatusRejected, infravideo.VideoStatusPurging} {
 		row := e.video(uint(300+i), 20)
 		if err := e.gdb.Model(&row).UpdateColumn("status", state).Error; err != nil {
 			t.Fatal(err)
@@ -1126,7 +1127,7 @@ func TestFollowingFeedMySQLDynamicRelations(t *testing.T) {
 	if page := e.get("", e.viewer.AccessToken, 200); !reflect.DeepEqual(followingIDs(page), []uint{101}) {
 		t.Fatalf("作者注销页=%+v", page)
 	}
-	if err := e.gdb.Delete(&videoModel.Video{}, 101).Error; err != nil {
+	if err := e.gdb.Delete(&infravideo.Video{}, 101).Error; err != nil {
 		t.Fatal(err)
 	}
 	if page := e.get("", e.viewer.AccessToken, 200); len(page.Items) != 0 {

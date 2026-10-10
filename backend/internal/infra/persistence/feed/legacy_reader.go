@@ -6,12 +6,12 @@ import (
 
 	domainfeed "gofeed/internal/domain/feed"
 	domainvideo "gofeed/internal/domain/video"
-	"gofeed/internal/video"
+	infravideo "gofeed/internal/infra/persistence/video"
 )
 
 // 以下窄接口只存在于外层适配器，既有实体不会泄漏到 Feed 的 Domain/Application
 type PublishedVideoReader interface {
-	GetPublishedVideoList(ctx context.Context, authorID uint, cursor *domainvideo.ListPosition, limit int) ([]video.Video, error)
+	GetPublishedVideoList(ctx context.Context, authorID uint, cursor *domainvideo.ListPosition, limit int) ([]infravideo.Video, error)
 }
 
 type AuthorReader interface {
@@ -53,7 +53,7 @@ func (r *Repository) ListTimelinePage(ctx context.Context, cursor *domainfeed.Ti
 		Cards: make(map[uint]domainfeed.FeedCard, len(rows)),
 	}
 	for _, row := range rows {
-		if !video.IsPublicVideo(row) {
+		if !infravideo.IsPublicVideo(row) {
 			continue
 		}
 		page.Items = append(page.Items, domainfeed.FeedPageItem{

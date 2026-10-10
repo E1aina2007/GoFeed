@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	domainvideo "gofeed/internal/domain/video"
+	infravideo "gofeed/internal/infra/persistence/video"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -25,13 +26,6 @@ func WithPublishedEvents(enabled bool) RepositoryOption {
 	return func(r *Repository) { r.publishedEvents = enabled }
 }
 
-var ErrInvalidDraftPurgeLease = errors.New("invalid draft purge lease")
-
-// MaxPublishedVideoBatchSize 包含列表上限与一条下一页探测记录
-const MaxPublishedVideoBatchSize = MaxListLimit + 1
-
-var ErrInvalidPublishedVideoBatch = errors.New("invalid published video batch")
-
 func NewRepository(db *gorm.DB, options ...RepositoryOption) *Repository {
 	r := &Repository{db: db}
 	for _, option := range options {
@@ -43,41 +37,41 @@ func NewRepository(db *gorm.DB, options ...RepositoryOption) *Repository {
 }
 
 // Create 写入一条视频记录
-func (r *Repository) Create(ctx context.Context, video *Video) error {
+func (r *Repository) Create(ctx context.Context, video *infravideo.Video) error {
 	return r.db.WithContext(ctx).Create(video).Error
 }
 
 // UpdateDraftMedia 将已保存的媒体元数据写入当前用户的可写草稿
 func (r *Repository) UpdateDraftMedia(ctx context.Context, draftID, authorID uint, kind domainvideo.MediaKind, saved domainvideo.SavedFile, originalName string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var draft Video
+		var draft infravideo.Video
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&draft, draftID).Error; err != nil {
 			return err
 		}
 		if draft.AuthorID != authorID {
-			return ErrNotAuthor
+			return infravideo.ErrNotAuthor
 		}
-		if draft.Status != VideoStatusDraft {
-			return ErrDraftNotWritable
+		if draft.Status != infravideo.VideoStatusDraft {
+			return infravideo.ErrDraftNotWritable
 		}
 
 		switch kind {
 		case domainvideo.MediaVideo:
 			if draft.PlayURL != "" {
-				return ErrDraftNotWritable
+				return infravideo.ErrDraftNotWritable
 			}
 			draft.PlayURL = saved.PublicURL
 			draft.PlayFileName = saved.FileName
 			draft.PlayOriginalName = originalName
 		case domainvideo.MediaCover:
 			if draft.CoverURL != "" {
-				return ErrDraftNotWritable
+				return infravideo.ErrDraftNotWritable
 			}
 			draft.CoverURL = saved.PublicURL
 			draft.CoverFileName = saved.FileName
 			draft.CoverOriginalName = originalName
 		default:
-			return ErrInvalidMedia
+			return infravideo.ErrInvalidMedia
 		}
 		return tx.Save(&draft).Error
 	})
@@ -86,54 +80,54 @@ func (r *Repository) UpdateDraftMedia(ctx context.Context, draftID, authorID uin
 // UpdateDraftPublication 原子验证草稿完整性并转入异步处理状态
 // 同一事务内完成条件更新 draft → processing、写入发布时刻与 outbox 事件；
 // processing 行不满足公开不变量，worker 校验通过后才会 CAS 为 published
-func (r *Repository) UpdateDraftPublication(ctx context.Context, draftID, authorID uint) (*Video, error) {
+func (r *Repository) UpdateDraftPublication(ctx context.Context, draftID, authorID uint) (*infravideo.Video, error) {
 	if draftID == 0 || authorID == 0 {
-		return nil, ErrInvalidVideoID
+		return nil, infravideo.ErrInvalidVideoID
 	}
 
-	var processing Video
+	var processing infravideo.Video
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&processing, draftID).Error; err != nil {
 			return err
 		}
 		if processing.AuthorID != authorID {
-			return ErrNotAuthor
+			return infravideo.ErrNotAuthor
 		}
-		if processing.Status != VideoStatusDraft {
-			return ErrDraftNotWritable
+		if processing.Status != infravideo.VideoStatusDraft {
+			return infravideo.ErrDraftNotWritable
 		}
 		if processing.PlayURL == "" || processing.PlayFileName == "" || processing.PlayOriginalName == "" ||
 			processing.CoverURL == "" || processing.CoverFileName == "" || processing.CoverOriginalName == "" {
-			return ErrDraftIncomplete
+			return infravideo.ErrDraftIncomplete
 		}
 
 		publishedAt := time.Now()
 		// 条件更新保证 draft → processing 的 CAS 语义，并发或重复发布在此失败
-		result := tx.Model(&Video{}).
-			Where("id = ? AND status = ?", draftID, VideoStatusDraft).
+		result := tx.Model(&infravideo.Video{}).
+			Where("id = ? AND status = ?", draftID, infravideo.VideoStatusDraft).
 			Updates(map[string]any{
-				"status":       VideoStatusProcessing,
+				"status":       infravideo.VideoStatusProcessing,
 				"published_at": publishedAt,
 			})
 		if result.Error != nil {
 			return result.Error
 		}
 		if result.RowsAffected == 0 {
-			return ErrDraftNotWritable
+			return infravideo.ErrDraftNotWritable
 		}
-		processing.Status = VideoStatusProcessing
+		processing.Status = infravideo.VideoStatusProcessing
 		processing.PublishedAt = &publishedAt
 
-		return tx.Create(&OutboxEvent{
+		return tx.Create(&infravideo.OutboxEvent{
 			EventID:   uuid.NewString(),
 			VideoID:   processing.ID,
-			EventType: VideoProcessEventType,
-			Status:    OutboxEventStatusPending,
+			EventType: infravideo.VideoProcessEventType,
+			Status:    infravideo.OutboxEventStatusPending,
 		}).Error
 	})
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrVideoNotFound
+			return nil, infravideo.ErrVideoNotFound
 		}
 		return nil, err
 	}
@@ -142,37 +136,37 @@ func (r *Repository) UpdateDraftPublication(ctx context.Context, draftID, author
 
 // UpdateDraftDiscard 原子将当前作者的草稿或拒绝视频转入不可逆清扫状态
 // 已处于 purging 的记录视为已接受清理，支持客户端因响应丢失而重试
-func (r *Repository) UpdateDraftDiscard(ctx context.Context, draftID, authorID uint) (*Video, error) {
+func (r *Repository) UpdateDraftDiscard(ctx context.Context, draftID, authorID uint) (*infravideo.Video, error) {
 	if draftID == 0 || authorID == 0 {
-		return nil, ErrInvalidVideoID
+		return nil, infravideo.ErrInvalidVideoID
 	}
 
-	var draft Video
+	var draft infravideo.Video
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&draft, draftID).Error; err != nil {
 			return err
 		}
 		if draft.AuthorID != authorID {
-			return ErrNotAuthor
+			return infravideo.ErrNotAuthor
 		}
 
 		switch draft.Status {
-		case VideoStatusDraft, VideoStatusRejected:
-			draft.Status = VideoStatusPurging
+		case infravideo.VideoStatusDraft, infravideo.VideoStatusRejected:
+			draft.Status = infravideo.VideoStatusPurging
 			draft.PurgeToken = nil
 			draft.PurgeLeaseUntil = nil
 			draft.PlayPurgedAt = nil
 			draft.CoverPurgedAt = nil
 			return tx.Save(&draft).Error
-		case VideoStatusPurging:
+		case infravideo.VideoStatusPurging:
 			return nil
 		default:
-			return ErrDraftNotWritable
+			return infravideo.ErrDraftNotWritable
 		}
 	})
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrVideoNotFound
+			return nil, infravideo.ErrVideoNotFound
 		}
 		return nil, err
 	}
@@ -180,12 +174,12 @@ func (r *Repository) UpdateDraftDiscard(ctx context.Context, draftID, authorID u
 }
 
 // GetByID 查询任意状态的视频（GORM 自动过滤已软删除记录）
-func (r *Repository) GetByID(ctx context.Context, id uint) (*Video, error) {
+func (r *Repository) GetByID(ctx context.Context, id uint) (*infravideo.Video, error) {
 	if id == 0 {
 		return nil, gorm.ErrRecordNotFound
 	}
 
-	var video Video
+	var video infravideo.Video
 	if err := r.db.WithContext(ctx).First(&video, id).Error; err != nil {
 		return nil, err
 	}
@@ -193,13 +187,13 @@ func (r *Repository) GetByID(ctx context.Context, id uint) (*Video, error) {
 }
 
 // 查询已发布视频详情
-func (r *Repository) GetPublishedByID(ctx context.Context, id uint) (*Video, error) {
+func (r *Repository) GetPublishedByID(ctx context.Context, id uint) (*infravideo.Video, error) {
 	if id == 0 {
 		return nil, gorm.ErrRecordNotFound
 	}
 
-	var video Video
-	err := PublicVideoQuery(r.db.WithContext(ctx)).First(&video, id).Error
+	var video infravideo.Video
+	err := infravideo.PublicVideoQuery(r.db.WithContext(ctx)).First(&video, id).Error
 	if err != nil {
 		return nil, err
 	}
@@ -208,8 +202,8 @@ func (r *Repository) GetPublishedByID(ctx context.Context, id uint) (*Video, err
 
 // GetPublishedByIDs 按去重后的有效 ID 一次批量读取当前公开视频
 // 未找到、未发布、已软删除或媒体不完整的视频不返回，结果顺序不保证与输入一致
-func (r *Repository) GetPublishedByIDs(ctx context.Context, ids []uint) ([]Video, error) {
-	capacity := min(len(ids), MaxPublishedVideoBatchSize)
+func (r *Repository) GetPublishedByIDs(ctx context.Context, ids []uint) ([]infravideo.Video, error) {
+	capacity := min(len(ids), infravideo.MaxPublishedVideoBatchSize)
 	queried := make([]uint, 0, capacity)
 	seen := make(map[uint]struct{}, capacity)
 	for _, id := range ids {
@@ -219,17 +213,17 @@ func (r *Repository) GetPublishedByIDs(ctx context.Context, ids []uint) ([]Video
 		if _, ok := seen[id]; ok {
 			continue
 		}
-		if len(queried) == MaxPublishedVideoBatchSize {
-			return nil, ErrInvalidPublishedVideoBatch
+		if len(queried) == infravideo.MaxPublishedVideoBatchSize {
+			return nil, infravideo.ErrInvalidPublishedVideoBatch
 		}
 		seen[id] = struct{}{}
 		queried = append(queried, id)
 	}
-	videos := make([]Video, 0, len(queried))
+	videos := make([]infravideo.Video, 0, len(queried))
 	if len(queried) == 0 {
 		return videos, nil
 	}
-	if err := PublicVideoQuery(r.db.WithContext(ctx)).
+	if err := infravideo.PublicVideoQuery(r.db.WithContext(ctx)).
 		Select("id", "author_id", "title", "description", "status", "published_at", "deleted_at",
 			"play_url", "play_file_name", "play_original_name", "cover_url", "cover_file_name", "cover_original_name").
 		Where("id IN ?", queried).
@@ -240,12 +234,12 @@ func (r *Repository) GetPublishedByIDs(ctx context.Context, ids []uint) ([]Video
 }
 
 // 按发布时间查询已发布视频
-func (r *Repository) GetPublishedVideoList(ctx context.Context, authorID uint, cursor *domainvideo.ListPosition, limit int) ([]Video, error) {
+func (r *Repository) GetPublishedVideoList(ctx context.Context, authorID uint, cursor *domainvideo.ListPosition, limit int) ([]infravideo.Video, error) {
 	if limit <= 0 {
-		return []Video{}, nil
+		return []infravideo.Video{}, nil
 	}
 
-	query := PublicVideoQuery(r.db.WithContext(ctx))
+	query := infravideo.PublicVideoQuery(r.db.WithContext(ctx))
 	if authorID != 0 {
 		query = query.Where("author_id = ?", authorID)
 	}
@@ -258,7 +252,7 @@ func (r *Repository) GetPublishedVideoList(ctx context.Context, authorID uint, c
 		)
 	}
 
-	var videos []Video
+	var videos []infravideo.Video
 	if err := query.Order("published_at DESC, id DESC").Limit(limit).Find(&videos).Error; err != nil {
 		return nil, err
 	}
@@ -273,7 +267,7 @@ func (r *Repository) GetPublishedVideoCountByAuthor(ctx context.Context, authorI
 	}
 
 	var count int64
-	err := PublicVideoQuery(r.db.WithContext(ctx)).
+	err := infravideo.PublicVideoQuery(r.db.WithContext(ctx)).
 		Where("author_id = ?", authorID).
 		Count(&count).Error
 	return count, err
@@ -281,12 +275,12 @@ func (r *Repository) GetPublishedVideoCountByAuthor(ctx context.Context, authorI
 
 // GetAuthorVideoList 按作者查询已发布视频，用于作者自己的管理列表
 // 草稿没有完整媒体，也没有单独的管理响应结构，不能混入 VideoItem 列表
-func (r *Repository) GetAuthorVideoList(ctx context.Context, authorID uint, cursor *domainvideo.ListPosition, limit int) ([]Video, error) {
+func (r *Repository) GetAuthorVideoList(ctx context.Context, authorID uint, cursor *domainvideo.ListPosition, limit int) ([]infravideo.Video, error) {
 	if authorID == 0 || limit <= 0 {
-		return []Video{}, nil
+		return []infravideo.Video{}, nil
 	}
 
-	query := PublicVideoQuery(r.db.WithContext(ctx)).Where("author_id = ?", authorID)
+	query := infravideo.PublicVideoQuery(r.db.WithContext(ctx)).Where("author_id = ?", authorID)
 	if cursor != nil {
 		query = query.Where(
 			"(published_at < ?) OR (published_at = ? AND id < ?)",
@@ -296,7 +290,7 @@ func (r *Repository) GetAuthorVideoList(ctx context.Context, authorID uint, curs
 		)
 	}
 
-	var videos []Video
+	var videos []infravideo.Video
 	if err := query.Order("published_at DESC, id DESC").Limit(limit).Find(&videos).Error; err != nil {
 		return nil, err
 	}
@@ -311,9 +305,9 @@ func (r *Repository) GetRecoverableDraftPurgeList(ctx context.Context, limit int
 	}
 
 	var ids []uint
-	err := r.db.WithContext(ctx).Model(&Video{}).
+	err := r.db.WithContext(ctx).Model(&infravideo.Video{}).
 		Where("deleted_at IS NULL").
-		Where("status = ? AND (purge_lease_until IS NULL OR purge_lease_until <= NOW(3))", VideoStatusPurging).
+		Where("status = ? AND (purge_lease_until IS NULL OR purge_lease_until <= NOW(3))", infravideo.VideoStatusPurging).
 		Order("purge_lease_until ASC, created_at ASC, id ASC").
 		Limit(limit).
 		Pluck("id", &ids).Error
@@ -327,13 +321,13 @@ func (r *Repository) GetExpiredDraftPurgeList(ctx context.Context, cutoff time.T
 	}
 
 	var ids []uint
-	err := r.db.WithContext(ctx).Model(&Video{}).
+	err := r.db.WithContext(ctx).Model(&infravideo.Video{}).
 		Where("deleted_at IS NULL").
 		Where(
 			"(status = ? AND created_at <= ?) OR (status = ? AND rejected_at IS NOT NULL AND rejected_at <= ?)",
-			VideoStatusDraft,
+			infravideo.VideoStatusDraft,
 			cutoff,
-			VideoStatusRejected,
+			infravideo.VideoStatusRejected,
 			cutoff,
 		).
 		Order("COALESCE(rejected_at, created_at) ASC, id ASC").
@@ -344,7 +338,7 @@ func (r *Repository) GetExpiredDraftPurgeList(ctx context.Context, cutoff time.T
 
 // UpdateDraftPurgeClaim 通过条件更新取得草稿清扫租约，并在同一事务内读取当前媒体快照
 // 同一时刻只有一个 token 能修改已认领草稿；过期租约可由后续 sweeper 接管
-func (r *Repository) UpdateDraftPurgeClaim(ctx context.Context, id uint, cutoff time.Time, token string, lease time.Duration) (*DraftPurgeClaim, bool, error) {
+func (r *Repository) UpdateDraftPurgeClaim(ctx context.Context, id uint, cutoff time.Time, token string, lease time.Duration) (*infravideo.DraftPurgeClaim, bool, error) {
 	leaseInterval, err := draftPurgeLeaseInterval(lease)
 	if err != nil {
 		return nil, false, err
@@ -353,20 +347,20 @@ func (r *Repository) UpdateDraftPurgeClaim(ctx context.Context, id uint, cutoff 
 		return nil, false, nil
 	}
 
-	var claim *DraftPurgeClaim
+	var claim *infravideo.DraftPurgeClaim
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&Video{}).
+		result := tx.Model(&infravideo.Video{}).
 			Where("id = ? AND deleted_at IS NULL", id).
 			Where(
 				"(status = ? AND created_at <= ?) OR (status = ? AND rejected_at IS NOT NULL AND rejected_at <= ?) OR (status = ? AND (purge_lease_until IS NULL OR purge_lease_until <= NOW(3)))",
-				VideoStatusDraft,
+				infravideo.VideoStatusDraft,
 				cutoff,
-				VideoStatusRejected,
+				infravideo.VideoStatusRejected,
 				cutoff,
-				VideoStatusPurging,
+				infravideo.VideoStatusPurging,
 			).
 			Updates(map[string]any{
-				"status":            VideoStatusPurging,
+				"status":            infravideo.VideoStatusPurging,
 				"purge_token":       token,
 				"purge_lease_until": leaseInterval,
 			})
@@ -377,11 +371,11 @@ func (r *Repository) UpdateDraftPurgeClaim(ctx context.Context, id uint, cutoff 
 			return nil
 		}
 
-		var draft Video
-		if err := tx.Where("id = ? AND status = ? AND purge_token = ?", id, VideoStatusPurging, token).First(&draft).Error; err != nil {
+		var draft infravideo.Video
+		if err := tx.Where("id = ? AND status = ? AND purge_token = ?", id, infravideo.VideoStatusPurging, token).First(&draft).Error; err != nil {
 			return err
 		}
-		claim = &DraftPurgeClaim{
+		claim = &infravideo.DraftPurgeClaim{
 			DraftID:       draft.ID,
 			Token:         token,
 			PlayURL:       draft.PlayURL,
@@ -407,8 +401,8 @@ func (r *Repository) UpdateDraftPurgeLease(ctx context.Context, id uint, token s
 		return false, nil
 	}
 
-	result := r.db.WithContext(ctx).Model(&Video{}).
-		Where("id = ? AND status = ? AND purge_token = ? AND purge_lease_until > NOW(3)", id, VideoStatusPurging, token).
+	result := r.db.WithContext(ctx).Model(&infravideo.Video{}).
+		Where("id = ? AND status = ? AND purge_token = ? AND purge_lease_until > NOW(3)", id, infravideo.VideoStatusPurging, token).
 		Update("purge_lease_until", leaseInterval)
 	if result.Error != nil {
 		return false, result.Error
@@ -418,7 +412,7 @@ func (r *Repository) UpdateDraftPurgeLease(ctx context.Context, id uint, token s
 
 // UpdateDraftMediaPurge 记录一个媒体槽位已被删除，并续租以保护后续槽位和硬删除
 // false 表示 token 已失效，调用方不得继续操作该草稿
-func (r *Repository) UpdateDraftMediaPurge(ctx context.Context, id uint, token string, kind MediaKind, lease time.Duration) (bool, error) {
+func (r *Repository) UpdateDraftMediaPurge(ctx context.Context, id uint, token string, kind infravideo.MediaKind, lease time.Duration) (bool, error) {
 	leaseInterval, err := draftPurgeLeaseInterval(lease)
 	if err != nil {
 		return false, err
@@ -432,18 +426,18 @@ func (r *Repository) UpdateDraftMediaPurge(ctx context.Context, id uint, token s
 		purgedColumn string
 	)
 	switch kind {
-	case MediaVideo:
+	case infravideo.MediaVideo:
 		urlColumn = "play_url"
 		purgedColumn = "play_purged_at"
-	case MediaCover:
+	case infravideo.MediaCover:
 		urlColumn = "cover_url"
 		purgedColumn = "cover_purged_at"
 	default:
-		return false, ErrInvalidMedia
+		return false, infravideo.ErrInvalidMedia
 	}
 
-	result := r.db.WithContext(ctx).Model(&Video{}).
-		Where("id = ? AND status = ? AND purge_token = ? AND purge_lease_until > NOW(3)", id, VideoStatusPurging, token).
+	result := r.db.WithContext(ctx).Model(&infravideo.Video{}).
+		Where("id = ? AND status = ? AND purge_token = ? AND purge_lease_until > NOW(3)", id, infravideo.VideoStatusPurging, token).
 		Where(urlColumn + " <> ''").
 		Updates(map[string]any{
 			purgedColumn:        gorm.Expr("COALESCE(" + purgedColumn + ", NOW(3))"),
@@ -462,10 +456,10 @@ func (r *Repository) RemovePurgedDraft(ctx context.Context, id uint, token strin
 	}
 	result := r.db.WithContext(ctx).Unscoped().
 		Where("id = ? AND deleted_at IS NULL", id).
-		Where("status = ? AND purge_token = ? AND purge_lease_until > NOW(3)", VideoStatusPurging, token).
+		Where("status = ? AND purge_token = ? AND purge_lease_until > NOW(3)", infravideo.VideoStatusPurging, token).
 		Where("(play_url = '' OR play_purged_at IS NOT NULL)").
 		Where("(cover_url = '' OR cover_purged_at IS NOT NULL)").
-		Delete(&Video{})
+		Delete(&infravideo.Video{})
 	if result.Error != nil {
 		return false, result.Error
 	}
@@ -475,7 +469,7 @@ func (r *Repository) RemovePurgedDraft(ctx context.Context, id uint, token strin
 func draftPurgeLeaseInterval(lease time.Duration) (clause.Expr, error) {
 	expr, ok := databaseLeaseInterval(lease)
 	if !ok {
-		return clause.Expr{}, ErrInvalidDraftPurgeLease
+		return clause.Expr{}, infravideo.ErrInvalidDraftPurgeLease
 	}
 	return expr, nil
 }
@@ -519,8 +513,8 @@ func (r *Repository) DeletePublishedVideo(ctx context.Context, id, authorID uint
 		return gorm.ErrRecordNotFound
 	}
 	result := r.db.WithContext(ctx).
-		Where("id = ? AND author_id = ? AND status = ?", id, authorID, VideoStatusPublished).
-		Delete(&Video{})
+		Where("id = ? AND author_id = ? AND status = ?", id, authorID, infravideo.VideoStatusPublished).
+		Delete(&infravideo.Video{})
 	if result.Error != nil {
 		return result.Error
 	}
@@ -531,10 +525,10 @@ func (r *Repository) DeletePublishedVideo(ctx context.Context, id, authorID uint
 }
 
 // GetExpiredDeletedVideoList 返回已软删除且宽限期届满的视频，供 sweeper 在删除媒体文件前读取
-func (r *Repository) GetExpiredDeletedVideoList(ctx context.Context, cutoff time.Time) ([]Video, error) {
-	var videos []Video
+func (r *Repository) GetExpiredDeletedVideoList(ctx context.Context, cutoff time.Time) ([]infravideo.Video, error) {
+	var videos []infravideo.Video
 	if err := r.db.WithContext(ctx).Unscoped().
-		Where("status = ? AND deleted_at IS NOT NULL AND deleted_at <= ?", VideoStatusPublished, cutoff).
+		Where("status = ? AND deleted_at IS NOT NULL AND deleted_at <= ?", infravideo.VideoStatusPublished, cutoff).
 		Find(&videos).Error; err != nil {
 		return nil, err
 	}
@@ -548,8 +542,8 @@ func (r *Repository) RemoveExpiredVideo(ctx context.Context, id uint, cutoff tim
 		return false, nil
 	}
 	result := r.db.WithContext(ctx).Unscoped().
-		Where("id = ? AND status = ? AND deleted_at IS NOT NULL AND deleted_at <= ?", id, VideoStatusPublished, cutoff).
-		Delete(&Video{})
+		Where("id = ? AND status = ? AND deleted_at IS NOT NULL AND deleted_at <= ?", id, infravideo.VideoStatusPublished, cutoff).
+		Delete(&infravideo.Video{})
 	if result.Error != nil {
 		return false, result.Error
 	}

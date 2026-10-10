@@ -6,7 +6,7 @@ import (
 	"time"
 
 	domaininteraction "gofeed/internal/domain/interaction"
-	"gofeed/internal/video"
+	infravideo "gofeed/internal/infra/persistence/video"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -42,7 +42,7 @@ func (r *Repository) RequirePublicVideo(ctx context.Context, videoID uint) error
 		return domaininteraction.ErrVideoNotFound
 	}
 	var count int64
-	if err := video.PublicVideoQuery(r.db.WithContext(ctx)).
+	if err := infravideo.PublicVideoQuery(r.db.WithContext(ctx)).
 		Where(clause.Eq{Column: clause.PrimaryColumn, Value: videoID}).
 		Count(&count).Error; err != nil {
 		return err

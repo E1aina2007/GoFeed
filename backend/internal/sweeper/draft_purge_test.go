@@ -8,13 +8,13 @@ import (
 	"time"
 
 	infraaccount "gofeed/internal/infra/persistence/account"
+	infravideo "gofeed/internal/infra/persistence/video"
 	"gofeed/internal/testutil"
-	"gofeed/internal/video"
 )
 
 type draftMediaMark struct {
 	id   uint
-	kind video.MediaKind
+	kind infravideo.MediaKind
 }
 
 type fakeDraftPurger struct {
@@ -22,7 +22,7 @@ type fakeDraftPurger struct {
 	expired     []uint
 	listErr     error
 	listCalls   []string
-	claims      map[uint]*video.DraftPurgeClaim
+	claims      map[uint]*infravideo.DraftPurgeClaim
 	claimErr    map[uint]error
 	claimCalls  []uint
 	renewOK     map[uint]bool
@@ -45,7 +45,7 @@ func (f *fakeDraftPurger) GetExpiredDraftPurgeList(_ context.Context, _ time.Tim
 	return f.expired, f.listErr
 }
 
-func (f *fakeDraftPurger) UpdateDraftPurgeClaim(_ context.Context, id uint, _ time.Time, token string, _ time.Duration) (*video.DraftPurgeClaim, bool, error) {
+func (f *fakeDraftPurger) UpdateDraftPurgeClaim(_ context.Context, id uint, _ time.Time, token string, _ time.Duration) (*infravideo.DraftPurgeClaim, bool, error) {
 	f.claimCalls = append(f.claimCalls, id)
 	if err := f.claimErr[id]; err != nil {
 		return nil, false, err
@@ -70,7 +70,7 @@ func (f *fakeDraftPurger) UpdateDraftPurgeLease(_ context.Context, id uint, _ st
 	return ok, nil
 }
 
-func (f *fakeDraftPurger) UpdateDraftMediaPurge(_ context.Context, id uint, _ string, kind video.MediaKind, _ time.Duration) (bool, error) {
+func (f *fakeDraftPurger) UpdateDraftMediaPurge(_ context.Context, id uint, _ string, kind infravideo.MediaKind, _ time.Duration) (bool, error) {
 	call := draftMediaMark{id: id, kind: kind}
 	f.marked = append(f.marked, call)
 	if err := f.markErr[call]; err != nil {
@@ -103,7 +103,7 @@ func TestDraftPurgeJobRunPersistsPartialProgressAndContinues(t *testing.T) {
 	playTwo := "/static/videos/2/20260810/b.mp4"
 	purger := &fakeDraftPurger{
 		expired: []uint{1, 2},
-		claims: map[uint]*video.DraftPurgeClaim{
+		claims: map[uint]*infravideo.DraftPurgeClaim{
 			1: {DraftID: 1, PlayURL: playOne, CoverURL: coverOne},
 			2: {DraftID: 2, PlayURL: playTwo},
 		},
@@ -124,7 +124,7 @@ func TestDraftPurgeJobRunPersistsPartialProgressAndContinues(t *testing.T) {
 	if got, wantURLs := remover.urls, []string{playOne, coverOne, playTwo}; len(got) != len(wantURLs) || got[0] != wantURLs[0] || got[1] != wantURLs[1] || got[2] != wantURLs[2] {
 		t.Fatalf("媒体删除顺序错误 got=%v want=%v", got, wantURLs)
 	}
-	if got, wantMarks := purger.marked, []draftMediaMark{{id: 1, kind: video.MediaVideo}, {id: 2, kind: video.MediaVideo}}; len(got) != len(wantMarks) || got[0] != wantMarks[0] || got[1] != wantMarks[1] {
+	if got, wantMarks := purger.marked, []draftMediaMark{{id: 1, kind: infravideo.MediaVideo}, {id: 2, kind: infravideo.MediaVideo}}; len(got) != len(wantMarks) || got[0] != wantMarks[0] || got[1] != wantMarks[1] {
 		t.Fatalf("媒体检查点错误 got=%v want=%v", got, wantMarks)
 	}
 	if got, wantIDs := purger.hardDeleted, []uint{2}; len(got) != len(wantIDs) || got[0] != wantIDs[0] {
@@ -139,7 +139,7 @@ func TestDraftPurgeJobRunSkipsCompletedMediaAndLostLease(t *testing.T) {
 	coverURL := "/static/covers/1/20260810/a.png"
 	purger := &fakeDraftPurger{
 		expired: []uint{1},
-		claims: map[uint]*video.DraftPurgeClaim{
+		claims: map[uint]*infravideo.DraftPurgeClaim{
 			1: {DraftID: 1, PlayURL: "/static/videos/1/20260810/a.mp4", PlayPurgedAt: &completed, CoverURL: coverURL},
 		},
 		renewOK: map[uint]bool{1: false},
@@ -246,11 +246,11 @@ func TestMediaReferenceRepositoryListReferencedMediaURLsIncludesSoftDeletedRecor
 
 	activePlay := "/static/videos/1/20260928/play_0123456789abcdef0123456789abcdef.mp4"
 	deletedCover := "/static/covers/2/20260928/cover_0123456789abcdef0123456789abcdef.png"
-	activeVideo := &video.Video{AuthorID: 1, Title: "active", PlayURL: activePlay, Status: video.VideoStatusDraft}
+	activeVideo := &infravideo.Video{AuthorID: 1, Title: "active", PlayURL: activePlay, Status: infravideo.VideoStatusDraft}
 	if err := db.Create(activeVideo).Error; err != nil {
 		t.Fatalf("创建活跃视频失败: %v", err)
 	}
-	deletedVideo := &video.Video{AuthorID: 2, Title: "deleted", CoverURL: deletedCover, Status: video.VideoStatusDraft}
+	deletedVideo := &infravideo.Video{AuthorID: 2, Title: "deleted", CoverURL: deletedCover, Status: infravideo.VideoStatusDraft}
 	if err := db.Create(deletedVideo).Error; err != nil {
 		t.Fatalf("创建软删视频失败: %v", err)
 	}

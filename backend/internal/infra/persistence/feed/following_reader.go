@@ -9,11 +9,12 @@ import (
 	domainfeed "gofeed/internal/domain/feed"
 	domainrelation "gofeed/internal/domain/relation"
 	domainvideo "gofeed/internal/domain/video"
+	infravideo "gofeed/internal/infra/persistence/video"
 	"gofeed/internal/video"
 )
 
 type FollowingVideoReader interface {
-	GetFollowingVideoList(context.Context, uint, *domainvideo.ListPosition, int) ([]video.Video, error)
+	GetFollowingVideoList(context.Context, uint, *domainvideo.ListPosition, int) ([]infravideo.Video, error)
 }
 
 type ActiveViewerReader interface {
@@ -58,7 +59,7 @@ func (r *FollowingReader) ListFollowingPage(ctx context.Context, viewerID uint, 
 	}
 	page := domainfeed.TimelinePage{Items: make([]domainfeed.FeedPageItem, 0, len(rows)), Cards: make(map[uint]domainfeed.FeedCard, len(rows))}
 	for _, row := range rows {
-		if !video.IsPublicVideo(row) || row.ID == 0 || row.AuthorID == 0 {
+		if !infravideo.IsPublicVideo(row) || row.ID == 0 || row.AuthorID == 0 {
 			log.Printf("event=feed_following result=invalid_read")
 			return domainfeed.TimelinePage{}, fmt.Errorf("%w: %w", domainfeed.ErrUnavailable, domainfeed.ErrInvalidReadResult)
 		}

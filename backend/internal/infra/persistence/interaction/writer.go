@@ -7,7 +7,7 @@ import (
 	"time"
 
 	domaininteraction "gofeed/internal/domain/interaction"
-	"gofeed/internal/video"
+	infravideo "gofeed/internal/infra/persistence/video"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
@@ -242,7 +242,7 @@ func lockMutationTargets(tx *gorm.DB, videoID, userID uint) error {
 	var row struct {
 		ID uint
 	}
-	err := video.PublicVideoQuery(tx).
+	err := infravideo.PublicVideoQuery(tx).
 		Select("id").
 		Clauses(clause.Locking{
 			Strength: "UPDATE",

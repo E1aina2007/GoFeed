@@ -5,17 +5,16 @@ import (
 	"errors"
 
 	domainvideo "gofeed/internal/domain/video"
-	legacyvideo "gofeed/internal/video"
 
 	"gorm.io/gorm"
 )
 
 type draftCreateSource interface {
-	Create(ctx context.Context, video *legacyvideo.Video) error
+	Create(ctx context.Context, video *Video) error
 }
 
 type draftReadSource interface {
-	GetByID(ctx context.Context, id uint) (*legacyvideo.Video, error)
+	GetByID(ctx context.Context, id uint) (*Video, error)
 }
 
 type draftCreator struct {
@@ -41,7 +40,7 @@ func NewDraftReader(videos draftReadSource) domainvideo.DraftReader {
 }
 
 func (r *draftCreator) CreateDraft(ctx context.Context, draft *domainvideo.DraftSnapshot) error {
-	row := &legacyvideo.Video{
+	row := &Video{
 		AuthorID:    draft.AuthorID,
 		Title:       draft.Title,
 		Description: draft.Description,
@@ -69,7 +68,7 @@ func (r *draftReader) GetDraftSnapshot(ctx context.Context, id uint) (*domainvid
 	return &draft, nil
 }
 
-func draftSnapshot(row legacyvideo.Video) domainvideo.DraftSnapshot {
+func draftSnapshot(row Video) domainvideo.DraftSnapshot {
 	return domainvideo.DraftSnapshot{
 		ID:                row.ID,
 		AuthorID:          row.AuthorID,

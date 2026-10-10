@@ -4,7 +4,7 @@ import (
 	"context"
 
 	domaininteraction "gofeed/internal/domain/interaction"
-	"gofeed/internal/video"
+	infravideo "gofeed/internal/infra/persistence/video"
 
 	"gorm.io/gorm/clause"
 )
@@ -70,7 +70,7 @@ func (r *Repository) GetTotalLikes(ctx context.Context, accountID uint) (int64, 
 		return 0, domaininteraction.ErrUnavailable
 	}
 	var count int64
-	err := video.PublicVideoQuery(r.db.WithContext(ctx)).
+	err := infravideo.PublicVideoQuery(r.db.WithContext(ctx)).
 		Joins("JOIN video_likes AS likes ON likes.video_id = videos.id").
 		Where(clause.Eq{
 			Column: clause.Column{Table: clause.CurrentTable, Name: "author_id"},

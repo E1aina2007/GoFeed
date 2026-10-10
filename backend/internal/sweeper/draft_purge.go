@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"gofeed/internal/video"
+	infravideo "gofeed/internal/infra/persistence/video"
 )
 
 const (
@@ -27,9 +27,9 @@ var (
 type DraftPurger interface {
 	GetRecoverableDraftPurgeList(ctx context.Context, limit int) ([]uint, error)
 	GetExpiredDraftPurgeList(ctx context.Context, cutoff time.Time, limit int) ([]uint, error)
-	UpdateDraftPurgeClaim(ctx context.Context, id uint, cutoff time.Time, token string, lease time.Duration) (*video.DraftPurgeClaim, bool, error)
+	UpdateDraftPurgeClaim(ctx context.Context, id uint, cutoff time.Time, token string, lease time.Duration) (*infravideo.DraftPurgeClaim, bool, error)
 	UpdateDraftPurgeLease(ctx context.Context, id uint, token string, lease time.Duration) (bool, error)
-	UpdateDraftMediaPurge(ctx context.Context, id uint, token string, kind video.MediaKind, lease time.Duration) (bool, error)
+	UpdateDraftMediaPurge(ctx context.Context, id uint, token string, kind infravideo.MediaKind, lease time.Duration) (bool, error)
 	RemovePurgedDraft(ctx context.Context, id uint, token string) (bool, error)
 }
 
@@ -37,7 +37,7 @@ type DraftPurger interface {
 // 文件删除成功会立即持久化到对应媒体槽位，失败后不会把 purging 恢复为 draft
 type DraftPurgeJob struct {
 	purger    DraftPurger
-	remover   video.MediaRemover
+	remover   infravideo.MediaRemover
 	retention time.Duration
 	lease     time.Duration
 	batchSize int
@@ -45,7 +45,7 @@ type DraftPurgeJob struct {
 	newToken  func() (string, error)
 }
 
-func NewDraftPurgeJob(purger DraftPurger, remover video.MediaRemover, retention, lease time.Duration) *DraftPurgeJob {
+func NewDraftPurgeJob(purger DraftPurger, remover infravideo.MediaRemover, retention, lease time.Duration) *DraftPurgeJob {
 	return &DraftPurgeJob{
 		purger:    purger,
 		remover:   remover,
@@ -159,15 +159,15 @@ func interleaveDraftPurgeCandidates(recoverable, expired []uint, limit int) []ui
 	return ids
 }
 
-func (j *DraftPurgeJob) purgeClaim(ctx context.Context, claim *video.DraftPurgeClaim) (bool, error) {
+func (j *DraftPurgeJob) purgeClaim(ctx context.Context, claim *infravideo.DraftPurgeClaim) (bool, error) {
 	if claim.PlayURL != "" && claim.PlayPurgedAt == nil {
-		owned, err := j.purgeMediaSlot(ctx, claim, video.MediaVideo, claim.PlayURL)
+		owned, err := j.purgeMediaSlot(ctx, claim, infravideo.MediaVideo, claim.PlayURL)
 		if err != nil || !owned {
 			return false, err
 		}
 	}
 	if claim.CoverURL != "" && claim.CoverPurgedAt == nil {
-		owned, err := j.purgeMediaSlot(ctx, claim, video.MediaCover, claim.CoverURL)
+		owned, err := j.purgeMediaSlot(ctx, claim, infravideo.MediaCover, claim.CoverURL)
 		if err != nil || !owned {
 			return false, err
 		}
@@ -180,7 +180,7 @@ func (j *DraftPurgeJob) purgeClaim(ctx context.Context, claim *video.DraftPurgeC
 	return deleted, nil
 }
 
-func (j *DraftPurgeJob) purgeMediaSlot(ctx context.Context, claim *video.DraftPurgeClaim, kind video.MediaKind, publicURL string) (bool, error) {
+func (j *DraftPurgeJob) purgeMediaSlot(ctx context.Context, claim *infravideo.DraftPurgeClaim, kind infravideo.MediaKind, publicURL string) (bool, error) {
 	owned, err := j.purger.UpdateDraftPurgeLease(ctx, claim.DraftID, claim.Token, j.lease)
 	if err != nil {
 		return false, fmt.Errorf("renew video %d purge lease: %w", claim.DraftID, err)

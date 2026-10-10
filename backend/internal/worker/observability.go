@@ -6,15 +6,15 @@ import (
 	"log"
 	"time"
 
+	infravideo "gofeed/internal/infra/persistence/video"
 	"gofeed/internal/mq"
-	"gofeed/internal/video"
 )
 
 const mqObservationInterval = 30 * time.Second
 
 // OutboxSnapshotReader 提供 MySQL outbox 运维快照
 type OutboxSnapshotReader interface {
-	GetOutboxSnapshot(ctx context.Context) (video.OutboxSnapshot, error)
+	GetOutboxSnapshot(ctx context.Context) (infravideo.OutboxSnapshot, error)
 }
 
 // MQSnapshot 是一次可独立采集的消息链路运维快照

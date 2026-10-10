@@ -6,11 +6,11 @@ import (
 	"fmt"
 
 	domainfeed "gofeed/internal/domain/feed"
-	"gofeed/internal/video"
+	infravideo "gofeed/internal/infra/persistence/video"
 )
 
 type PublicVideoStateReader interface {
-	GetPublicVideoStates(context.Context, []uint) ([]video.PublicVideoState, error)
+	GetPublicVideoStates(context.Context, []uint) ([]infravideo.PublicVideoState, error)
 }
 
 type PublicStateReader struct {
@@ -29,7 +29,7 @@ func (r *PublicStateReader) BatchGetPublicCardStates(ctx context.Context, ids []
 	}
 	rows, err := r.videos.GetPublicVideoStates(ctx, ids)
 	if err != nil {
-		if errors.Is(err, video.ErrInvalidPublishedVideoBatch) {
+		if errors.Is(err, infravideo.ErrInvalidPublishedVideoBatch) {
 			return nil, domainfeed.ErrInvalidCardBatch
 		}
 		return nil, fmt.Errorf("%w: %w", domainfeed.ErrUnavailable, err)

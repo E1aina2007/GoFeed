@@ -10,8 +10,8 @@ import (
 	"time"
 
 	applicationfeed "gofeed/internal/application/feed"
+	infravideo "gofeed/internal/infra/persistence/video"
 	"gofeed/internal/mq"
-	"gofeed/internal/video"
 
 	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -42,7 +42,7 @@ func (m PublishedMessage) validate() error {
 
 // VideoPublishedRoute 按持久化事件标识派发，不套用处理状态的终态收口
 func VideoPublishedRoute() RelayRoute {
-	return RelayRoute{Event: mq.VideoPublishedEventSpec(), Prepare: func(dispatch video.OutboxDispatch) (RelayPreparation, error) {
+	return RelayRoute{Event: mq.VideoPublishedEventSpec(), Prepare: func(dispatch infravideo.OutboxDispatch) (RelayPreparation, error) {
 		msg := PublishedMessage{SchemaVersion: mq.VideoPublishedSchemaVersion, EventID: dispatch.Event.EventID, VideoID: dispatch.Event.VideoID}
 		if err := msg.validate(); err != nil {
 			return RelayPreparation{}, err

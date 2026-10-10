@@ -7,7 +7,6 @@ import (
 
 	domainvideo "gofeed/internal/domain/video"
 	inframedia "gofeed/internal/infra/storage/media"
-	legacyvideo "gofeed/internal/video"
 )
 
 type mediaRemover struct {
@@ -18,7 +17,7 @@ type mediaCandidateLister struct {
 	candidates domainvideo.MediaCandidateLister
 }
 
-func NewMediaRemover(remover domainvideo.MediaRemover) legacyvideo.MediaRemover {
+func NewMediaRemover(remover domainvideo.MediaRemover) MediaRemover {
 	if remover == nil {
 		return nil
 	}
@@ -29,7 +28,7 @@ func (s *mediaRemover) Remove(ctx context.Context, publicURL string) error {
 	return mediaError(s.remover.Remove(ctx, publicURL))
 }
 
-func NewMediaCandidateLister(candidates domainvideo.MediaCandidateLister) legacyvideo.MediaCandidateLister {
+func NewMediaCandidateLister(candidates domainvideo.MediaCandidateLister) MediaCandidateLister {
 	if candidates == nil {
 		return nil
 	}
@@ -49,10 +48,10 @@ func ValidatePublishedMedia(root, playURL, coverURL string) error {
 func mediaError(err error) error {
 	var kinds []error
 	for _, pair := range [][2]error{
-		{domainvideo.ErrInvalidMedia, legacyvideo.ErrInvalidMedia},
-		{domainvideo.ErrMediaTooLarge, legacyvideo.ErrMediaTooLarge},
-		{domainvideo.ErrInvalidMediaURL, legacyvideo.ErrInvalidMediaURL},
-		{domainvideo.ErrInvalidMediaPath, legacyvideo.ErrInvalidMediaPath},
+		{domainvideo.ErrInvalidMedia, ErrInvalidMedia},
+		{domainvideo.ErrMediaTooLarge, ErrMediaTooLarge},
+		{domainvideo.ErrInvalidMediaURL, ErrInvalidMediaURL},
+		{domainvideo.ErrInvalidMediaPath, ErrInvalidMediaPath},
 	} {
 		if errors.Is(err, pair[0]) {
 			kinds = append(kinds, pair[1])

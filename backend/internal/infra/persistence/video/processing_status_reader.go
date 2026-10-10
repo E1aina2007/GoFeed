@@ -5,13 +5,12 @@ import (
 	"errors"
 
 	domainvideo "gofeed/internal/domain/video"
-	legacyvideo "gofeed/internal/video"
 
 	"gorm.io/gorm"
 )
 
 type processingStatusSource interface {
-	GetByID(ctx context.Context, id uint) (*legacyvideo.Video, error)
+	GetByID(ctx context.Context, id uint) (*Video, error)
 }
 
 type processingStatusReader struct {

@@ -5,14 +5,13 @@ import (
 	"errors"
 
 	domainvideo "gofeed/internal/domain/video"
-	legacyvideo "gofeed/internal/video"
 
 	"gorm.io/gorm"
 )
 
 type publishedReader interface {
-	GetPublishedByID(ctx context.Context, id uint) (*legacyvideo.Video, error)
-	GetPublishedVideoList(ctx context.Context, authorID uint, cursor *domainvideo.ListPosition, limit int) ([]legacyvideo.Video, error)
+	GetPublishedByID(ctx context.Context, id uint) (*Video, error)
+	GetPublishedVideoList(ctx context.Context, authorID uint, cursor *domainvideo.ListPosition, limit int) ([]Video, error)
 }
 
 type reader struct {
@@ -58,7 +57,7 @@ func (r *reader) GetPublishedVideoList(ctx context.Context, authorID uint, posit
 	return items, nil
 }
 
-func publicVideo(row legacyvideo.Video) domainvideo.PublicVideo {
+func publicVideo(row Video) domainvideo.PublicVideo {
 	return domainvideo.PublicVideo{
 		ID: row.ID, AuthorID: row.AuthorID, Title: row.Title, Description: row.Description,
 		PlayURL: row.PlayURL, PlayFileName: row.PlayFileName, PlayOriginalName: row.PlayOriginalName,

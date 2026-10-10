@@ -1,4 +1,4 @@
-package video
+package infravideo
 
 import (
 	"gorm.io/gorm"

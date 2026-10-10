@@ -4,11 +4,10 @@ import (
 	"context"
 
 	domainvideo "gofeed/internal/domain/video"
-	legacyvideo "gofeed/internal/video"
 )
 
 type authorVideoListSource interface {
-	GetAuthorVideoList(ctx context.Context, authorID uint, cursor *domainvideo.ListPosition, limit int) ([]legacyvideo.Video, error)
+	GetAuthorVideoList(ctx context.Context, authorID uint, cursor *domainvideo.ListPosition, limit int) ([]Video, error)
 }
 
 type authorVideoListReader struct {

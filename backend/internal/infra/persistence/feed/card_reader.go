@@ -6,12 +6,13 @@ import (
 	"fmt"
 
 	domainfeed "gofeed/internal/domain/feed"
+	infravideo "gofeed/internal/infra/persistence/video"
 	"gofeed/internal/video"
 )
 
 // PublishedVideoBatchReader 只读取当前公开视频，既有实体仅用于外层适配
 type PublishedVideoBatchReader interface {
-	GetPublishedByIDs(ctx context.Context, ids []uint) ([]video.Video, error)
+	GetPublishedByIDs(ctx context.Context, ids []uint) ([]infravideo.Video, error)
 }
 
 type CardReader struct {
@@ -53,13 +54,13 @@ func (r *CardReader) BatchGetCards(ctx context.Context, videoIDs []uint) (map[ui
 	}
 	rows, err := r.videos.GetPublishedByIDs(ctx, queried)
 	if err != nil {
-		if errors.Is(err, video.ErrInvalidPublishedVideoBatch) {
+		if errors.Is(err, infravideo.ErrInvalidPublishedVideoBatch) {
 			return nil, domainfeed.ErrInvalidCardBatch
 		}
 		return nil, fmt.Errorf("%w: %w", domainfeed.ErrUnavailable, err)
 	}
 	for _, row := range rows {
-		if _, ok := requested[row.ID]; !ok || !video.IsPublicVideo(row) {
+		if _, ok := requested[row.ID]; !ok || !infravideo.IsPublicVideo(row) {
 			continue
 		}
 		cards[row.ID] = feedCardFromVideo(row)
@@ -68,7 +69,7 @@ func (r *CardReader) BatchGetCards(ctx context.Context, videoIDs []uint) (map[ui
 }
 
 // feedCardFromVideo 只转换已通过公开视频判断的实体，由调用方保证 PublishedAt 非空
-func feedCardFromVideo(row video.Video) domainfeed.FeedCard {
+func feedCardFromVideo(row infravideo.Video) domainfeed.FeedCard {
 	return domainfeed.FeedCard{
 		VideoID:           row.ID,
 		AuthorID:          row.AuthorID,

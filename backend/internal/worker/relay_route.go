@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	infravideo "gofeed/internal/infra/persistence/video"
 	"gofeed/internal/mq"
 	"gofeed/internal/video"
 )
@@ -11,7 +12,7 @@ import (
 // RelayRoute 定义一类事件的发布目标与快照校验、载荷构造
 type RelayRoute struct {
 	Event   mq.EventSpec
-	Prepare func(video.OutboxDispatch) (RelayPreparation, error)
+	Prepare func(infravideo.OutboxDispatch) (RelayPreparation, error)
 }
 
 // RelayPreparation 返回待发布载荷或已由消费端完成的事件结果
@@ -46,12 +47,12 @@ func VideoProcessRoute() RelayRoute {
 	return RelayRoute{Event: mq.VideoProcessEventSpec(), Prepare: prepareVideoProcess}
 }
 
-func prepareVideoProcess(dispatch video.OutboxDispatch) (RelayPreparation, error) {
+func prepareVideoProcess(dispatch infravideo.OutboxDispatch) (RelayPreparation, error) {
 	if !dispatch.HasVideo {
 		return RelayPreparation{}, errors.New("video snapshot is missing")
 	}
-	if dispatch.Video.Status != video.VideoStatusProcessing || dispatch.Video.PublishedAt == nil {
-		if dispatch.LeaseTakenOver && (dispatch.Video.Status == video.VideoStatusPublished || dispatch.Video.Status == video.VideoStatusRejected) {
+	if dispatch.Video.Status != infravideo.VideoStatusProcessing || dispatch.Video.PublishedAt == nil {
+		if dispatch.LeaseTakenOver && (dispatch.Video.Status == infravideo.VideoStatusPublished || dispatch.Video.Status == infravideo.VideoStatusRejected) {
 			return RelayPreparation{AlreadyCompleted: true}, nil
 		}
 		return RelayPreparation{}, errors.New("video is not ready for processing")

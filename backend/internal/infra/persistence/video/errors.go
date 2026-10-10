@@ -4,7 +4,6 @@ import (
 	"errors"
 
 	domainvideo "gofeed/internal/domain/video"
-	legacyvideo "gofeed/internal/video"
 
 	"gorm.io/gorm"
 )
@@ -13,18 +12,18 @@ import (
 func readError(err error) error {
 	var kind error
 	switch {
-	case errors.Is(err, legacyvideo.ErrInvalidVideoID), errors.Is(err, legacyvideo.ErrInvalidLimit),
-		errors.Is(err, legacyvideo.ErrInvalidCursor), errors.Is(err, legacyvideo.ErrInvalidAuthorID),
-		errors.Is(err, legacyvideo.ErrInvalidPublishRequest), errors.Is(err, legacyvideo.ErrInvalidMedia),
-		errors.Is(err, legacyvideo.ErrMediaTooLarge):
+	case errors.Is(err, ErrInvalidVideoID), errors.Is(err, ErrInvalidLimit),
+		errors.Is(err, ErrInvalidCursor), errors.Is(err, ErrInvalidAuthorID),
+		errors.Is(err, ErrInvalidPublishRequest), errors.Is(err, ErrInvalidMedia),
+		errors.Is(err, ErrMediaTooLarge):
 		kind = domainvideo.ErrInvalidInput
-	case errors.Is(err, legacyvideo.ErrVideoNotFound), errors.Is(err, gorm.ErrRecordNotFound):
+	case errors.Is(err, ErrVideoNotFound), errors.Is(err, gorm.ErrRecordNotFound):
 		kind = domainvideo.ErrVideoNotFound
-	case errors.Is(err, legacyvideo.ErrNotAuthor), errors.Is(err, legacyvideo.ErrInvalidMediaURL):
+	case errors.Is(err, ErrNotAuthor), errors.Is(err, ErrInvalidMediaURL):
 		kind = domainvideo.ErrForbidden
-	case errors.Is(err, legacyvideo.ErrDraftNotWritable), errors.Is(err, legacyvideo.ErrDraftIncomplete):
+	case errors.Is(err, ErrDraftNotWritable), errors.Is(err, ErrDraftIncomplete):
 		kind = domainvideo.ErrConflict
-	case errors.Is(err, legacyvideo.ErrEngagementUnavailable):
+	case errors.Is(err, ErrEngagementUnavailable):
 		kind = domainvideo.ErrEngagementUnavailable
 	default:
 		return err

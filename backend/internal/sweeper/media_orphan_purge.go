@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"gofeed/internal/video"
+	infravideo "gofeed/internal/infra/persistence/video"
 )
 
 const defaultMediaOrphanBatchSize = 100
@@ -29,8 +29,8 @@ type MediaReferenceReader interface {
 // 仅处理 LocalStorage 枚举出的规范对象；宽限期用于覆盖“落盘后、事务提交前”的短暂窗口
 type MediaOrphanPurgeJob struct {
 	references MediaReferenceReader
-	candidates video.MediaCandidateLister
-	remover    video.MediaRemover
+	candidates infravideo.MediaCandidateLister
+	remover    infravideo.MediaRemover
 	retention  time.Duration
 	batchSize  int
 	now        func() time.Time
@@ -38,8 +38,8 @@ type MediaOrphanPurgeJob struct {
 
 func NewMediaOrphanPurgeJob(
 	references MediaReferenceReader,
-	candidates video.MediaCandidateLister,
-	remover video.MediaRemover,
+	candidates infravideo.MediaCandidateLister,
+	remover infravideo.MediaRemover,
 	retention time.Duration,
 ) *MediaOrphanPurgeJob {
 	return &MediaOrphanPurgeJob{

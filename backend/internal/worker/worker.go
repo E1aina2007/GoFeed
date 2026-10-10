@@ -118,7 +118,7 @@ func (r *Relay) dispatchRound(ctx context.Context) error {
 }
 
 // markDispatched 将当前仍持有租约的事件标记为已派发；失败只记录日志以便后续租约接管
-func (r *Relay) markDispatched(ctx context.Context, dispatch video.OutboxDispatch) {
+func (r *Relay) markDispatched(ctx context.Context, dispatch infravideo.OutboxDispatch) {
 	marked, err := r.repo.MarkOutboxDispatched(ctx, dispatch.Event.ID, dispatch.Event.Attempt)
 	if err != nil {
 		log.Printf("[relay] 标记已派发失败 event_id=%s: %v", dispatch.Event.EventID, err)
@@ -130,7 +130,7 @@ func (r *Relay) markDispatched(ctx context.Context, dispatch video.OutboxDispatc
 }
 
 // release 把派发失败的事件写回 pending 并按指定时长退避；释放失败只记录日志
-func (r *Relay) release(ctx context.Context, dispatch video.OutboxDispatch, backoff time.Duration, cause error) {
+func (r *Relay) release(ctx context.Context, dispatch infravideo.OutboxDispatch, backoff time.Duration, cause error) {
 	if _, err := r.repo.ReleaseOutboxRetry(ctx, dispatch.Event.ID, dispatch.Event.Attempt, backoff, cause); err != nil {
 		log.Printf("[relay] 释放事件失败 event_id=%s: %v", dispatch.Event.EventID, err)
 	}

@@ -5,13 +5,12 @@ import (
 	"errors"
 
 	domainvideo "gofeed/internal/domain/video"
-	legacyvideo "gofeed/internal/video"
 
 	"gorm.io/gorm"
 )
 
 type draftDiscardSource interface {
-	UpdateDraftDiscard(ctx context.Context, draftID, authorID uint) (*legacyvideo.Video, error)
+	UpdateDraftDiscard(ctx context.Context, draftID, authorID uint) (*Video, error)
 }
 
 type draftDiscarder struct {

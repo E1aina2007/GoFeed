@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"gofeed/internal/video"
+	infravideo "gofeed/internal/infra/persistence/video"
 )
 
 var (
@@ -16,19 +16,19 @@ var (
 
 // VideoPurger 是视频清扫任务所需的仓储能力子集
 type VideoPurger interface {
-	GetExpiredDeletedVideoList(ctx context.Context, cutoff time.Time) ([]video.Video, error)
+	GetExpiredDeletedVideoList(ctx context.Context, cutoff time.Time) ([]infravideo.Video, error)
 	RemoveExpiredVideo(ctx context.Context, id uint, cutoff time.Time) (bool, error)
 }
 
 // VideoPurgeJob 在视频软删除宽限期届满后删除媒体文件和数据库记录
 type VideoPurgeJob struct {
 	purger    VideoPurger
-	remover   video.MediaRemover
+	remover   infravideo.MediaRemover
 	retention time.Duration
 	now       func() time.Time
 }
 
-func NewVideoPurgeJob(purger VideoPurger, remover video.MediaRemover, retention time.Duration) *VideoPurgeJob {
+func NewVideoPurgeJob(purger VideoPurger, remover infravideo.MediaRemover, retention time.Duration) *VideoPurgeJob {
 	return &VideoPurgeJob{
 		purger:    purger,
 		remover:   remover,

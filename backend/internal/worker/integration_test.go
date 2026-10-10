@@ -189,7 +189,7 @@ func declareWorkerProcessTopology(t *testing.T, conn *amqp.Connection) mq.Consum
 
 	prefix := fmt.Sprintf("gofeed.test.worker-process.%d.%d", os.Getpid(), time.Now().UnixNano())
 	event := mq.EventSpec{
-		EventType:  video.VideoProcessEventType,
+		EventType:  infravideo.VideoProcessEventType,
 		Exchange:   prefix + ".events",
 		RoutingKey: "video.process",
 	}
@@ -422,11 +422,11 @@ func TestWorkerProcessCrashBeforeOutboxMarkRecoversIntegration(t *testing.T) {
 	}
 	waitForWorkerProcessQueueDepth(t, conn, spec.Queue, 1)
 
-	var crashed video.OutboxEvent
+	var crashed infravideo.OutboxEvent
 	if err := gdb.First(&crashed, "video_id = ?", row.ID).Error; err != nil {
 		t.Fatalf("读取崩溃后的 outbox 事件失败: %v", err)
 	}
-	if crashed.Status != video.OutboxEventStatusPublishing || crashed.Attempt != 1 || crashed.LockedUntil == nil {
+	if crashed.Status != infravideo.OutboxEventStatusPublishing || crashed.Attempt != 1 || crashed.LockedUntil == nil {
 		t.Fatalf("confirm 后强制结束前事件应保持首个 publishing 租约 got=%+v", crashed)
 	}
 	if err := crasher.Process.Kill(); err != nil {
@@ -446,18 +446,18 @@ func TestWorkerProcessCrashBeforeOutboxMarkRecoversIntegration(t *testing.T) {
 		t.Fatalf("重启 worker 子进程失败: %v output=%s", err, recoveryOutput.String())
 	}
 
-	var event video.OutboxEvent
+	var event infravideo.OutboxEvent
 	if err := gdb.First(&event, "video_id = ?", row.ID).Error; err != nil {
 		t.Fatalf("读取恢复后的 outbox 事件失败: %v", err)
 	}
-	if event.Status != video.OutboxEventStatusDispatched || event.Attempt != 2 || event.DispatchedAt == nil {
+	if event.Status != infravideo.OutboxEventStatusDispatched || event.Attempt != 2 || event.DispatchedAt == nil {
 		t.Fatalf("重启后事件应被接管并派发 got=%+v", event)
 	}
-	var updated video.Video
+	var updated infravideo.Video
 	if err := gdb.First(&updated, row.ID).Error; err != nil {
 		t.Fatalf("读取恢复后的视频失败: %v", err)
 	}
-	if updated.Status != video.VideoStatusPublished {
+	if updated.Status != infravideo.VideoStatusPublished {
 		t.Fatalf("重复投递应被幂等吸收并发布视频 got=%+v", updated)
 	}
 	queues := []string{spec.Queue, spec.DeadLetterQueueName()}
@@ -587,11 +587,11 @@ func runWorkerProcessRecovery(t *testing.T, gdb *gorm.DB, repo *video.Repository
 	defer ticker.Stop()
 	republished := false
 	for {
-		var event video.OutboxEvent
+		var event infravideo.OutboxEvent
 		if err := gdb.WithContext(context.Background()).First(&event, "video_id = ?", videoID).Error; err != nil {
 			t.Fatalf("worker helper 读取 outbox 事件失败: %v", err)
 		}
-		var row video.Video
+		var row infravideo.Video
 		if err := gdb.WithContext(context.Background()).First(&row, videoID).Error; err != nil {
 			t.Fatalf("worker helper 读取视频失败: %v", err)
 		}
@@ -600,7 +600,7 @@ func runWorkerProcessRecovery(t *testing.T, gdb *gorm.DB, repo *video.Repository
 			if err != nil {
 				t.Fatalf("worker helper 读取主队列深度失败: %v", err)
 			}
-			if event.Status == video.OutboxEventStatusDispatched && event.Attempt == 2 && depth == 2 {
+			if event.Status == infravideo.OutboxEventStatusDispatched && event.Attempt == 2 && depth == 2 {
 				consumer := NewConsumer(repo, broker, storageRoot)
 				consumer.spec = spec
 				workers.Add(1)
@@ -629,7 +629,7 @@ func runWorkerProcessRecovery(t *testing.T, gdb *gorm.DB, repo *video.Repository
 				break
 			}
 		}
-		if event.Status == video.OutboxEventStatusDispatched && event.Attempt == 2 && row.Status == video.VideoStatusPublished && queuesIdle {
+		if event.Status == infravideo.OutboxEventStatusDispatched && event.Attempt == 2 && row.Status == infravideo.VideoStatusPublished && queuesIdle {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -1265,7 +1265,7 @@ func waitPipelineTerminal(t *testing.T, client *http.Client, base, token string,
 	deadline := time.Now().Add(pipelinePollTimeout)
 	last := fetchPipelineStatus(t, client, base, token, videoID)
 	for {
-		if last.Status == video.VideoStatusPublished || last.Status == video.VideoStatusRejected {
+		if last.Status == infravideo.VideoStatusPublished || last.Status == infravideo.VideoStatusRejected {
 			return last
 		}
 		if time.Now().After(deadline) {
@@ -1288,9 +1288,9 @@ func fetchPipelineStatus(t *testing.T, client *http.Client, base, token string, 
 
 // 测试目标：读取指定视频的 outbox 事件
 // 预期效果：事件数量异常直接暴露发布契约漂移
-func pipelineOutboxEvent(t *testing.T, gdb *gorm.DB, videoID uint) video.OutboxEvent {
+func pipelineOutboxEvent(t *testing.T, gdb *gorm.DB, videoID uint) infravideo.OutboxEvent {
 	t.Helper()
-	var events []video.OutboxEvent
+	var events []infravideo.OutboxEvent
 	if err := gdb.Where("video_id = ?", videoID).Find(&events).Error; err != nil {
 		t.Fatalf("读取 outbox 事件失败: %v", err)
 	}
@@ -1303,12 +1303,12 @@ func pipelineOutboxEvent(t *testing.T, gdb *gorm.DB, videoID uint) video.OutboxE
 // 测试目标：等待 outbox 事件收口到 dispatched
 // 预期效果：视频终态由消费端先落库、relay 后标记派发，因此必须显式等待派发终态；
 // 超时输出事件租约字段，便于区分 relay 未运行与租约未到期
-func waitPipelineOutboxDispatched(t *testing.T, gdb *gorm.DB, videoID uint) video.OutboxEvent {
+func waitPipelineOutboxDispatched(t *testing.T, gdb *gorm.DB, videoID uint) infravideo.OutboxEvent {
 	t.Helper()
 	deadline := time.Now().Add(pipelinePollTimeout)
 	for {
 		event := pipelineOutboxEvent(t, gdb, videoID)
-		if event.Status == video.OutboxEventStatusDispatched && event.DispatchedAt != nil {
+		if event.Status == infravideo.OutboxEventStatusDispatched && event.DispatchedAt != nil {
 			return event
 		}
 		if time.Now().After(deadline) {
@@ -1330,13 +1330,13 @@ func TestPublishPipelineReachesPublishedWithIsolatedWorkerProcess(t *testing.T) 
 
 	draft := createPipelineDraft(t, client, base, token, storageRoot, "pipeline")
 	videoID, status := publishPipelineDraft(t, client, base, token, draft.draftID)
-	if videoID == 0 || status != video.VideoStatusProcessing {
+	if videoID == 0 || status != infravideo.VideoStatusProcessing {
 		t.Fatalf("发布响应应为处理中草稿 got id=%d status=%s", videoID, status)
 	}
 	// 测试目标：确认受理阶段尚未产生终态
 	// 预期效果：状态为 processing，公开详情仍返回 404
 	accepted := fetchPipelineStatus(t, client, base, token, videoID)
-	if accepted.Status != video.VideoStatusProcessing || accepted.PublishedAt == nil || accepted.RejectedAt != nil {
+	if accepted.Status != infravideo.VideoStatusProcessing || accepted.PublishedAt == nil || accepted.RejectedAt != nil {
 		t.Fatalf("受理后状态应为 processing got=%+v", accepted)
 	}
 	doPipelineJSON(t, client, http.MethodGet, fmt.Sprintf("%s/api/video/%d", base, videoID), "", nil, http.StatusNotFound, nil)
@@ -1344,18 +1344,18 @@ func TestPublishPipelineReachesPublishedWithIsolatedWorkerProcess(t *testing.T) 
 	// 测试目标：等待独立 worker 进程完成处理
 	// 预期效果：状态转为 published 且不携带拒绝字段
 	terminal := waitPipelineTerminal(t, client, base, token, videoID)
-	if terminal.Status != video.VideoStatusPublished {
+	if terminal.Status != infravideo.VideoStatusPublished {
 		t.Fatalf("媒体齐全的发布应转为 published got=%+v", terminal)
 	}
 	if terminal.RejectedAt != nil || terminal.RejectedReason != "" {
 		t.Fatalf("published 不应携带拒绝字段 got=%+v", terminal)
 	}
 
-	var row video.Video
+	var row infravideo.Video
 	if err := gdb.First(&row, videoID).Error; err != nil {
 		t.Fatalf("读取视频行失败: %v", err)
 	}
-	if row.Status != video.VideoStatusPublished {
+	if row.Status != infravideo.VideoStatusPublished {
 		t.Fatalf("数据库状态应为 published got=%+v", row)
 	}
 	// 测试目标：等待 outbox 收口到派发终态
@@ -1417,18 +1417,18 @@ func TestPublishPipelineRejectionAndDraftPurgeWithIsolatedWorkerProcess(t *testi
 	videoID, _ := publishPipelineDraft(t, client, base, token, draft.draftID)
 
 	status := waitPipelineTerminal(t, client, base, token, videoID)
-	if status.Status != video.VideoStatusRejected {
+	if status.Status != infravideo.VideoStatusRejected {
 		t.Fatalf("封面缺失的发布应转为 rejected got=%+v", status)
 	}
 	if status.RejectedAt == nil || status.RejectedReason == "" {
 		t.Fatalf("rejected 必须携带拒绝时刻与原因 got=%+v", status)
 	}
 
-	var rejected video.Video
+	var rejected infravideo.Video
 	if err := gdb.First(&rejected, videoID).Error; err != nil {
 		t.Fatalf("读取拒绝视频失败: %v", err)
 	}
-	if rejected.Status != video.VideoStatusRejected || rejected.RejectedReason != status.RejectedReason {
+	if rejected.Status != infravideo.VideoStatusRejected || rejected.RejectedReason != status.RejectedReason {
 		t.Fatalf("数据库拒绝字段应与状态接口一致 row=%+v status=%+v", rejected, status)
 	}
 	// 测试目标：等待 outbox 收口到派发终态
@@ -1497,7 +1497,7 @@ func assertPipelineDraftPurge(t *testing.T, gdb *gorm.DB, storageRoot string, vi
 	}
 
 	var remaining int64
-	if err := gdb.Unscoped().Model(&video.Video{}).Where("id = ?", videoID).Count(&remaining).Error; err != nil {
+	if err := gdb.Unscoped().Model(&infravideo.Video{}).Where("id = ?", videoID).Count(&remaining).Error; err != nil {
 		t.Fatalf("统计清扫结果失败: %v", err)
 	}
 	if remaining != 0 {
@@ -1922,15 +1922,15 @@ func (e *chainWarmEnv) cleanup() {
 
 // 测试目标：写入待处理视频与已派发的处理事件
 // 预期效果：视频可被真实完成接口转为 published，处理事件提供原始事件标识
-func (e *chainWarmEnv) seedProcessing() (video.Video, video.OutboxEvent) {
+func (e *chainWarmEnv) seedProcessing() (infravideo.Video, infravideo.OutboxEvent) {
 	e.t.Helper()
 	ctx := context.Background()
 	publishedAt := testTime()
-	entity := video.Video{
+	entity := infravideo.Video{
 		AuthorID:          chainWarmAuthorID,
 		Title:             chainWarmVideoTitle,
 		Description:       "链路卡片预热说明",
-		Status:            video.VideoStatusProcessing,
+		Status:            infravideo.VideoStatusProcessing,
 		PlayURL:           "/static/videos/42/20260801/chain.mp4",
 		PlayFileName:      "chain.mp4",
 		PlayOriginalName:  "链路视频.mp4",
@@ -1943,11 +1943,11 @@ func (e *chainWarmEnv) seedProcessing() (video.Video, video.OutboxEvent) {
 		e.t.Fatalf("写入待处理视频失败: %v", err)
 	}
 	dispatchedAt := testTime()
-	processEvent := video.OutboxEvent{
+	processEvent := infravideo.OutboxEvent{
 		EventID:      uuid.NewString(),
 		VideoID:      entity.ID,
-		EventType:    video.VideoProcessEventType,
-		Status:       video.OutboxEventStatusDispatched,
+		EventType:    infravideo.VideoProcessEventType,
+		Status:       infravideo.OutboxEventStatusDispatched,
 		DispatchedAt: &dispatchedAt,
 	}
 	if err := e.db.Create(&processEvent).Error; err != nil {
@@ -1961,7 +1961,7 @@ func (e *chainWarmEnv) seedProcessing() (video.Video, video.OutboxEvent) {
 
 // 测试目标：通过真实仓储完成视频处理
 // 预期效果：视频转为 published 并读回持久化的 video.published 事件
-func (e *chainWarmEnv) completeProcessing(videoID uint) video.OutboxEvent {
+func (e *chainWarmEnv) completeProcessing(videoID uint) infravideo.OutboxEvent {
 	e.t.Helper()
 	changed, err := e.repo.CompleteVideoProcessing(context.Background(), videoID)
 	if err != nil {
@@ -1977,10 +1977,10 @@ func (e *chainWarmEnv) completeProcessing(videoID uint) video.OutboxEvent {
 
 // 测试目标：读取视频最新持久化的发布事件
 // 预期效果：事件标识与类型来自数据库而不是构造值
-func (e *chainWarmEnv) publishedEvent(videoID uint) video.OutboxEvent {
+func (e *chainWarmEnv) publishedEvent(videoID uint) infravideo.OutboxEvent {
 	e.t.Helper()
-	var event video.OutboxEvent
-	err := e.db.Where("video_id = ? AND event_type = ?", videoID, video.VideoPublishedEventType).
+	var event infravideo.OutboxEvent
+	err := e.db.Where("video_id = ? AND event_type = ?", videoID, infravideo.VideoPublishedEventType).
 		Order("id DESC").First(&event).Error
 	if err != nil {
 		e.t.Fatalf("读取发布事件失败: %v", err)
@@ -1993,8 +1993,8 @@ func (e *chainWarmEnv) publishedEvent(videoID uint) video.OutboxEvent {
 func (e *chainWarmEnv) publishedEventCount(videoID uint) int64 {
 	e.t.Helper()
 	var count int64
-	err := e.db.Model(&video.OutboxEvent{}).
-		Where("video_id = ? AND event_type = ?", videoID, video.VideoPublishedEventType).
+	err := e.db.Model(&infravideo.OutboxEvent{}).
+		Where("video_id = ? AND event_type = ?", videoID, infravideo.VideoPublishedEventType).
 		Count(&count).Error
 	if err != nil {
 		e.t.Fatalf("统计发布事件失败: %v", err)
@@ -2004,9 +2004,9 @@ func (e *chainWarmEnv) publishedEventCount(videoID uint) int64 {
 
 // 测试目标：读取视频当前持久化状态
 // 预期效果：证据包含状态、发布时间与软删除时间
-func (e *chainWarmEnv) currentVideo(videoID uint) video.Video {
+func (e *chainWarmEnv) currentVideo(videoID uint) infravideo.Video {
 	e.t.Helper()
-	var entity video.Video
+	var entity infravideo.Video
 	if err := e.db.Unscoped().First(&entity, videoID).Error; err != nil {
 		e.t.Fatalf("读取视频失败: %v", err)
 	}
@@ -2030,13 +2030,13 @@ func (e *chainWarmEnv) dispatchPublished() {
 
 // 测试目标：确认事件按持久化行标记派发
 // 预期效果：状态为 dispatched 且派发时间落库
-func (e *chainWarmEnv) assertEventDispatched(eventID uint) video.OutboxEvent {
+func (e *chainWarmEnv) assertEventDispatched(eventID uint) infravideo.OutboxEvent {
 	e.t.Helper()
-	var event video.OutboxEvent
+	var event infravideo.OutboxEvent
 	if err := e.db.First(&event, eventID).Error; err != nil {
 		e.t.Fatalf("读取事件失败: %v", err)
 	}
-	if event.Status != video.OutboxEventStatusDispatched || event.DispatchedAt == nil {
+	if event.Status != infravideo.OutboxEventStatusDispatched || event.DispatchedAt == nil {
 		e.t.Fatalf("事件未标记派发 got=%+v", event)
 	}
 	return event
@@ -2213,7 +2213,7 @@ func (e *chainWarmEnv) runConsumerUntil(videoID uint, want applicationfeed.CardW
 // 预期效果：deleted_at 落库，公开读取与卡片读取都不再返回该视频
 func (e *chainWarmEnv) softDeleteVideo(videoID uint) {
 	e.t.Helper()
-	if err := e.db.Where("id = ?", videoID).Delete(&video.Video{}).Error; err != nil {
+	if err := e.db.Where("id = ?", videoID).Delete(&infravideo.Video{}).Error; err != nil {
 		e.t.Fatalf("软删除视频失败: %v", err)
 	}
 	entity := e.currentVideo(videoID)
@@ -2239,7 +2239,7 @@ func (e *chainWarmEnv) warm(videoID uint) applicationfeed.CardWarmupResult {
 
 // 测试目标：直接领取一条待派发事件以观察快照标记
 // 预期效果：返回的派发项带有 HasVideo 与租约接管标记
-func (e *chainWarmEnv) claimDirect() video.OutboxDispatch {
+func (e *chainWarmEnv) claimDirect() infravideo.OutboxDispatch {
 	e.t.Helper()
 	dispatches, err := e.repo.ClaimPendingOutboxEvents(context.Background(), 32, outboxLease)
 	if err != nil {
@@ -2253,7 +2253,7 @@ func (e *chainWarmEnv) claimDirect() video.OutboxDispatch {
 
 // 测试目标：把领取到的事件交回 pending
 // 预期效果：真实 relay 仍可按正常路径派发同一条事件
-func (e *chainWarmEnv) releaseDirect(dispatch video.OutboxDispatch) {
+func (e *chainWarmEnv) releaseDirect(dispatch infravideo.OutboxDispatch) {
 	e.t.Helper()
 	released, err := e.repo.ReleaseOutboxRetry(context.Background(), dispatch.Event.ID, dispatch.Event.Attempt, 0,
 		errors.New("chain warm test hands back"))
@@ -2267,10 +2267,10 @@ func (e *chainWarmEnv) releaseDirect(dispatch video.OutboxDispatch) {
 
 // 测试目标：把已派发事件回退为租约过期的 publishing 状态
 // 预期效果：真实 relay 会按租约接管语义重新派发同一事件
-func (e *chainWarmEnv) expireLease(event video.OutboxEvent) {
+func (e *chainWarmEnv) expireLease(event infravideo.OutboxEvent) {
 	e.t.Helper()
-	err := e.db.Model(&video.OutboxEvent{}).Where("id = ?", event.ID).Updates(map[string]any{
-		"status":          video.OutboxEventStatusPublishing,
+	err := e.db.Model(&infravideo.OutboxEvent{}).Where("id = ?", event.ID).Updates(map[string]any{
+		"status":          infravideo.OutboxEventStatusPublishing,
 		"locked_until":    gorm.Expr("TIMESTAMPADD(SECOND, -1, NOW(3))"),
 		"next_attempt_at": nil,
 	}).Error
@@ -2507,14 +2507,14 @@ func registerFaultInjection(t *testing.T, gdb *gorm.DB) *faultInjection {
 
 // 测试目标：写入一条处理中视频与 outbox 事件
 // 预期效果：返回已回填标识的视频行与待派发事件
-func seedProcessingVideo(t *testing.T, repo *video.Repository, db *gorm.DB, id int64) video.Video {
+func seedProcessingVideo(t *testing.T, repo *video.Repository, db *gorm.DB, id int64) infravideo.Video {
 	t.Helper()
 	ctx := context.Background()
 	playURL := "/static/videos/1/20260801/clip.mp4"
 	coverURL := "/static/covers/1/20260801/cover.png"
 	publishedAt := testTime()
-	row := video.Video{
-		AuthorID: 1, Title: "处理视频", Status: video.VideoStatusProcessing,
+	row := infravideo.Video{
+		AuthorID: 1, Title: "处理视频", Status: infravideo.VideoStatusProcessing,
 		PlayURL: playURL, PlayFileName: "clip.mp4", PlayOriginalName: "clip.mp4",
 		CoverURL: coverURL, CoverFileName: "cover.png", CoverOriginalName: "cover.png",
 		PublishedAt: &publishedAt,
@@ -2522,11 +2522,11 @@ func seedProcessingVideo(t *testing.T, repo *video.Repository, db *gorm.DB, id i
 	if err := repo.Create(ctx, &row); err != nil {
 		t.Fatalf("创建处理视频失败: %v", err)
 	}
-	event := video.OutboxEvent{
+	event := infravideo.OutboxEvent{
 		EventID:   fmt.Sprintf("evt-%d", id),
 		VideoID:   row.ID,
-		EventType: video.VideoProcessEventType,
-		Status:    video.OutboxEventStatusPending,
+		EventType: infravideo.VideoProcessEventType,
+		Status:    infravideo.OutboxEventStatusPending,
 	}
 	if err := db.Create(&event).Error; err != nil {
 		t.Fatalf("创建 outbox 事件失败: %v", err)

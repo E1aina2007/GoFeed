@@ -4,11 +4,10 @@ import (
 	"context"
 
 	domainvideo "gofeed/internal/domain/video"
-	legacyvideo "gofeed/internal/video"
 )
 
 type draftPublishSource interface {
-	UpdateDraftPublication(ctx context.Context, draftID, authorID uint) (*legacyvideo.Video, error)
+	UpdateDraftPublication(ctx context.Context, draftID, authorID uint) (*Video, error)
 }
 
 type draftPublisher struct {
