@@ -4,11 +4,10 @@ import (
 	"context"
 
 	domainvideo "gofeed/internal/domain/video"
-	legacyvideo "gofeed/internal/video"
 )
 
 type draftMediaBindSource interface {
-	UpdateDraftMedia(ctx context.Context, draftID, authorID uint, kind legacyvideo.MediaKind, saved legacyvideo.SavedFile, originalName string) error
+	UpdateDraftMedia(ctx context.Context, draftID, authorID uint, kind domainvideo.MediaKind, saved domainvideo.SavedFile, originalName string) error
 }
 
 type draftMediaBinder struct {
@@ -23,6 +22,6 @@ func NewDraftMediaBinder(videos draftMediaBindSource) domainvideo.DraftMediaBind
 }
 
 func (r *draftMediaBinder) UpdateDraftMedia(ctx context.Context, draftID, authorID uint, kind domainvideo.MediaKind, saved domainvideo.SavedFile, originalName string) error {
-	return readError(r.videos.UpdateDraftMedia(ctx, draftID, authorID, legacyvideo.MediaKind(kind),
-		legacyvideo.SavedFile{PublicURL: saved.PublicURL, FileName: saved.FileName}, originalName))
+	return readError(r.videos.UpdateDraftMedia(ctx, draftID, authorID, kind,
+		domainvideo.SavedFile{PublicURL: saved.PublicURL, FileName: saved.FileName}, originalName))
 }

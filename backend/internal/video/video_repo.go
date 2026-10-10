@@ -48,7 +48,7 @@ func (r *Repository) Create(ctx context.Context, video *Video) error {
 }
 
 // UpdateDraftMedia 将已保存的媒体元数据写入当前用户的可写草稿
-func (r *Repository) UpdateDraftMedia(ctx context.Context, draftID, authorID uint, kind MediaKind, saved SavedFile, originalName string) error {
+func (r *Repository) UpdateDraftMedia(ctx context.Context, draftID, authorID uint, kind domainvideo.MediaKind, saved domainvideo.SavedFile, originalName string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var draft Video
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&draft, draftID).Error; err != nil {
@@ -62,14 +62,14 @@ func (r *Repository) UpdateDraftMedia(ctx context.Context, draftID, authorID uin
 		}
 
 		switch kind {
-		case MediaVideo:
+		case domainvideo.MediaVideo:
 			if draft.PlayURL != "" {
 				return ErrDraftNotWritable
 			}
 			draft.PlayURL = saved.PublicURL
 			draft.PlayFileName = saved.FileName
 			draft.PlayOriginalName = originalName
-		case MediaCover:
+		case domainvideo.MediaCover:
 			if draft.CoverURL != "" {
 				return ErrDraftNotWritable
 			}

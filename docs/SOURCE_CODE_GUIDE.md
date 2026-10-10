@@ -1,6 +1,6 @@
 # GoFeed 源码导读
 
-> 阅读基线：2026-10-10，`F:\work\Feed\GoFeed`。Interaction 已完成 HTTP、持久化及统计迁移，Relation 的五个 HTTP、用例与原 v1 游标已迁入四层，R2-B 后端/API 已提交为 `f9481b2`。R2-C 已迁关系 ORM/SQL、计数与 Following 活动观看者依赖并删除旧 social，后端为 `ea36d40`；Following 视频 SQL 仍在 Video。R3-A 三个匿名账户 GET 已迁入独立 Account 四层，后端/API 为 `35a6fe0`；R3-B 注册后端/API 已提交为 `a834d46`。R3-C 登录、刷新与退出提交为 `f20dcdf`；R3-D 改密与注销提交为 `4f4838b`；R3-E 改名、资料与头像提交为 `f5c1260`。R3-F1 作者读取与资料统计已解除旧 user 类型耦合，提交为 `c335902`。R3-F2 唯一 User ORM/仓储已归 Account，旧 user 包已删除，提交为 `267463e`。R3-G1 JWT 与 HTTP 认证适配已归 Infra/Interfaces，提交为 `e84f783`。R3-G2 会话用例和唯一 AuthSession ORM/仓储已归 Account，旧 auth 已删除，提交为 `fe6959d`，未推送；R4-A1 已发布详情与公开列表已迁入 Video 四层，提交为 `d94bff7`，未推送；R4-A2 本人列表已提交为 `b4e145b`，未推送；R4-A3 处理状态读取已提交为 `1b0acfc`，未推送；R4-B1 草稿创建/读取已提交为 `2f315e8`，未推送；R4-B2 共享媒体规则/唯一存储已归 Domain/Infrastructure，提交为 `e56d7bf`，未推送；R4-B3 视频上传已接 Video 四层，提交为 `6bc4926`，未推送；R4-B4 封面上传提交为 `fefc4c4`、R4-C1 草稿发布提交为 `9f0a393`，均未推送；R4-C2 草稿丢弃已提交为 `1048bc5`，未推送；R4-C3 已发布删除已提交为 `ff11f7f`，未推送；R4-D1 作者读取消费边界已提交为 `6455b91`，未推送；R4-D2 互动统计消费边界已提交为 `8d72c9f`，未推送；R4-D3 列表查询位置消费边界已提交，未推送（提交标识见 Git 历史）；账户 HTTP 全部归 Account，本地媒体统一使用 infra/storage/media，视频/封面上传均已接 Video 四层，所有绑定事务继续保留。实施边界见开发计划第 6.8–6.14 节，提交摘要见第 6.4 节，验证与缺口见第 5 节；第 6.14 节其余 R4–R6 模块尚未实施。本文从当前源码推导；Hot/Recommend、完整热度覆盖及指标出口尚未实现。
+> 阅读基线：2026-10-10，`F:\work\Feed\GoFeed`。Interaction 已完成 HTTP、持久化及统计迁移，Relation 的五个 HTTP、用例与原 v1 游标已迁入四层，R2-B 后端/API 已提交为 `f9481b2`。R2-C 已迁关系 ORM/SQL、计数与 Following 活动观看者依赖并删除旧 social，后端为 `ea36d40`；Following 视频 SQL 仍在 Video。R3-A 三个匿名账户 GET 已迁入独立 Account 四层，后端/API 为 `35a6fe0`；R3-B 注册后端/API 已提交为 `a834d46`。R3-C 登录、刷新与退出提交为 `f20dcdf`；R3-D 改密与注销提交为 `4f4838b`；R3-E 改名、资料与头像提交为 `f5c1260`。R3-F1 作者读取与资料统计已解除旧 user 类型耦合，提交为 `c335902`。R3-F2 唯一 User ORM/仓储已归 Account，旧 user 包已删除，提交为 `267463e`。R3-G1 JWT 与 HTTP 认证适配已归 Infra/Interfaces，提交为 `e84f783`。R3-G2 会话用例和唯一 AuthSession ORM/仓储已归 Account，旧 auth 已删除，提交为 `fe6959d`，未推送；R4-A1 已发布详情与公开列表已迁入 Video 四层，提交为 `d94bff7`，未推送；R4-A2 本人列表已提交为 `b4e145b`，未推送；R4-A3 处理状态读取已提交为 `1b0acfc`，未推送；R4-B1 草稿创建/读取已提交为 `2f315e8`，未推送；R4-B2 共享媒体规则/唯一存储已归 Domain/Infrastructure，提交为 `e56d7bf`，未推送；R4-B3 视频上传已接 Video 四层，提交为 `6bc4926`，未推送；R4-B4 封面上传提交为 `fefc4c4`、R4-C1 草稿发布提交为 `9f0a393`，均未推送；R4-C2 草稿丢弃已提交为 `1048bc5`，未推送；R4-C3 已发布删除已提交为 `ff11f7f`，未推送；R4-D1 作者读取消费边界已提交为 `6455b91`，未推送；R4-D2 互动统计消费边界已提交为 `8d72c9f`，未推送；R4-D3 列表查询位置消费边界已提交为 `ab3cee0`，未推送；R4-D4 草稿媒体绑定值消费边界已提交，未推送（提交标识见 Git 历史）；账户 HTTP 全部归 Account，本地媒体统一使用 infra/storage/media，视频/封面上传均已接 Video 四层，所有绑定事务继续保留。实施边界见开发计划第 6.8–6.14 节，提交摘要见第 6.4 节，验证与缺口见第 5 节；第 6.14 节其余 R4–R6 模块尚未实施。本文从当前源码推导；Hot/Recommend、完整热度覆盖及指标出口尚未实现。
 >
 > 本文用于理解源码。运行与配置看 [README](../README.md)，接口字段看 [API](../API.md)，未完成设计与历史验收看 [开发计划](./DEVELOPMENT_PLAN.md)。本文中的“源码入口”均可直接点击。
 
@@ -233,7 +233,7 @@ R4-A2 确认生产/测试引用后删除旧 mine HTTP/用例、独占组装/游�
 
 ### 3.8 草稿视频/封面上传：保存后才绑定
 
-两个原端点 `POST /api/video/auth/drafts/:id/play` 与 `POST /api/video/auth/drafts/:id/cover` 经原 JWT/session → [DraftMediaUploadHandler](../backend/internal/interfaces/http/video/draft_media_upload.go) → [Application 媒体上传](../backend/internal/application/video/draft_media_upload.go) → [Domain 绑定规则/小端口](../backend/internal/domain/video/draft_media.go) → [绑定适配](../backend/internal/infra/persistence/video/draft_media_binder.go) → 原 [Repository.UpdateDraftMedia](../backend/internal/video/video_repo.go)。两个 wrapper 只选 kind 与原 play_*/cover_* 字段；HTTP 共用认证/路径、MaxBytesReader/FormFile、视频 200 MiB/封面 10 MiB + 各 1 MiB、前 512 字节 ReadFull、原扩展名/文件头和 Seek，将打开的文件交给用例。
+两个原端点 `POST /api/video/auth/drafts/:id/play` 与 `POST /api/video/auth/drafts/:id/cover` 经原 JWT/session → [DraftMediaUploadHandler](../backend/internal/interfaces/http/video/draft_media_upload.go) → [Application 媒体上传](../backend/internal/application/video/draft_media_upload.go) → [Domain 绑定规则/小端口](../backend/internal/domain/video/draft_media.go) → [绑定适配](../backend/internal/infra/persistence/video/draft_media_binder.go) → 原 [Repository.UpdateDraftMedia](../backend/internal/video/video_repo.go)。R4-D4 已让绑定仓储/适配直接消费 Domain MediaKind/SavedFile，仍显式复制 PublicURL/FileName，不改变事务；旧 SavedFile 已删，清扫仍使用的旧 MediaKind 保留。两个 wrapper 只选 kind 与原 play_*/cover_* 字段；HTTP 共用认证/路径、MaxBytesReader/FormFile、视频 200 MiB/封面 10 MiB + 各 1 MiB、前 512 字节 ReadFull、原扩展名/文件头和 Seek，将打开的文件交给用例。
 
 Application 先经 B2 唯一 LocalStorage 保存，再计算展示名；之后才校验原 ID/kind/所属 URL/存储名、检查绑定端口和原名兜底，最后单次委托原锁行事务。绑定失败只有 storage 提供 Remove 时尽力清理，忽略删除错误并返回原绑定错误；保存失败不绑定/删除。nil 接口/接口内 nil 指针和可选删除保持，不增加草稿预读、提前仓储检查、写后重读或文件重读。正常装配仍会话、锁行 First、Save 各一次，源码三次 CRUD，不含事务控制语句，未运行预算验证。
 
@@ -303,7 +303,15 @@ vet/build、93 项源码/依赖检查、58 个内层文件/10 包、283 个保�
 
 这是内部查询位置的消费边界。[Video v1 编解码](../backend/internal/application/video/cursor.go)、[Feed Timeline 编解码](../backend/internal/application/feed/cursor.go)与[Following 编解码](../backend/internal/application/feed/following.go)全文未改，外部版本/字段/范围、场景/排序版本、观看者绑定、原时间编码和 limit+1 保持。完整引用核对后仅删 [video_entity.go](../backend/internal/video/video_entity.go) 中旧 Cursor/CursorKind、对应常量/注释；唯一 Video/Outbox ORM、完整 Repository/SQL、公开规则、错误、媒体值和后台消费者仍保留。
 
-[R4-D3 范围与缺口](./DEVELOPMENT_PLAN.md#r4-d3列表查询位置消费边界已提交)：vet/build 与源码/依赖/文档/差异检查通过；五个保留测试原样，无夹具适配、未运行。目标 localhost:3306/feedsystem 本轮连接拒绝（10061），元数据未核对，无 SELECT/写库/服务启动；没有真实 HTTP、分页、查询预算、数据库或 Worker/Sweeper 回归。已提交，未推送；后续 ORM/仓储方法族与 Sweeper 取消仍未实施。
+[R4-D3 范围与缺口](./DEVELOPMENT_PLAN.md#r4-d3列表查询位置消费边界已提交)：vet/build 与源码/依赖/文档/差异检查通过；五个保留测试原样，无夹具适配、未运行。目标 localhost:3306/feedsystem 本轮连接拒绝（10061），元数据未核对，无 SELECT/写库/服务启动；没有真实 HTTP、分页、查询预算、数据库或 Worker/Sweeper 回归。已提交为 `ab3cee0`，未推送；后续 ORM/仓储方法族与 Sweeper 取消仍未实施。
+
+### 3.15 草稿媒体绑定：消费 Domain 媒体值
+
+[Repository.UpdateDraftMedia](../backend/internal/video/video_repo.go)及[绑定适配](../backend/internal/infra/persistence/video/draft_media_binder.go)随 R4-D4 直接消费现有 [Domain MediaKind/SavedFile](../backend/internal/domain/video/media.go)。原事务只替换两个同值 switch 常量的归属，仍锁行 First→作者→draft→视频/封面空槽位→原样写入 URL/物理名/展示名→Save，未知 kind 仍返回旧 ErrInvalidMedia；不增加参数校验、清洗、预读/重读或事务/SQL。适配仍处理构造器 nil 接口，显式复制 PublicURL/FileName 后委托一次，并保留 readError 的优先级/文案/cause。
+
+完整生产/保留测试引用核对后，只从[旧 storage.go](../backend/internal/video/storage.go)删除无用途 SavedFile 和对应注释；当前唯一 SavedFile 定义在 Domain。旧 MediaKind/常量仍供 UpdateDraftMediaPurge、Sweeper 与保留夹具使用，因此继续保留，媒体错误/删除/枚举端口和 URL 桥接也未改。[上传用例](../backend/internal/application/video/draft_media_upload.go)、[HTTP](../backend/internal/interfaces/http/video/draft_media_upload.go)、[唯一 LocalStorage](../backend/internal/infra/storage/media/local.go)、Account 头像、Worker/Sweeper、Feed 游标/缓存/作者/统计及其他仓储方法族全文保持。
+
+[R4-D4 范围与缺口](./DEVELOPMENT_PLAN.md#r4-d4草稿媒体绑定值消费边界已提交)：vet/build、264 项静态检查和文档/差异核对通过；五个保留测试原样，无夹具适配、未运行。目标 feedsystem 本轮只读核对 version=10、dirty=false、videos 21 列/8 索引，元数据/状态聚合前后一致，无写库/业务操作/服务启动；不代表真实绑定事务、补偿、查询预算、HTTP 或 Worker/Sweeper 验收。D3 已提交为 `ab3cee0`、未推送；D4 已提交，未推送（提交标识见 Git 历史），后续 ORM/仓储方法族和 Sweeper 取消仍未实施。
 
 ## 4. Timeline：一次 Feed 请求怎样完成
 

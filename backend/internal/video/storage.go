@@ -29,12 +29,6 @@ var (
 	ErrInvalidMediaPath = errors.New("invalid stored media path")
 )
 
-// SavedFile 描述一次保存到本地存储的媒体文件
-type SavedFile struct {
-	PublicURL string // 对外可访问的 URL（/static/...）
-	FileName  string // 磁盘上实际存储的文件名（清洗后）
-}
-
 // MediaRemover 抽象媒体对象删除能力，供发布视频与草稿清扫任务使用
 // 实现必须把不存在的对象视为成功，支持“物理删除成功但检查点写入失败”后的重试
 type MediaRemover interface {
