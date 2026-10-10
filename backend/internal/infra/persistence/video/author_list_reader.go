@@ -8,7 +8,7 @@ import (
 )
 
 type authorVideoListSource interface {
-	GetAuthorVideoList(ctx context.Context, authorID uint, cursor *legacyvideo.Cursor, limit int) ([]legacyvideo.Video, error)
+	GetAuthorVideoList(ctx context.Context, authorID uint, cursor *domainvideo.ListPosition, limit int) ([]legacyvideo.Video, error)
 }
 
 type authorVideoListReader struct {
@@ -23,9 +23,9 @@ func NewAuthorVideoListReader(videos authorVideoListSource) domainvideo.AuthorVi
 }
 
 func (r *authorVideoListReader) GetAuthorVideoList(ctx context.Context, authorID uint, position *domainvideo.ListPosition, limit int) ([]domainvideo.PublicVideo, error) {
-	var cursor *legacyvideo.Cursor
+	var cursor *domainvideo.ListPosition
 	if position != nil {
-		cursor = &legacyvideo.Cursor{PublishedAt: position.PublishedAt, ID: position.ID}
+		cursor = &domainvideo.ListPosition{PublishedAt: position.PublishedAt, ID: position.ID}
 	}
 	rows, err := r.videos.GetAuthorVideoList(ctx, authorID, cursor, limit)
 	if err != nil {

@@ -11,7 +11,7 @@ import (
 
 // 以下窄接口只存在于外层适配器，既有实体不会泄漏到 Feed 的 Domain/Application
 type PublishedVideoReader interface {
-	GetPublishedVideoList(ctx context.Context, authorID uint, cursor *video.Cursor, limit int) ([]video.Video, error)
+	GetPublishedVideoList(ctx context.Context, authorID uint, cursor *domainvideo.ListPosition, limit int) ([]video.Video, error)
 }
 
 type AuthorReader interface {
@@ -40,9 +40,9 @@ func (r *Repository) ListTimelinePage(ctx context.Context, cursor *domainfeed.Ti
 	if r.videos == nil {
 		return domainfeed.TimelinePage{}, domainfeed.ErrUnavailable
 	}
-	var position *video.Cursor
+	var position *domainvideo.ListPosition
 	if cursor != nil {
-		position = &video.Cursor{PublishedAt: cursor.PublishedAt, ID: cursor.VideoID}
+		position = &domainvideo.ListPosition{PublishedAt: cursor.PublishedAt, ID: cursor.VideoID}
 	}
 	rows, err := r.videos.GetPublishedVideoList(ctx, 0, position, limit)
 	if err != nil {

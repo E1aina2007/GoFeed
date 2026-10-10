@@ -6,6 +6,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	domainvideo "gofeed/internal/domain/video"
+
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -238,7 +240,7 @@ func (r *Repository) GetPublishedByIDs(ctx context.Context, ids []uint) ([]Video
 }
 
 // 按发布时间查询已发布视频
-func (r *Repository) GetPublishedVideoList(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error) {
+func (r *Repository) GetPublishedVideoList(ctx context.Context, authorID uint, cursor *domainvideo.ListPosition, limit int) ([]Video, error) {
 	if limit <= 0 {
 		return []Video{}, nil
 	}
@@ -279,7 +281,7 @@ func (r *Repository) GetPublishedVideoCountByAuthor(ctx context.Context, authorI
 
 // GetAuthorVideoList 按作者查询已发布视频，用于作者自己的管理列表
 // 草稿没有完整媒体，也没有单独的管理响应结构，不能混入 VideoItem 列表
-func (r *Repository) GetAuthorVideoList(ctx context.Context, authorID uint, cursor *Cursor, limit int) ([]Video, error) {
+func (r *Repository) GetAuthorVideoList(ctx context.Context, authorID uint, cursor *domainvideo.ListPosition, limit int) ([]Video, error) {
 	if authorID == 0 || limit <= 0 {
 		return []Video{}, nil
 	}

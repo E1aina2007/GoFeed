@@ -98,21 +98,3 @@ type DraftPurgeClaim struct {
 	CoverURL      string
 	CoverPurgedAt *time.Time
 }
-
-// CursorKind 标识游标绑定的查询范围
-type CursorKind string
-
-const (
-	CursorKindPublic CursorKind = "public"
-	CursorKindAuthor CursorKind = "author"
-	CursorKindMine   CursorKind = "mine"
-)
-
-// Cursor 记录列表分页位置及其版本、查询范围
-type Cursor struct {
-	Version     int        `json:"v"`
-	Kind        CursorKind `json:"k"`
-	AuthorID    uint       `json:"a,omitempty"`
-	PublishedAt time.Time  `json:"p"`
-	ID          uint       `json:"i"`
-}

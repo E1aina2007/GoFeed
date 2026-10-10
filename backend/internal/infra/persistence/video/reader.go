@@ -12,7 +12,7 @@ import (
 
 type publishedReader interface {
 	GetPublishedByID(ctx context.Context, id uint) (*legacyvideo.Video, error)
-	GetPublishedVideoList(ctx context.Context, authorID uint, cursor *legacyvideo.Cursor, limit int) ([]legacyvideo.Video, error)
+	GetPublishedVideoList(ctx context.Context, authorID uint, cursor *domainvideo.ListPosition, limit int) ([]legacyvideo.Video, error)
 }
 
 type reader struct {
@@ -43,9 +43,9 @@ func (r *reader) GetPublishedByID(ctx context.Context, id uint) (*domainvideo.Pu
 }
 
 func (r *reader) GetPublishedVideoList(ctx context.Context, authorID uint, position *domainvideo.ListPosition, limit int) ([]domainvideo.PublicVideo, error) {
-	var cursor *legacyvideo.Cursor
+	var cursor *domainvideo.ListPosition
 	if position != nil {
-		cursor = &legacyvideo.Cursor{PublishedAt: position.PublishedAt, ID: position.ID}
+		cursor = &domainvideo.ListPosition{PublishedAt: position.PublishedAt, ID: position.ID}
 	}
 	rows, err := r.videos.GetPublishedVideoList(ctx, authorID, cursor, limit)
 	if err != nil {

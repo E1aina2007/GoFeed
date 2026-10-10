@@ -8,11 +8,12 @@ import (
 
 	domainfeed "gofeed/internal/domain/feed"
 	domainrelation "gofeed/internal/domain/relation"
+	domainvideo "gofeed/internal/domain/video"
 	"gofeed/internal/video"
 )
 
 type FollowingVideoReader interface {
-	GetFollowingVideoList(context.Context, uint, *video.Cursor, int) ([]video.Video, error)
+	GetFollowingVideoList(context.Context, uint, *domainvideo.ListPosition, int) ([]video.Video, error)
 }
 
 type ActiveViewerReader interface {
@@ -47,9 +48,9 @@ func (r *FollowingReader) ListFollowingPage(ctx context.Context, viewerID uint, 
 		}
 		return domainfeed.TimelinePage{}, fmt.Errorf("%w: %w", domainfeed.ErrUnavailable, err)
 	}
-	var position *video.Cursor
+	var position *domainvideo.ListPosition
 	if cursor != nil {
-		position = &video.Cursor{PublishedAt: cursor.PublishedAt, ID: cursor.VideoID}
+		position = &domainvideo.ListPosition{PublishedAt: cursor.PublishedAt, ID: cursor.VideoID}
 	}
 	rows, err := r.videos.GetFollowingVideoList(ctx, viewerID, position, fetchLimit)
 	if err != nil {

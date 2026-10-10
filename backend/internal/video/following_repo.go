@@ -1,9 +1,13 @@
 package video
 
-import "context"
+import (
+	"context"
+
+	domainvideo "gofeed/internal/domain/video"
+)
 
 // GetFollowingVideoList 在同一查询内限制当前关注关系、活动作者与公开视频
-func (r *Repository) GetFollowingVideoList(ctx context.Context, viewerID uint, cursor *Cursor, fetchLimit int) ([]Video, error) {
+func (r *Repository) GetFollowingVideoList(ctx context.Context, viewerID uint, cursor *domainvideo.ListPosition, fetchLimit int) ([]Video, error) {
 	if viewerID == 0 {
 		return nil, ErrInvalidVideoID
 	}
